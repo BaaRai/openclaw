@@ -153,6 +153,11 @@ describe("worker launch descriptor", () => {
         remoteUrl: "https://github.com/openclaw/openclaw.git",
         gitAuthor: { name: "Worker Bot", email: "worker@example.test" },
       },
+      {
+        ...identity,
+        host: "microsoft.ghe.com",
+        remoteUrl: "https://microsoft.ghe.com/bic/lobster.git",
+      },
     ]) {
       if (github) {
         descriptor.assignment.github = github;
@@ -208,6 +213,9 @@ describe("worker launch descriptor", () => {
         "https://github.com/openclaw/openclaw.git?token=x",
         "https://github.com/openclaw/openclaw.git\n",
       ].map((remoteUrl) => withBinding({ remoteUrl })),
+      withBinding({ host: "microsoft.ghe.com", remoteUrl: "https://github.com/bic/lobster.git" }),
+      withBinding({ host: "Microsoft.ghe.com" }),
+      withBinding({ host: "microsoft..ghe.com" }),
       withBinding({ gitAuthor: { unexpected: true } }),
       withBinding({ remoteUrl: undefined }),
       withBinding({ gitAuthor: undefined }),
