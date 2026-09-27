@@ -20,6 +20,7 @@ import {
 import { createLibrarySkillWorkshopTool } from "../../agents/tools/skill-workshop-tool-library.js";
 import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
 import { logInfo } from "../../logger.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
 import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
@@ -70,6 +71,8 @@ import {
   type executeRemoteExecTurn,
   recoverWorkspaceBeforeTurn,
 } from "./workspace-result-finalize.js";
+
+const log = createSubsystemLogger("gateway/worker-turn");
 
 export async function executeWorkerTurn(
   params: Omit<Parameters<typeof executeRemoteExecTurn>[0], "environments" | "runLocal"> & {
@@ -275,6 +278,7 @@ export async function executeWorkerTurn(
   });
   const {
     admittedRunContext,
+    operatorAuthority,
     operationalRunInstance,
     runtimeIdentity,
     assertActive,
@@ -354,6 +358,7 @@ export async function executeWorkerTurn(
       throw new StaleWorkerBuildError();
     }
     githubGrant = await prepareWorkerGitHubBindingGrant({
+      operatorAuthority,
       sessionId: placement.sessionId,
       sessionKey: placement.sessionKey,
       agentId: placement.agentId,
@@ -709,9 +714,13 @@ export async function executeWorkerTurn(
       startedAt,
     });
   } finally {
-    await githubGrant?.revoke();
     await toolRuntime?.close();
     stopWatchingClaim();
     stopWatchingRun();
+    try {
+      await githubGrant?.revoke();
+    } catch {
+      log.warn("Worker GitHub token revocation failed; the installation token will expire.");
+    }
   }
 }
