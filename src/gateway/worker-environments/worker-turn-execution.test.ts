@@ -39,6 +39,7 @@ import {
 import { roundTripWorkerLaunchDescriptor } from "../../worker/launch-descriptor.test-support.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import { WorkerRunnerCapacityError, type WorkerTunnelHandle } from "./tunnel-contract.js";
+import * as workerGitHub from "./worker-github-binding.js";
 import { registerWorkerTurnInferenceTests } from "./worker-turn-execution.inference.suite.js";
 import {
   acknowledgeCompletedWorkerTurn,
@@ -593,6 +594,11 @@ describe("worker turn execution", () => {
   it("settles the committed terminal result when execution is cancelled during hydration", async () => {
     await seedActivePlacement();
     const abort = new AbortController();
+    const revoke = vi.fn(async () => {});
+    const github = vi.spyOn(workerGitHub, "prepareWorkerGitHubBindingGrant").mockResolvedValue({
+      binding: { token: "synthetic-token", login: "fixture", branch: "fixture" },
+      revoke,
+    });
     const input = turn("terminal-hydration");
     const entered = createDeferred();
     const release = createDeferred();
@@ -628,9 +634,13 @@ describe("worker turn execution", () => {
       syncWorkspace: vi.fn(),
       stop: vi.fn(),
       quiesceWorkspace: async () => ({ assertActive: async () => {}, resume: async () => {} }),
-      reconcileWorkspace: reconcileUnchangedLocalWorkspace,
+      reconcileWorkspace: async (request) => {
+        expect(revoke).toHaveBeenCalled();
+        return reconcileUnchangedLocalWorkspace(request);
+      },
     });
     const provider = createWorkerSessionTurnPlacementProvider({
+      reconcileActivePlacement: async () => {},
       placements,
       environments: {
         ...unusedEnvironments(),
@@ -670,6 +680,7 @@ describe("worker turn execution", () => {
       release.resolve();
       await settled;
       hydration.mockRestore();
+      github.mockRestore();
       input.preparedRunAdmission.close();
     }
   });
