@@ -6,6 +6,7 @@ import { listAgentEntries } from "../agents/agent-scope.js";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizeClawHubSha256Integrity } from "../infra/clawhub-integrity.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { updateClawInstallRecordStatusForAdd } from "./add-state-write.js";
@@ -258,9 +259,12 @@ export async function applyClawUpdatePlan(
           (candidate) => candidate.kind === "package" && candidate.id === `${pkg.kind}:${pkg.ref}`,
         );
         return !preflight.ok &&
-          pkg.kind === "plugin" &&
-          preflight.code === "plugin_version_conflict" &&
-          action?.action === "change"
+          action?.action === "change" &&
+          ((pkg.kind === "plugin" && preflight.code === "plugin_version_conflict") ||
+            (pkg.kind === "skill" &&
+              preflight.code === "skill_version_conflict" &&
+              preflight.integrity &&
+              normalizeClawHubSha256Integrity(preflight.integrity)))
           ? {
               ok: true,
               action: "install" as const,
@@ -650,6 +654,13 @@ export async function applyClawUpdatePlan(
     ]);
     await throwIfUpdatePartial(error, rollbackFailures);
     throw new ClawUpdateMutationError("provenance_update_failed", coerceErrorMessage(error));
+  }
+  try {
+    await packageExecution.commit?.();
+  } catch (error) {
+    throw await partialMutation(
+      `Claw update committed, but skill backup cleanup failed: ${coerceErrorMessage(error)}`,
+    );
   }
   return {
     schemaVersion: CLAW_UPDATE_RESULT_SCHEMA_VERSION,

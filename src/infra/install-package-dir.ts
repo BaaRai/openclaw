@@ -39,7 +39,7 @@ type HiddenProjectConfigFile = {
   hiddenPath: string;
 } | null;
 
-type InstallPackageDirFailure = { ok: false; error: string };
+type InstallPackageDirFailure = { ok: false; error: string; recoveryIncomplete?: boolean };
 type InstallPackageDirSuccess = { ok: true };
 
 export function hasPackageRuntimeDependencies(manifest: {
@@ -268,6 +268,7 @@ export async function installPackageDir<
   beforePersistentApply?: () => void;
   /** Remote owners answer before displacement/publication; local checks still run at the mutation. */
   authorizeMutation?: () => Promise<void>;
+  requireExistingTarget?: boolean;
 }): Promise<InstallPackageDirSuccess | InstallPackageDirFailure | TAfterInstallFailure> {
   const transactionRequest = resolvePackageDirInstallTransactionRequest(params);
   const deferCommit = transactionRequest !== undefined;
@@ -435,9 +436,11 @@ export async function installPackageDir<
         `install was published at ${published.install.path}; recovery incomplete`,
       published.backup && `backup recovery path: ${published.backup.path}`,
     ].filter(Boolean);
+    const recoveryIncomplete = Boolean(restoreError || published.install || published.backup);
     return {
       ok: false as const,
       error: [error, ...recovery].join("; "),
+      ...(recoveryIncomplete ? { recoveryIncomplete: true } : {}),
     };
   };
   const restoreBackup = async (): Promise<void> => {
@@ -580,14 +583,18 @@ export async function installPackageDir<
       const postInstallResult = await params.afterInstall(stageDir);
       if (!postInstallResult.ok) {
         const failed = await fail(postInstallResult.error);
-        return { ...postInstallResult, error: failed.error };
+        return { ...postInstallResult, ...failed };
       }
     } catch (err) {
       return await fail(`post-install validation failed: ${String(err)}`, err);
     }
   }
 
-  if (params.mode === "update" && (await pathExists(canonicalTargetDir))) {
+  const hasUpdateTarget = params.mode === "update" && (await pathExists(canonicalTargetDir));
+  if (params.requireExistingTarget && !hasUpdateTarget) {
+    return await fail(`${params.copyErrorPrefix}: required update target disappeared`);
+  }
+  if (hasUpdateTarget) {
     const backupRoot = path.join(installBaseRealPath, ".openclaw-install-backups");
     const backupPath = path.join(
       backupRoot,
@@ -629,7 +636,7 @@ export async function installPackageDir<
       const backupResult = await params.afterBackup(published.backup.path);
       if (!backupResult.ok) {
         const failed = await fail(backupResult.error);
-        return { ...backupResult, error: failed.error };
+        return { ...backupResult, ...failed };
       }
     } catch (err) {
       return await fail(`backup validation failed: ${String(err)}`, err);
@@ -667,6 +674,9 @@ export async function installPackageDir<
     } catch (err) {
       if (isInstallBaseChangedError(err)) {
         params.logger?.warn?.(INSTALL_BASE_CHANGED_BACKUP_WARNING);
+      }
+      if (deferCommit) {
+        return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
       }
       published.backup = null;
     }

@@ -522,6 +522,7 @@ export async function checkClawHubPackageTrust(params: {
   fetchImpl?: ClawHubFetch;
   logger?: ClawHubInstallLogger;
   mode?: "install" | "update";
+  confirmOnUpdate?: boolean;
   confirmInstall?: (warning?: string) => boolean | Promise<boolean>;
 }): Promise<ClawHubTrustFailure | ClawHubTrustAcceptedResult> {
   let trust: ClawHubPackageSecurityTrust;
@@ -588,7 +589,7 @@ export async function checkClawHubPackageTrust(params: {
     };
   }
   if (
-    params.mode !== "update" &&
+    (params.mode !== "update" || params.confirmOnUpdate) &&
     params.confirmInstall &&
     !(await params.confirmInstall(disposition === "clean" ? undefined : audit))
   ) {
