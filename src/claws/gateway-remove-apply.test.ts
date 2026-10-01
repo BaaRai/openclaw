@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClawGatewayPlanChangedError } from "./gateway-add-apply.js";
 import { projectClawRemovePlan } from "./gateway-plan-projection.js";
 import { applyClawRemoveForGateway } from "./gateway-remove-apply.js";
-import type { ClawRemovePlan } from "./lifecycle-remove-contract.js";
+import { digestClawRemovePlanIdentity, type ClawRemovePlan } from "./lifecycle-remove-contract.js";
 import type { ClawMonitorCleanupGateway } from "./monitor-cleanup-contract.js";
 
 const planClawRemoveForGateway = vi.hoisted(() => vi.fn());
@@ -33,6 +33,7 @@ const canonical: ClawRemovePlan = {
   ],
   blockers: [],
 };
+canonical.planIntegrity = digestClawRemovePlanIdentity(canonical);
 const preview = projectClawRemovePlan(canonical, {
   name: "@openclaw/workflow-operator",
   version: "1.0.0",
@@ -128,6 +129,7 @@ describe("Gateway Claw Remove Apply", () => {
         },
       ],
     };
+    withCron.planIntegrity = digestClawRemovePlanIdentity(withCron);
     const projected = projectClawRemovePlan(withCron, {
       name: "@openclaw/workflow-operator",
       version: "1.0.0",
@@ -146,6 +148,56 @@ describe("Gateway Claw Remove Apply", () => {
     expect(runClawRemoveCli.mock.calls.at(1)?.[0].gatewayBridge.allowedCronJobIds).toEqual(
       new Set(["scheduler-daily"]),
     );
+  });
+
+  it("rejects a private cron target changed after the CLI plan was sealed", async () => {
+    const job = {
+      id: "daily",
+      schedule: { cron: "0 8 * * *", timezone: "UTC" },
+      session: "isolated",
+      message: "Prepare a daily brief",
+      delivery: { mode: "none" },
+    };
+    const withCron: ClawRemovePlan = {
+      ...canonical,
+      actions: [
+        ...canonical.actions,
+        {
+          kind: "cronJob",
+          id: "daily",
+          action: "remove",
+          target: "scheduler-owned",
+          blocked: false,
+          details: { expectedStatus: "complete", schedulerJobId: "scheduler-owned", job },
+        },
+      ],
+    };
+    withCron.planIntegrity = digestClawRemovePlanIdentity(withCron);
+    const reviewed = projectClawRemovePlan(withCron, {
+      name: "@openclaw/workflow-operator",
+      version: "1.0.0",
+    });
+    expect(reviewed.blockers).toEqual([]);
+    const forged = structuredClone(withCron);
+    const forgedCron = forged.actions.find((action) => action.kind === "cronJob");
+    if (!forgedCron) {
+      throw new Error("Expected the reviewed cron action.");
+    }
+    forgedCron.target = "scheduler-unrelated";
+    forgedCron.details!.schedulerJobId = "scheduler-unrelated";
+    expect(
+      projectClawRemovePlan(forged, {
+        name: "@openclaw/workflow-operator",
+        version: "1.0.0",
+      }).planIntegrity,
+    ).toBe(reviewed.planIntegrity);
+    planClawRemoveForGateway.mockResolvedValue(reviewed);
+    runClawRemoveCli.mockResolvedValueOnce({ code: 0, payload: forged });
+
+    await expect(
+      applyClawRemoveForGateway(input({ planIntegrity: reviewed.planIntegrity })),
+    ).rejects.toBeInstanceOf(ClawGatewayPlanChangedError);
+    expect(runClawRemoveCli).toHaveBeenCalledTimes(1);
   });
 
   it("does not report success when Gateway authority is revoked during Apply", async () => {

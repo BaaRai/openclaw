@@ -9,6 +9,7 @@ import { runClawRemoveCli } from "./gateway-remove-cli.js";
 import {
   CLAW_REMOVE_PLAN_SCHEMA_VERSION,
   CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+  digestClawRemovePlanIdentity,
   type ClawRemovePlanAction,
 } from "./lifecycle-remove-contract.js";
 import type { ClawMonitorCleanupGateway } from "./monitor-cleanup-contract.js";
@@ -122,7 +123,10 @@ export async function applyClawRemoveForGateway(input: {
     preview.target.name && preview.target.currentVersion
       ? { name: preview.target.name, version: preview.target.currentVersion }
       : undefined;
-  if (projectClawRemovePlan(canonicalPlan, installed).planIntegrity !== preview.planIntegrity) {
+  if (
+    digestClawRemovePlanIdentity(canonicalPlan) !== canonicalPlan.planIntegrity ||
+    projectClawRemovePlan(canonicalPlan, installed).planIntegrity !== preview.planIntegrity
+  ) {
     throw new ClawGatewayPlanChangedError();
   }
   input.assertCurrent();
