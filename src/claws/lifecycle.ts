@@ -9,7 +9,6 @@ import { resolveUserPath } from "../utils.js";
 import {
   clawAddCapabilityChange,
   clawAgentCapabilityChange,
-  clawAgentConfigurationNotices,
   findClawExtensionPackageCollisions,
   planClawExtensions,
 } from "./application-plan.js";
@@ -630,11 +629,6 @@ export async function buildClawAddPlan(params: {
     `${left.kind}:${left.id}:${left.path}`.localeCompare(`${right.kind}:${right.id}:${right.path}`),
   );
 
-  const notices = clawAgentConfigurationNotices(
-    openClawAgentSettings,
-    context.config ?? {},
-    new Set([...existingAgentIds, finalId]),
-  );
   const planIntegrity = digestClawValue({
     manifestSchemaVersion: params.manifest.schemaVersion,
     clawIntegrity: source.integrity,
@@ -644,7 +638,6 @@ export async function buildClawAddPlan(params: {
     capabilityChanges,
     blockers,
     extensions,
-    ...(notices.length > 0 ? { notices } : {}),
   });
 
   return {
@@ -684,6 +677,6 @@ export async function buildClawAddPlan(params: {
     },
     extensions,
     blockers,
-    diagnostics: [...(params.diagnostics ?? []), ...notices],
+    diagnostics: params.diagnostics ?? [],
   };
 }
