@@ -28,6 +28,7 @@ import {
   type ClawAddStateOptions,
 } from "./add-state-write.js";
 import { packageFromAction, type PlannedClawPackage } from "./package-plan-action.js";
+import { bindClawPluginBeforeCommit } from "./package-plugin-before-commit.js";
 import {
   findResumableIntroducedPluginRequirement,
   ownerInstallIsNewerThanRefs,
@@ -133,6 +134,7 @@ type InstallClawPackagesOptions = ClawPluginRuntimeOptions &
     skillConsent?: ClawSkillInstallConsent;
     deps?: PackageInstallerDeps;
     pluginInstallMode?: "install" | "update";
+    assertPluginOwnerCurrent?: () => Promise<void>;
     nowMs?: number;
     onExternalMutation?: (pkg: ClawPackage) => void;
     skillUpgrade?: {
@@ -538,10 +540,7 @@ async function installClawPackagesUnlocked(
         },
         env: options.env,
         beforePersistentApply: assertForwardCurrent,
-        beforePersistentEffect: () => {
-          assertForwardCurrent();
-          options.onExternalMutation?.(pkg);
-        },
+        beforePersistentEffect: bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent),
         logger: createPluginInstallLogger(runtime),
         confirmInstall: pluginConsent.confirmInstall,
         onCapabilityConsent: async (review) => {
