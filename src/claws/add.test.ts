@@ -43,8 +43,10 @@ describe("Claw add lifecycle", () => {
         entries: { researcher: {} },
       },
     };
-    const commitConfig = async (transform: (current: OpenClawConfig) => OpenClawConfig) => {
-      config = transform(config);
+    const commitConfig = async (
+      transform: (current: OpenClawConfig, runtime: OpenClawConfig) => OpenClawConfig,
+    ) => {
+      config = transform(config, config);
     };
     await applyClawAddPlan(initial, {
       env,

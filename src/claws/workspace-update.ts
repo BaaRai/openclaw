@@ -67,6 +67,11 @@ export async function applyClawWorkspaceUpdate(
   const targetActions = clawWorkspaceActionsById(targetAddPlan.actions);
   const undo: Array<() => Promise<void>> = [];
   const appliedPaths: string[] = [];
+  const assertForwardCurrent = () => {
+    options.assertCurrent?.();
+    options.assertForwardCurrent?.();
+  };
+  const forwardOptions = { ...options, assertCurrent: assertForwardCurrent };
 
   const rollback = async () => {
     const failures = await collectClawRollbackFailures(undo.toReversed());
@@ -109,11 +114,19 @@ export async function applyClawWorkspaceUpdate(
       }
 
       if (action.action === "remove") {
+        assertForwardCurrent();
         undo.push(async () => {
-          if (await workspace.exists(path)) {
-            throw new Error(`Workspace file ${JSON.stringify(path)} appeared before rollback.`);
+          const currentContent = (await workspace.exists(path))
+            ? await workspace.readBytes(path, { maxBytes: MAX_UPDATE_FILE_BYTES })
+            : undefined;
+          if (
+            currentContent &&
+            (!previousContent ||
+              digestClawBytes(currentContent) !== digestClawBytes(previousContent))
+          ) {
+            throw new Error(`Workspace file ${JSON.stringify(path)} changed before rollback.`);
           }
-          if (previousContent) {
+          if (!currentContent && previousContent) {
             await workspace.write(path, previousContent, {
               mkdir: true,
               overwrite: true,
@@ -125,9 +138,9 @@ export async function applyClawWorkspaceUpdate(
           }
         });
         if (existed) {
-          await workspace.remove(path, { assertBeforeMutation: options.assertCurrent });
+          await workspace.remove(path, { assertBeforeMutation: assertForwardCurrent });
         }
-        await deleteClawWorkspaceFileForUpdate(updatePlan.agentId, path, options);
+        await deleteClawWorkspaceFileForUpdate(updatePlan.agentId, path, forwardOptions);
         appliedPaths.push(path);
         continue;
       }
@@ -161,23 +174,24 @@ export async function applyClawWorkspaceUpdate(
         createdAtMs: previousRef?.createdAtMs ?? nowMs,
         updatedAtMs: nowMs,
       };
+      assertForwardCurrent();
       undo.push(async () => {
-        if (!(await workspace.exists(path))) {
-          throw new Error(`Workspace file ${JSON.stringify(path)} disappeared before rollback.`);
-        }
-        const currentContent = await workspace.readBytes(path, {
-          maxBytes: MAX_UPDATE_FILE_BYTES,
-        });
-        if (digestClawBytes(currentContent) !== target.digest) {
+        const currentContent = (await workspace.exists(path))
+          ? await workspace.readBytes(path, { maxBytes: MAX_UPDATE_FILE_BYTES })
+          : undefined;
+        const unchanged = previousContent
+          ? currentContent && digestClawBytes(currentContent) === digestClawBytes(previousContent)
+          : !currentContent;
+        if (!unchanged && (!currentContent || digestClawBytes(currentContent) !== target.digest)) {
           throw new Error(`Workspace file ${JSON.stringify(path)} changed before rollback.`);
         }
-        if (previousContent) {
+        if (!unchanged && previousContent) {
           await workspace.write(path, previousContent, {
             mkdir: true,
             overwrite: true,
             assertBeforeMutation: options.assertCurrent,
           });
-        } else if (await workspace.exists(path)) {
+        } else if (!unchanged && currentContent) {
           await workspace.remove(path, { assertBeforeMutation: options.assertCurrent });
         }
         if (previousRef) {
@@ -189,9 +203,9 @@ export async function applyClawWorkspaceUpdate(
       await workspace.write(path, content, {
         mkdir: true,
         overwrite: existed,
-        assertBeforeMutation: options.assertCurrent,
+        assertBeforeMutation: assertForwardCurrent,
       });
-      await upsertClawWorkspaceFileForUpdate(record, options);
+      await upsertClawWorkspaceFileForUpdate(record, forwardOptions);
       appliedPaths.push(path);
     }
   } catch (error) {
