@@ -82,6 +82,7 @@ export class AgentClawPanel extends OpenClawLightDomElement {
   private pendingRemove: PendingRemove | null = null;
   private pendingUpdate: {
     agentId: string;
+    packageName: string;
     version: string;
     gatewayUrl: string;
     readiness?: ClawUpdatePlan["readiness"];
@@ -536,7 +537,11 @@ export class AgentClawPanel extends OpenClawLightDomElement {
         return;
       }
       this.record = record;
-      if (record?.version !== pending.version) {
+      if (
+        record?.name !== pending.packageName ||
+        record.sourceKind !== "package" ||
+        record.version !== pending.version
+      ) {
         return;
       }
       this.updateResult = {
@@ -594,6 +599,7 @@ export class AgentClawPanel extends OpenClawLightDomElement {
     };
     this.pendingUpdate = {
       agentId: record.agentId,
+      packageName: detail.packageName,
       version: detail.version,
       gatewayUrl: this.context.gateway.connection.gatewayUrl,
       readiness: plan.readiness,

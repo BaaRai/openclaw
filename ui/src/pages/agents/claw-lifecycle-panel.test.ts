@@ -176,6 +176,7 @@ function mount(
     updateApplyError?: boolean;
     updateRejectedOnce?: boolean;
     updateAppliedBeforeError?: boolean;
+    updateAppliedRecord?: Partial<ClawStatusRecord>;
     updateApplyResult?: { agentId: string; status: string; readiness: { ready: boolean } };
   } = {},
 ) {
@@ -237,7 +238,12 @@ function mount(
       }
       if (options.updateApplyError) {
         if (options.updateAppliedBeforeError && record) {
-          record = { ...record, version: latestVersion, updatedAtMs: 3_000 };
+          record = {
+            ...record,
+            version: latestVersion,
+            ...options.updateAppliedRecord,
+            updatedAtMs: 3_000,
+          };
         }
         throw new Error("Gateway reply timed out");
       }
@@ -954,6 +960,30 @@ describe("Agent Claw lifecycle", () => {
     panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.click();
     await vi.waitFor(() => expect(panel.textContent).toContain("Claw updated"));
     expect(panel.textContent).not.toContain("Update outcome unknown");
+    expect(request.mock.calls.filter(([method]) => method === "claws.update.apply")).toHaveLength(
+      1,
+    );
+  });
+
+  it("keeps an ambiguous Update unknown when status belongs to another Claw", async () => {
+    const { panel, request } = mount({
+      clawsEnabled: true,
+      updateApplyError: true,
+      updateAppliedBeforeError: true,
+      updateAppliedRecord: { name: "@openclaw/other-claw" },
+    });
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.click();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.disabled).toBe(
+        false,
+      ),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.click();
+    await vi.waitFor(() => expect(panel.textContent).toContain("Update outcome unknown"));
+    expect(panel.textContent).not.toContain("Claw updated");
     expect(request.mock.calls.filter(([method]) => method === "claws.update.apply")).toHaveLength(
       1,
     );

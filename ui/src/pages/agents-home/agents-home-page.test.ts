@@ -174,7 +174,14 @@ function createPage(
     };
     applyError?: boolean;
     applyRejectedOnce?: boolean;
-    statusRecord?: { agentId: string; version: string; status: string; agentState?: string };
+    statusRecord?: {
+      agentId: string;
+      version: string;
+      status: string;
+      agentState?: string;
+      name?: string;
+      sourceKind?: "package" | "development";
+    };
     newAgentVisible?: boolean;
     pluginRiskWarning?: string;
     skillRiskWarning?: string;
@@ -388,11 +395,18 @@ function createPage(
         throw new Error("Status unavailable");
       }
       const addedRecord = options.statusRecord
-        ? { agentState: "present", ...options.statusRecord }
+        ? {
+            name: "@openclaw/workflow-operator",
+            sourceKind: "package",
+            agentState: "present",
+            ...options.statusRecord,
+          }
         : addedAgent
           ? {
               agentId: "workflow-operator",
+              name: "@openclaw/workflow-operator",
               version: "1.2.0",
+              sourceKind: "package",
               status: options.applyResult?.status ?? "complete",
               agentState: "present",
             }
@@ -1157,6 +1171,35 @@ describe("AgentsHomePage", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("keeps an ambiguous Add unknown when status belongs to another Claw", async () => {
+    const { page, request, navigate } = createPage({
+      clawsEnabled: true,
+      applyError: true,
+      statusRecord: {
+        agentId: "workflow-operator",
+        name: "@openclaw/other-claw",
+        version: "1.2.0",
+        status: "complete",
+      },
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("claws.status", { target: "workflow-operator" }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        page.querySelector(".claws-catalog__review .callout.warn button")?.textContent?.trim(),
+      ).toBe("Check status"),
+    );
+    expect(page.textContent).toContain("Add outcome unknown");
+    expect(page.textContent).not.toContain("Claw added");
+    expect(request.mock.calls.filter(([method]) => method === "claws.add.apply")).toHaveLength(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("opens an installed Claw's home chat after Add when it needs setup", async () => {
     const { page, request, navigate, agentSelection, gateway } = createPage({
       clawsEnabled: true,
@@ -1210,6 +1253,11 @@ describe("AgentsHomePage", () => {
     [
       "the status record is stale",
       { statusRecord: { ...confirmedStatus, version: "1.1.0", agentState: "present" } },
+      "Claw added",
+    ],
+    [
+      "the status belongs to another Claw",
+      { statusRecord: { ...confirmedStatus, name: "@openclaw/other-claw" } },
       "Claw added",
     ],
   ];
