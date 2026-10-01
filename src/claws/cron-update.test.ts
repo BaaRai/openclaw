@@ -87,8 +87,9 @@ describe("applyClawCronUpdate", () => {
   ])(
     "refuses to $action unsupported cron provenance before scheduler access",
     async ({ action, job }) => {
+      const schedulerJobId = `scheduler-${job.id}`;
       const previous = {
-        ...ref(job, `scheduler-${job.id}`),
+        ...ref(job, schedulerJobId),
         schemaVersion: "openclaw.clawCronRef.v2",
       };
       const get = vi.fn(async () => cronReadView("worker", previous));
@@ -103,7 +104,7 @@ describe("applyClawCronUpdate", () => {
               kind: "cronJob",
               id: job.id,
               action,
-              target: previous.schedulerJobId,
+              target: schedulerJobId,
               blocked: false,
               reason: "reviewed earlier",
             },
