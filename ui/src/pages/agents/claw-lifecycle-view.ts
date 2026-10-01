@@ -23,6 +23,7 @@ import {
   renderClawSkillReviews,
 } from "../agents-home/claws-skill-review.ts";
 import "../../styles/claw-lifecycle.css";
+import "../../styles/settings.css";
 import type {
   ClawLifecyclePlan,
   ClawRemoveResult,
@@ -97,11 +98,13 @@ function renderResult(props: AgentClawPanelProps) {
       </button>
     </div>`;
   }
-  if (
-    !props.removeResult ||
-    (props.removeResult.status === "complete" && props.removeResult.agentRemoved)
-  ) {
+  if (!props.removeResult) {
     return nothing;
+  }
+  if (props.removeResult.status === "complete") {
+    return html`<div class="callout success" role="status">
+      <strong>${t("clawsLifecycle.removed")}</strong>
+    </div>`;
   }
   return html`<div class="callout warn" role="status">
     <strong>${t("clawsLifecycle.incomplete")}</strong>

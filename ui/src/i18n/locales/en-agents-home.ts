@@ -23,6 +23,8 @@ const enAgentsHome = {
     disconnected: "Connect to the Gateway to see your agents.",
     loadFailed: "Could not load agents. Try again.",
     empty: "Your team starts here. Add an agent to get started.",
+    clawsAttention: "Claws needing attention",
+    inspectClaw: "Inspect",
   },
   clawsCatalog: {
     explore: "Explore Claws",
@@ -226,6 +228,7 @@ const enAgentsHome = {
     close: "Close",
     confirmRemove: "Remove Claw",
     removing: "Removing...",
+    removed: "Claw removed",
     outcomeUnknown: "Removal outcome unknown",
     checkBeforeRetry: "Check Claw status before trying another removal.",
     checkStatus: "Check status",

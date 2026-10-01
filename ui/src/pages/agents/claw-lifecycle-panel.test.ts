@@ -167,6 +167,8 @@ function mount(
     record?: ClawStatusRecord | null;
     plan?: ClawLifecyclePlan;
     applyError?: boolean;
+    removeAppliedBeforeError?: boolean;
+    agentStillInRoster?: boolean;
     removeRejectedOnce?: boolean;
     applyResult?: { agentId: string; status: "complete" | "partial"; agentRemoved: boolean };
     latestVersion?: string;
@@ -262,6 +264,9 @@ function mount(
         });
       }
       if (options.applyError) {
+        if (options.removeAppliedBeforeError) {
+          record = null;
+        }
         throw new Error("Gateway reply timed out");
       }
       const result = options.applyResult ?? {
@@ -301,7 +306,7 @@ function mount(
   });
   const navigate = vi.fn<ApplicationContext["navigate"]>();
   const refreshList = vi.fn(async () => ({
-    agents: record ? [{ id: "workflow" }] : [],
+    agents: record || options.agentStillInRoster ? [{ id: "workflow" }] : [],
     defaultId: "main",
     mainKey: "main",
   }));
@@ -517,6 +522,28 @@ describe("Agent Claw lifecycle", () => {
       1,
     );
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps a timed-out removal unknown when status vanished but the agent remains", async () => {
+    const { panel, request, navigate } = mount({
+      applyError: true,
+      removeAppliedBeforeError: true,
+      agentStillInRoster: true,
+    });
+    await vi.waitFor(() => expect(panel.textContent).toContain(installed.name));
+    panel.querySelector<HTMLButtonElement>(".settings-row .btn.danger")?.click();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-remove-confirm]")?.disabled).toBe(
+        false,
+      ),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-remove-confirm]")?.click();
+
+    await vi.waitFor(() => expect(panel.textContent).toContain("Removal outcome unknown"));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([method]) => method === "claws.remove.apply")).toHaveLength(
+      1,
+    );
   });
 
   it("replans after a definite Remove rejection without status reconciliation", async () => {
