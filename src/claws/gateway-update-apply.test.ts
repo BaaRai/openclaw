@@ -348,6 +348,14 @@ describe("Gateway Claw Update application", () => {
           allowConversationAccess: { effective: false },
         },
       },
+      capabilityGrantsByPluginId: {
+        "workflow-operator": {
+          hooks: {
+            allowPromptInjection: { effective: false },
+            allowConversationAccess: { effective: false },
+          },
+        },
+      },
       reviewToken: "sha256:plugin-review",
     };
     const acknowledgement = {
@@ -355,6 +363,7 @@ describe("Gateway Claw Update application", () => {
       pluginId: review.pluginId,
       reviewToken: review.reviewToken,
       capabilityGrants: review.capabilityGrants,
+      capabilityGrantsByPluginId: review.capabilityGrantsByPluginId,
     };
     const pluginConsent = {
       confirmInstall: vi.fn(async () => true),

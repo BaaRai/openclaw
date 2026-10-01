@@ -184,6 +184,14 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
                   allowConversationAccess: { effective: true },
                 },
               },
+              capabilityGrantsByPluginId: {
+                "workflow-tools": {
+                  hooks: {
+                    allowPromptInjection: { effective: false },
+                    allowConversationAccess: { effective: true },
+                  },
+                },
+              },
               reviewToken: "review-workflow-tools",
             },
           ],

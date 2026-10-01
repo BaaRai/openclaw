@@ -86,6 +86,14 @@ const workflowPluginReview: ClawPluginReview = {
       allowConversationAccess: { effective: true, configured: true },
     },
   },
+  capabilityGrantsByPluginId: {
+    "workflow-tools": {
+      hooks: {
+        allowPromptInjection: { effective: false },
+        allowConversationAccess: { effective: true, configured: true },
+      },
+    },
+  },
   reviewToken: "review-workflow-tools",
 };
 
@@ -971,6 +979,7 @@ describe("AgentsHomePage", () => {
             pluginId: "workflow-tools",
             reviewToken: "review-workflow-tools",
             capabilityGrants: workflowPluginReview.capabilityGrants,
+            capabilityGrantsByPluginId: workflowPluginReview.capabilityGrantsByPluginId,
           },
         ],
       }),

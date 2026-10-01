@@ -14,6 +14,7 @@ export type ClawPluginReview = {
   integrity: string;
   declaredCapabilities: PluginAcceptedDeclaredSurface;
   capabilityGrants: PluginOperatorGrants;
+  capabilityGrantsByPluginId: Record<string, PluginOperatorGrants>;
   reviewToken: string;
   riskWarning?: string;
 };
@@ -23,6 +24,7 @@ export type ClawPluginAcknowledgement = {
   pluginId: string;
   reviewToken: string;
   capabilityGrants: PluginOperatorGrants;
+  capabilityGrantsByPluginId: Record<string, PluginOperatorGrants>;
   acknowledgeRiskWarning?: true;
 };
 
@@ -56,6 +58,8 @@ export function pluginAcknowledgements(
       !review.reviewToken ||
       !review.declaredCapabilities ||
       !review.capabilityGrants ||
+      !review.capabilityGrantsByPluginId ||
+      Object.keys(review.capabilityGrantsByPluginId).length === 0 ||
       (review.riskWarning && !acceptedRiskWarnings.has(pluginReviewKey(review)))
     ) {
       return null;
@@ -65,6 +69,7 @@ export function pluginAcknowledgements(
       pluginId: review.pluginId,
       reviewToken: review.reviewToken,
       capabilityGrants: review.capabilityGrants,
+      capabilityGrantsByPluginId: review.capabilityGrantsByPluginId,
       ...(review.riskWarning ? { acknowledgeRiskWarning: true } : {}),
     });
   }
@@ -113,9 +118,9 @@ function renderGrant(label: string, allowed: boolean | undefined) {
       </div>`;
 }
 
-function renderGrants(grants: PluginOperatorGrants) {
+function renderGrants(pluginId: string, grants: PluginOperatorGrants) {
   return html`<div class="claws-plugin-review__group">
-    <h5>${t("clawsPluginReview.grants")}</h5>
+    <h5>${t("clawsPluginReview.grants")} · ${pluginId}</h5>
     <dl>
       ${renderGrant(
         t("clawsPluginReview.promptInjection"),
@@ -188,7 +193,9 @@ export function renderClawPluginReviews(params: {
           </div>
         </dl>
         ${renderDeclaredCapabilities(review.declaredCapabilities)}
-        ${renderGrants(review.capabilityGrants)}
+        ${Object.entries(review.capabilityGrantsByPluginId)
+          .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([pluginId, grants]) => renderGrants(pluginId, grants))}
         ${review.riskWarning ? renderClawTrustWarning(review.riskWarning) : nothing}
         ${
           review.ownerAction === "install" && review.riskWarning

@@ -19,6 +19,7 @@ import {
   resolveClawProfileCapabilities,
   resolveClawToolProfileSnapshot,
 } from "./tool-profile-consent.js";
+import type { ClawPluginCapabilityGrantsById } from "./types.js";
 
 type ClawUpdateCapabilityValue = {
   summary: string;
@@ -490,6 +491,7 @@ export function packageCapabilityChange(params: {
   riskWarning?: string;
   desiredDeclaredCapabilities?: PluginAcceptedDeclaredSurface;
   desiredCapabilityGrants?: PluginOperatorGrants;
+  desiredCapabilityGrantsByPluginId?: ClawPluginCapabilityGrantsById;
   currentExtension?: unknown;
   desiredExtension?: unknown;
 }): ClawUpdateCapabilityChange | undefined {
@@ -520,6 +522,9 @@ export function packageCapabilityChange(params: {
       ...(params.desiredCapabilityGrants
         ? { capabilityGrants: params.desiredCapabilityGrants }
         : {}),
+      ...(params.desiredCapabilityGrantsByPluginId
+        ? { capabilityGrantsByPluginId: params.desiredCapabilityGrantsByPluginId }
+        : {}),
       ...(params.desiredExtension ? { extension: params.desiredExtension } : {}),
     },
     ...(params.currentVersion
@@ -541,6 +546,7 @@ export function packageCapabilityChange(params: {
               version: params.desiredVersion,
               declaredCapabilities: params.desiredDeclaredCapabilities,
               capabilityGrants: params.desiredCapabilityGrants,
+              capabilityGrantsByPluginId: params.desiredCapabilityGrantsByPluginId,
               extension: params.desiredExtension,
             },
           ),

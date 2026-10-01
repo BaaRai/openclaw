@@ -432,6 +432,9 @@ async function installClawPackagesUnlocked(
         stableStringify(probe.declaredCapabilities) !== stableStringify(pkg.declaredCapabilities) ||
         !pkg.capabilityGrants ||
         stableStringify(probe.capabilityGrants) !== stableStringify(pkg.capabilityGrants) ||
+        !pkg.capabilityGrantsByPluginId ||
+        stableStringify(probe.capabilityGrantsByPluginId) !==
+          stableStringify(pkg.capabilityGrantsByPluginId) ||
         (plannedExtensionInspection &&
           stableStringify(probedExtensionInspection) !==
             stableStringify(plannedExtensionInspection))
@@ -519,6 +522,7 @@ async function installClawPackagesUnlocked(
       installedPackages.push(packageRef);
 
       assertForwardCurrent();
+      const beforePluginCommit = bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent);
       await installPlugin({
         request: {
           source: "clawhub",
@@ -530,7 +534,24 @@ async function installClawPackagesUnlocked(
         },
         env: options.env,
         beforePersistentApply: assertForwardCurrent,
-        beforePersistentEffect: bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent),
+        onBeforePluginArtifactCommit: (artifact, config) => {
+          const current = inspectClawPluginCapabilities(
+            artifact.stagedArtifactDir,
+            artifact.pluginId,
+            options.env,
+            config,
+            artifact.currentArtifactDir,
+          );
+          if (
+            stableStringify(current.grantsByPluginId) !==
+            stableStringify(pkg.capabilityGrantsByPluginId)
+          ) {
+            throw new Error(
+              `Plugin ${pkg.ref}@${pkg.version} effective capability grants changed after planning; run add --dry-run again.`,
+            );
+          }
+        },
+        beforePersistentEffect: beforePluginCommit,
         logger: createPluginInstallLogger(runtime),
         confirmInstall: async (warning) => {
           assertCurrent();

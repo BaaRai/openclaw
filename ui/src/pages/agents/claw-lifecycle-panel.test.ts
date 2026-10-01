@@ -68,6 +68,14 @@ const updatePluginReview = {
       allowConversationAccess: { effective: true },
     },
   },
+  capabilityGrantsByPluginId: {
+    "workflow-tools": {
+      hooks: {
+        allowPromptInjection: { effective: false },
+        allowConversationAccess: { effective: true },
+      },
+    },
+  },
   reviewToken: "review-workflow-tools-1.3.0",
 };
 
@@ -759,6 +767,7 @@ describe("Agent Claw lifecycle", () => {
             pluginId: "workflow-tools",
             reviewToken: "review-workflow-tools-1.3.0",
             capabilityGrants: updatePluginReview.capabilityGrants,
+            capabilityGrantsByPluginId: updatePluginReview.capabilityGrantsByPluginId,
           },
         ],
       }),

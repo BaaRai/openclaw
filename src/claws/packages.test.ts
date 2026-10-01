@@ -89,7 +89,10 @@ function withStagedInspection(probe: typeof installPluginFromClawHub) {
     return result;
   };
 }
-const inspectPluginCapabilities = vi.fn(() => emptyPluginCapabilityEvidence);
+const inspectPluginCapabilities = vi.fn((_rootDir: string, pluginId: string) => ({
+  ...emptyPluginCapabilityEvidence,
+  grantsByPluginId: { [pluginId]: emptyPluginCapabilityEvidence.grants },
+}));
 const pluginConsent = {
   onCapabilityConsent: vi.fn(async (review: { reviewToken: string }) => ({
     reviewToken: review.reviewToken,

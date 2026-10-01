@@ -287,6 +287,9 @@ export async function applyClawUpdatePlan(
               ...(preflight.capabilityGrants
                 ? { capabilityGrants: preflight.capabilityGrants }
                 : {}),
+              ...(preflight.capabilityGrantsByPluginId
+                ? { capabilityGrantsByPluginId: preflight.capabilityGrantsByPluginId }
+                : {}),
               ...(preflight.requirements ? { requirements: preflight.requirements } : {}),
               ...(preflight.detectedFormat ? { detectedFormat: preflight.detectedFormat } : {}),
               ...(preflight.mapped ? { mapped: preflight.mapped } : {}),
@@ -349,6 +352,7 @@ export async function applyClawUpdatePlan(
           prerequisites: details?.prerequisites,
           declaredCapabilities: details?.declaredCapabilities,
           capabilityGrants: details?.capabilityGrants,
+          capabilityGrantsByPluginId: details?.capabilityGrantsByPluginId,
           extension: details?.extension,
         })
     ) {
