@@ -474,14 +474,17 @@ export async function removeClawWorkspaceFile(
     }
     const stagedPath = `${record.path}.openclaw-claw-remove-${randomUUID()}`;
     assertCurrent();
-    await workspace.move(record.path, stagedPath, { overwrite: false });
+    await workspace.move(record.path, stagedPath, {
+      overwrite: false,
+      assertBeforeMutation: assertCurrent,
+    });
     let outcome: Result<void, unknown>;
     try {
       const content = await workspace.readBytes(stagedPath, { maxBytes });
       assertCurrent();
       const digest = digestClawBytes(content);
       if (digest === record.contentDigest) {
-        await workspace.remove(stagedPath);
+        await workspace.remove(stagedPath, { assertBeforeMutation: assertCurrent });
         return { path: record.path, action: "deleted" };
       }
       outcome = ok(undefined);
