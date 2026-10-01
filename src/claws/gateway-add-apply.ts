@@ -112,6 +112,7 @@ export async function applyClawAddForGateway(
             );
             if (
               currentProjection.planIntegrity !== input.planIntegrity ||
+              currentProjection.blockers.length > 0 ||
               currentPlan.blockers.length > 0 ||
               currentPlan.actions.some((action) => action.blocked)
             ) {
@@ -157,6 +158,7 @@ export async function applyClawAddForGateway(
             if (
               persistedProjection.planIntegrity !== input.planIntegrity ||
               !persistedProjection.configuredAccess?.desired ||
+              persistedProjection.blockers.length > 0 ||
               persistedPlan.blockers.length > 0 ||
               persistedPlan.actions.some((action) => action.blocked) ||
               !plansMatchAcrossSourceRoots({

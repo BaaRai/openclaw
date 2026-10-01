@@ -176,6 +176,33 @@ describe("Gateway Claw Add application", () => {
     expect(mocks.apply).not.toHaveBeenCalled();
   });
 
+  it.each(["current", "persisted"] as const)(
+    "rejects a projection-only blocker at the %s replan",
+    async (phase) => {
+      const blockedProjection: ClawLifecyclePlanResult = {
+        ...projected,
+        blockers: [
+          {
+            code: "effect_disclosure_unavailable",
+            path: "$.actions[0]",
+            message: "The Claw effect cannot be reviewed safely.",
+          },
+        ],
+      };
+      mocks.project
+        .mockReturnValueOnce(projected)
+        .mockReturnValueOnce(phase === "current" ? blockedProjection : projected)
+        .mockReturnValueOnce(phase === "persisted" ? blockedProjection : projected);
+
+      await expect(applyClawAddForGateway(applyInput())).rejects.toBeInstanceOf(
+        ClawGatewayPlanChangedError,
+      );
+      expect(plan.blockers).toEqual([]);
+      expect(mocks.persist).toHaveBeenCalledTimes(phase === "current" ? 0 : 1);
+      expect(mocks.apply).not.toHaveBeenCalled();
+    },
+  );
+
   it("checks full access before config commit and actual agent access afterward", async () => {
     await applyClawAddForGateway(applyInput());
     const options = mocks.apply.mock.calls[0]?.[1] as {
