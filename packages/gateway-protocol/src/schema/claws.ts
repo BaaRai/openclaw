@@ -189,6 +189,8 @@ const ClawConfiguredAccessSnapshotSchema = closedObject({
   tools: closedObject({
     allowed: Type.Array(NonEmptyString),
     excluded: Type.Array(NonEmptyString),
+    explicitAllow: Type.Array(NonEmptyString),
+    explicitDeny: Type.Array(NonEmptyString),
   }),
   sandbox: closedObject({
     mode: Type.Union([Type.Literal("off"), Type.Literal("non-main"), Type.Literal("all")]),
@@ -248,6 +250,12 @@ const ClawScheduledDeclarationSchema = closedObject({
   schedule: closedObject({ cron: NonEmptyString, timezone: NonEmptyString }),
   session: Type.Union([Type.Literal("main"), Type.Literal("isolated")]),
   delivery: Type.Union([Type.Literal("none"), Type.Literal("last-channel")]),
+  messageDigest: NonEmptyString,
+});
+
+const ClawProposedScheduledDeclarationSchema = closedObject({
+  ...ClawScheduledDeclarationSchema.properties,
+  message: NonEmptyString,
 });
 
 export const ClawScheduledJobsSchema = closedObject({
@@ -258,10 +266,64 @@ export const ClawScheduledJobsSchema = closedObject({
       action: NonEmptyString,
       blocked: Type.Boolean(),
       current: Type.Optional(ClawScheduledDeclarationSchema),
-      proposed: Type.Optional(ClawScheduledDeclarationSchema),
+      proposed: Type.Optional(ClawProposedScheduledDeclarationSchema),
     }),
   ),
 });
+
+const ClawOwnershipEffectSchema = closedObject({
+  relationship: Type.Union([Type.Literal("managed"), Type.Literal("referenced")]),
+  origin: Type.Union([Type.Literal("claw-introduced"), Type.Literal("pre-existing")]),
+  independentOwner: Type.Boolean(),
+  affectedClawCount: Type.Integer({ minimum: 0 }),
+});
+
+const ClawMcpDeclarationSchema = closedObject({
+  transport: Type.Union([
+    Type.Literal("stdio"),
+    Type.Literal("sse"),
+    Type.Literal("streamable-http"),
+  ]),
+  command: Type.Optional(NonEmptyString),
+  arguments: Type.Optional(Type.Array(NonEmptyString)),
+  url: Type.Optional(NonEmptyString),
+  urlDigest: Type.Optional(NonEmptyString),
+  queryParameterNames: Type.Optional(Type.Array(NonEmptyString)),
+  environment: Type.Optional(
+    Type.Array(closedObject({ name: NonEmptyString, sourceName: NonEmptyString })),
+  ),
+  authentication: Type.Union([Type.Literal("none"), Type.Literal("oauth")]),
+  toolFilter: Type.Optional(
+    closedObject({
+      include: Type.Optional(Type.Array(NonEmptyString)),
+      exclude: Type.Optional(Type.Array(NonEmptyString)),
+    }),
+  ),
+  timeout: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+  connectTimeout: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+});
+
+export const ClawActionEffectSchema = Type.Union([
+  closedObject({
+    type: Type.Literal("workspace-file"),
+    destination: NonEmptyString,
+    source: Type.Optional(NonEmptyString),
+    currentDigest: Type.Optional(NonEmptyString),
+    desiredDigest: Type.Optional(NonEmptyString),
+    currentPresent: Type.Optional(Type.Boolean()),
+  }),
+  closedObject({
+    type: Type.Literal("mcp-server"),
+    currentDigest: Type.Optional(NonEmptyString),
+    desiredDigest: Type.Optional(NonEmptyString),
+    proposed: Type.Optional(ClawMcpDeclarationSchema),
+    ownership: Type.Optional(ClawOwnershipEffectSchema),
+  }),
+  closedObject({
+    type: Type.Literal("ownership"),
+    ...ClawOwnershipEffectSchema.properties,
+  }),
+]);
 
 export const ClawLifecyclePlanResultSchema = closedObject({
   schemaVersion: Type.Literal("openclaw.clawsGatewayPlan.v1"),
@@ -280,6 +342,7 @@ export const ClawLifecyclePlanResultSchema = closedObject({
       action: NonEmptyString,
       blocked: Type.Boolean(),
       reason: Type.Optional(NonEmptyString),
+      effect: Type.Optional(ClawActionEffectSchema),
     }),
   ),
   capabilities: Type.Array(
@@ -341,4 +404,5 @@ export type ClawSkillReview = Static<typeof ClawSkillReviewSchema>;
 export type ClawSkillAcknowledgement = Static<typeof ClawSkillAcknowledgementSchema>;
 export type ClawConfiguredAccess = Static<typeof ClawConfiguredAccessSchema>;
 export type ClawScheduledJobs = Static<typeof ClawScheduledJobsSchema>;
+export type ClawActionEffect = Static<typeof ClawActionEffectSchema>;
 export type ClawLifecyclePlanResult = Static<typeof ClawLifecyclePlanResultSchema>;

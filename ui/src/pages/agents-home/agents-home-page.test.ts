@@ -90,7 +90,12 @@ const workflowPluginReview: ClawPluginReview = {
 const reviewedAccess = {
   coverage: "configuration-only",
   desired: {
-    tools: { allowed: ["read", "sessions_spawn"], excluded: ["exec"] },
+    tools: {
+      allowed: ["read", "sessions_spawn"],
+      excluded: ["exec"],
+      explicitAllow: ["read", "sessions_spawn"],
+      explicitDeny: [],
+    },
     sandbox: { mode: "all", scope: "agent", workspaceAccess: "ro", backend: "docker" },
     filesystem: { workspaceOnly: true },
     heartbeat: { enabled: false, intervalMs: null },

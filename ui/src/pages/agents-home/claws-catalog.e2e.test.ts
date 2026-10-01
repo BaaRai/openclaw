@@ -111,6 +111,18 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
               details: ["Creates a dedicated workspace"],
             },
             {
+              kind: "workspaceFile",
+              id: "SOUL.md",
+              action: "write",
+              blocked: false,
+              effect: {
+                type: "workspace-file",
+                destination: "workspace/SOUL.md",
+                source: "package/SOUL.md",
+                desiredDigest: "sha256:starter-soul",
+              },
+            },
+            {
               kind: "plugin",
               id: "workflow-tools",
               action: "install",
@@ -164,7 +176,12 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
           configuredAccess: {
             coverage: "configuration-only",
             desired: {
-              tools: { allowed: ["read", "workflow.start"], excluded: ["exec"] },
+              tools: {
+                allowed: ["read", "workflow.start"],
+                excluded: ["exec"],
+                explicitAllow: ["read", "workflow.start"],
+                explicitDeny: [],
+              },
               sandbox: {
                 mode: "non-main",
                 scope: "agent",
@@ -215,6 +232,8 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
       expect(await dialog.locator(".claws-catalog__list").count()).toBe(0);
       await dialog.getByText("Configured access", { exact: true }).waitFor();
       await dialog.getByText("workflow.start", { exact: true }).waitFor();
+      await dialog.getByText("workspace/SOUL.md", { exact: true }).waitFor();
+      await dialog.getByText("sha256:starter-soul", { exact: true }).waitFor();
       await dialog.getByText(pluginIntegrity, { exact: true }).waitFor();
       await dialog.getByText("Install actions", { exact: true }).waitFor();
       expect(
