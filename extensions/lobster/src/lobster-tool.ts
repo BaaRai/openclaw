@@ -1,3 +1,4 @@
+import { resolveExecApprovalCommandDisplay } from "openclaw/plugin-sdk/approval-runtime";
 import { optionalPositiveIntegerSchema } from "openclaw/plugin-sdk/channel-actions";
 import { readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import type {
@@ -24,6 +25,19 @@ const MAX_APPROVAL_PROMPT_LENGTH = 512;
 const MAX_APPROVAL_DETAIL_LENGTH = 16_384;
 
 type OperatorApprovalDecision = { decision: "allow-once" | "allow-always" | "deny" | null };
+
+function approvalDetailExceedsReviewLimit(detail: string): boolean {
+  if (Array.from(detail).length > MAX_APPROVAL_DETAIL_LENGTH) {
+    return true;
+  }
+  // The exec display escapes normalized line breaks, so it is at least as long
+  // as the Gateway's warning-style detail after the same redaction.
+  const normalized = detail.replace(/\r\n?/g, "\n").replace(/[\u2028\u2029]/g, "\n");
+  return (
+    resolveExecApprovalCommandDisplay({ command: normalized }).commandText.length >
+    MAX_APPROVAL_DETAIL_LENGTH
+  );
+}
 
 export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolOptions) {
   const runner = options?.runner ?? createEmbeddedLobsterRunner();
@@ -113,7 +127,7 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
         const sizeError =
           Array.from(checkpoint.prompt).length > MAX_APPROVAL_PROMPT_LENGTH
             ? "Lobster approval prompt exceeds the Gateway's 512-character review limit; shorten the approval prompt and rerun the workflow"
-            : Array.from(detail).length > MAX_APPROVAL_DETAIL_LENGTH
+            : approvalDetailExceedsReviewLimit(detail)
               ? "Lobster approval preview exceeds the Gateway's 16,384-character review limit; reduce the approval items and rerun the workflow"
               : null;
         if (sizeError) {

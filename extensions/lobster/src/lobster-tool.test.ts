@@ -291,13 +291,29 @@ describe("lobster plugin tool", () => {
       field: "prompt",
       prompt: "p".repeat(513),
       items: [],
-      error: "Lobster approval prompt exceeds the Gateway's 512-character review limit",
+      error:
+        "Lobster approval prompt exceeds the Gateway's 512-character review limit; shorten the approval prompt and rerun the workflow",
     },
     {
       field: "preview",
       prompt: "Publish?",
       items: ["x".repeat(16_381)],
-      error: "Lobster approval preview exceeds the Gateway's 16,384-character review limit",
+      error:
+        "Lobster approval preview exceeds the Gateway's 16,384-character review limit; reduce the approval items and rerun the workflow",
+    },
+    {
+      field: "preview with 9,000 emoji",
+      prompt: "Publish?",
+      items: ["\u{1F600}".repeat(9_000)],
+      error:
+        "Lobster approval preview exceeds the Gateway's 16,384-character review limit; reduce the approval items and rerun the workflow",
+    },
+    {
+      field: "preview with 3,000 zero-width characters",
+      prompt: "Publish?",
+      items: ["\u200B".repeat(3_000)],
+      error:
+        "Lobster approval preview exceeds the Gateway's 16,384-character review limit; reduce the approval items and rerun the workflow",
     },
   ])(
     "denies an oversized approval $field with an actionable error",
@@ -331,7 +347,7 @@ describe("lobster plugin tool", () => {
 
       await expect(
         tool.execute("oversized-approval", { action: "run", pipeline: "publish" }),
-      ).rejects.toThrow(error);
+      ).rejects.toMatchObject({ message: error });
       expect(request).not.toHaveBeenCalled();
       expect(runner.run).toHaveBeenNthCalledWith(
         2,
