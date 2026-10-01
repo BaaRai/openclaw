@@ -14,6 +14,7 @@ import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/c
 import { i18n } from "../../i18n/index.ts";
 import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { createAgentCapability } from "../../lib/agents/index.ts";
+import { invalidateConfigConnection } from "../../lib/config/config-state-model.ts";
 import { createSessionCapability } from "../../lib/sessions/index.ts";
 import { createContext } from "../../test-helpers/app-sidebar.ts";
 import {
@@ -529,6 +530,12 @@ function createPage(
         listener();
       }
     },
+    markConfigStale: () => {
+      invalidateConfigConnection(runtimeConfig.state);
+      for (const listener of runtimeConfigListeners) {
+        listener();
+      }
+    },
   };
 }
 
@@ -828,6 +835,19 @@ describe("AgentsHomePage", () => {
     setClawsEnabled(true);
     await vi.waitFor(() => expect(page.querySelectorAll("[data-claws-entry]")).toHaveLength(1));
     expect(page.querySelector("openclaw-claws-catalog-dialog")).toBeNull();
+  });
+
+  it("hides Explore and closes its review while the Labs config belongs to a prior Gateway", async () => {
+    const { page, markConfigStale } = createPage({ clawsEnabled: true });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
+
+    markConfigStale();
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-explore]")).toBeNull());
+    expect(page.querySelector("[data-claws-open-catalog]")).toBeNull();
+    expect(page.querySelector("[data-claws-confirm]")).toBeNull();
+    expect(page.querySelectorAll(".agents-home__card")).toHaveLength(2);
   });
 
   it("opens the searchable catalog from the header and keeps the installed roster", async () => {

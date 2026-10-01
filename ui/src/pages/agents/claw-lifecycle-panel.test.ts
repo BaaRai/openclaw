@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
+import { invalidateConfigConnection } from "../../lib/config/config-state-model.ts";
 import {
   createApplicationContextProvider,
   createApplicationGateway,
@@ -351,6 +352,12 @@ function mount(
       clawsEnabled = enabled;
       runtimeConfig.state.configSnapshot.sourceConfig.gateway.controlUi.experimental.claws =
         enabled;
+      for (const listener of runtimeConfigListeners) {
+        listener();
+      }
+    },
+    markConfigStale: () => {
+      invalidateConfigConnection(runtimeConfig.state);
       for (const listener of runtimeConfigListeners) {
         listener();
       }
@@ -918,6 +925,32 @@ describe("Agent Claw lifecycle", () => {
     expect(official.request.mock.calls.some(([method]) => method === "claws.update.apply")).toBe(
       false,
     );
+  });
+
+  it("hides Update while the Labs config belongs to a prior Gateway", async () => {
+    const { panel, request, markConfigStale } = mount({ clawsEnabled: true });
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.click();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.disabled).toBe(
+        false,
+      ),
+    );
+
+    markConfigStale();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.disabled).toBe(
+        true,
+      ),
+    );
+    panel.querySelector<HTMLButtonElement>(".claw-lifecycle-dialog__footer .btn")?.click();
+    await vi.waitFor(() => expect(panel.querySelector("[data-claw-update]")).toBeNull());
+    expect(panel.querySelector<HTMLButtonElement>(".settings-row .btn.danger")?.disabled).toBe(
+      false,
+    );
+    expect(request.mock.calls.some(([method]) => method === "claws.update.apply")).toBe(false);
   });
 
   it("keeps an ambiguous Update pending and never sends another apply", async () => {
