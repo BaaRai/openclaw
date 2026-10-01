@@ -13,6 +13,7 @@ const planClawAddForGateway = vi.hoisted(() => vi.fn());
 const applyClawAddForGateway = vi.hoisted(() => vi.fn());
 const listConfiguredMcpServers = vi.hoisted(() => vi.fn());
 const assertValidCronCreateDelivery = vi.hoisted(() => vi.fn());
+const reloadManagedPlugin = vi.hoisted(() => vi.fn());
 vi.mock("../../claws/gateway-add-plan.js", () => ({ planClawAddForGateway }));
 vi.mock("../../claws/gateway-add-apply.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../claws/gateway-add-apply.js")>()),
@@ -20,6 +21,10 @@ vi.mock("../../claws/gateway-add-apply.js", async (importOriginal) => ({
 }));
 vi.mock("../../config/mcp-config.js", () => ({ listConfiguredMcpServers }));
 vi.mock("../../cron/delivery-channel-validation.js", () => ({ assertValidCronCreateDelivery }));
+vi.mock("../../plugins/management-mutations.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugins/management-mutations.js")>()),
+  reloadManagedPlugin,
+}));
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -47,7 +52,12 @@ function callAddPlan(params: Record<string, unknown>, getRuntimeConfig: () => un
 function callAddApply(
   params: Record<string, unknown>,
   getRuntimeConfig: () => unknown,
-  options: { hasCurrentClientAuthority?: () => boolean; client?: unknown; cron?: unknown } = {},
+  options: {
+    hasCurrentClientAuthority?: () => boolean;
+    client?: unknown;
+    cron?: unknown;
+    applyPluginLifecycleChange?: unknown;
+  } = {},
 ) {
   const replies: Parameters<RespondFn>[] = [];
   return {
@@ -63,6 +73,9 @@ function callAddApply(
         context: {
           getRuntimeConfig,
           cron: options.cron ?? { add: vi.fn(), list: vi.fn() },
+          ...(options.applyPluginLifecycleChange
+            ? { applyPluginLifecycleChange: options.applyPluginLifecycleChange }
+            : {}),
         } as never,
         client:
           options.client === undefined
@@ -309,6 +322,68 @@ describe("claws.add.apply Gateway method", () => {
     await request.run();
 
     expect(cron.add).toHaveBeenCalledOnce();
+    expect(request.replies[0]?.[2]).toMatchObject({ code: "UNAVAILABLE" });
+  });
+
+  it("rechecks reviewed access at the scheduler's actual Add commit", async () => {
+    let accessCurrent = true;
+    const persisted = vi.fn();
+    const cron = {
+      list: vi.fn().mockResolvedValue([]),
+      add: vi.fn(async (_input, options) => {
+        accessCurrent = false;
+        options.commitGuard();
+        persisted();
+        return { id: "new-job" };
+      }),
+    };
+    assertValidCronCreateDelivery.mockResolvedValue(undefined);
+    applyClawAddForGateway.mockImplementation(async (input) => {
+      await input.cronGateway.add(schedule, {
+        commitGuard: () => {
+          if (!accessCurrent) {
+            throw new Error("Reviewed Claw access changed before cron commit.");
+          }
+        },
+      });
+      return { agentId: "workflow-operator", status: "complete" };
+    });
+
+    const request = callAddApply(params, () => enabled, { cron });
+    await request.run();
+
+    expect(cron.add).toHaveBeenCalledOnce();
+    expect(persisted).not.toHaveBeenCalled();
+    expect(request.replies[0]?.[2]).toMatchObject({ code: "UNAVAILABLE" });
+  });
+
+  it("rechecks reviewed access at the plugin reload's persistent apply", async () => {
+    let accessCurrent = true;
+    const applied = vi.fn();
+    reloadManagedPlugin.mockImplementation(async ({ beforePersistentApply }) => {
+      accessCurrent = false;
+      beforePersistentApply();
+      applied();
+      return { application: { status: "applied" } };
+    });
+    applyClawAddForGateway.mockImplementation(async (input) => {
+      await input.reloadPlugins(["workflow-plugin"], {
+        commitGuard: () => {
+          if (!accessCurrent) {
+            throw new Error("Reviewed Claw access changed before plugin reload.");
+          }
+        },
+      });
+      return { agentId: "workflow-operator", status: "complete" };
+    });
+
+    const request = callAddApply(params, () => enabled, {
+      applyPluginLifecycleChange: vi.fn(),
+    });
+    await request.run();
+
+    expect(reloadManagedPlugin).toHaveBeenCalledOnce();
+    expect(applied).not.toHaveBeenCalled();
     expect(request.replies[0]?.[2]).toMatchObject({ code: "UNAVAILABLE" });
   });
 });
