@@ -73,22 +73,24 @@ function projectResourceStatus(
   record: ClawStatusRecord,
   liveJobs: readonly CronJob[] | undefined,
 ): ClawResourceStatus[] {
+  const adopted = record.install.agentOrigin === "adopted";
+  const agentOrigin: ClawResourceStatus["origin"] = adopted ? "pre-existing" : "claw-introduced";
   return [
     {
       kind: "agent",
       id: record.install.agentId,
       state: record.agentState,
       relationship: "managed",
-      origin: "claw-introduced",
-      independentOwner: false,
+      origin: agentOrigin,
+      independentOwner: adopted,
     },
     ...record.workspaceFiles.map((file) => ({
       kind: "workspace-file" as const,
       id: file.path,
       state: file.state,
       relationship: "managed" as const,
-      origin: "claw-introduced" as const,
-      independentOwner: false,
+      origin: agentOrigin,
+      independentOwner: adopted,
     })),
     ...record.packages.map((pkg) => ({
       kind: pkg.kind,

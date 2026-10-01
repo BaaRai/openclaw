@@ -9,6 +9,7 @@ import {
 import { projectClawsStatus } from "./gateway-status-projection.js";
 import type { ClawPackageStatus, ClawStatusRecord } from "./lifecycle-status.js";
 import { CLAW_PACKAGE_REF_SCHEMA_VERSION } from "./package-extension-provenance.js";
+import { CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION } from "./workspace.js";
 
 function packageStatus(overrides: Partial<ClawPackageStatus> = {}): ClawPackageStatus {
   return {
@@ -51,6 +52,50 @@ function statusRecord(overrides: Partial<ClawStatusRecord> = {}): ClawStatusReco
 }
 
 describe("Gateway Claw status projection", () => {
+  it("reports adopted agents and files as pre-existing without changing package ownership", () => {
+    const created = statusRecord();
+    const result = projectClawsStatus([
+      statusRecord({
+        install: { ...created.install, agentOrigin: "adopted" },
+        workspaceFiles: [
+          {
+            schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+            agentId: "workflow-operator",
+            workspace: "/tmp/workflow-operator",
+            path: "SOUL.md",
+            sourcePath: "SOUL.md",
+            contentDigest: "sha256:existing",
+            status: "complete",
+            state: "unchanged",
+            createdAtMs: 1,
+            updatedAtMs: 2,
+          },
+        ],
+        packages: [packageStatus()],
+      }),
+    ]);
+
+    expect(result.records[0]?.resources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent",
+          origin: "pre-existing",
+          independentOwner: true,
+        }),
+        expect.objectContaining({
+          kind: "workspace-file",
+          origin: "pre-existing",
+          independentOwner: true,
+        }),
+        expect.objectContaining({
+          kind: "plugin",
+          origin: "claw-introduced",
+          independentOwner: false,
+        }),
+      ]),
+    );
+  });
+
   it("does not hide extension drift or unresolved scheduled jobs", () => {
     const result = projectClawsStatus([
       statusRecord({
