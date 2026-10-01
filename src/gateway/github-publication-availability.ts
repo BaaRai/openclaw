@@ -265,7 +265,7 @@ function resolveGitHubPublicationWorkspaceOwner(
 
 export async function prepareGitHubPublicationWorkspaceOwner(
   params: PublicationSessionIdentity,
-  options: { sessionTarget?: AgentRunSessionTarget; assertCurrent?: () => void } = {},
+  options: { sessionTarget?: AgentRunSessionTarget; assertCurrent?: () => void; allowMissingWorkspace?: true } = {},
 ) {
   const context = captureOpenClawStateWorkerContext();
   const assertCurrent = () => {
@@ -350,6 +350,9 @@ export async function prepareGitHubPublicationWorkspaceOwner(
   assertCurrent();
   const loaded = requirePublicationSessionOwner(params, snapshot);
   const workspaceId = loaded.entry.repositoryWorkspaceId;
+  if (options.allowMissingWorkspace && !workspaceId && !loaded.entry.worktree) {
+    return undefined;
+  }
   if (!workspaceId && !loaded.entry.worktree?.id) {
     throw new GitHubPublicationSessionChangedError();
   }
