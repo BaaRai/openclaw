@@ -4,10 +4,12 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { ClawGatewayPlanChangedError } from "./gateway-add-apply.js";
 import { planClawRemoveForGateway } from "./gateway-lifecycle-plan.js";
 import { projectClawRemovePlan } from "./gateway-plan-projection.js";
+import type { ClawRemoveGatewayBridge } from "./gateway-remove-bridge.js";
 import { runClawRemoveCli } from "./gateway-remove-cli.js";
 import {
   CLAW_REMOVE_PLAN_SCHEMA_VERSION,
   CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+  type ClawRemovePlanAction,
 } from "./lifecycle-remove-contract.js";
 import type { ClawMonitorCleanupGateway } from "./monitor-cleanup-contract.js";
 import { CLAW_OUTPUT_STABILITY } from "./types.js";
@@ -77,6 +79,10 @@ export async function applyClawRemoveForGateway(input: {
   planIntegrity: string;
   getRuntimeConfig: () => OpenClawConfig;
   monitorGateway: ClawMonitorCleanupGateway;
+  createApplyCallbacks: (
+    assertCurrent: () => void,
+    reviewedPackageActions: readonly ClawRemovePlanAction[],
+  ) => ReturnType<ClawRemoveGatewayBridge["createCallbacks"]>;
   assertCurrent: () => void;
   signal?: AbortSignal;
 }): Promise<GatewayClawRemoveApplyResult> {
@@ -149,7 +155,31 @@ export async function applyClawRemoveForGateway(input: {
         agentId: input.agentId,
         planIntegrity: canonicalPlan.planIntegrity,
         signal: controller.signal,
+        gatewayBridge: {
+          agentId: input.agentId,
+          assertCurrent: () => {
+            controller.signal.throwIfAborted();
+            input.assertCurrent();
+          },
+          allowedCronJobIds: new Set(
+            canonicalPlan.actions
+              .filter(
+                (action) =>
+                  action.kind === "cronJob" &&
+                  action.action === "remove" &&
+                  action.details?.expectedStatus === "complete" &&
+                  action.details.schedulerJobId === action.target,
+              )
+              .map((action) => action.target),
+          ),
+          createCallbacks: (assertCurrent) =>
+            input.createApplyCallbacks(
+              assertCurrent,
+              canonicalPlan.actions.filter((action) => action.kind === "packageRef"),
+            ),
+        },
       });
+      // An already-admitted child commit may finish as the requester retires.
       input.assertCurrent();
       controller.signal.throwIfAborted();
     } finally {

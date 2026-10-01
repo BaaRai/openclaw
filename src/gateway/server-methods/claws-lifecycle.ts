@@ -26,6 +26,7 @@ import type { PluginInstallBatchReload } from "../../plugins/install-runtime-bat
 import { reloadManagedPlugin } from "../../plugins/management-mutations.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { createServingClawMonitorCleanupGateway } from "../server-claws-monitor-adapter.js";
+import { createServingClawPackageRemovalGateway } from "../server-claws-package-removal-adapter.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -249,7 +250,33 @@ export const clawsLifecycleHandlers: GatewayRequestHandlers = {
         agentId: params.agentId,
         planIntegrity: params.planIntegrity,
         getRuntimeConfig: () => context.getRuntimeConfig(),
-        monitorGateway: createServingClawMonitorCleanupGateway(context),
+        monitorGateway: createServingClawMonitorCleanupGateway(context, assertCurrent),
+        createApplyCallbacks: (assertApplyCurrent, reviewedPackageActions) => ({
+          monitorGateway: createServingClawMonitorCleanupGateway(context, assertApplyCurrent),
+          packageGateway: createServingClawPackageRemovalGateway(
+            context,
+            assertApplyCurrent,
+            reviewedPackageActions,
+            signal,
+          ),
+          cronGateway: {
+            get: async (schedulerJobId) => {
+              assertApplyCurrent();
+              const job = await context.cron.readJob(schedulerJobId);
+              assertApplyCurrent();
+              return job;
+            },
+            remove: async (schedulerJobId, options) => {
+              assertApplyCurrent();
+              return await context.cron.remove(schedulerJobId, {
+                commitGuard: () => {
+                  assertApplyCurrent();
+                  options?.commitGuard?.();
+                },
+              });
+            },
+          },
+        }),
         assertCurrent,
         ...(signal ? { signal } : {}),
       });
