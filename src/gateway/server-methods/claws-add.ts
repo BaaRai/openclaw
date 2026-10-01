@@ -82,12 +82,16 @@ export const clawsAddHandlers: GatewayRequestHandlers = {
       assertCurrent();
       const applyRuntime = context.applyPluginLifecycleChange;
       const reloadPlugins: PluginInstallBatchReload | undefined = applyRuntime
-        ? async (plugins) => {
-            assertCurrent();
+        ? async (plugins, options) => {
+            const assertForwardCurrent = () => {
+              assertCurrent();
+              options?.commitGuard?.();
+            };
+            assertForwardCurrent();
             const { application } = await reloadManagedPlugin({
               plugins: [...plugins],
               applyRuntime,
-              beforePersistentApply: assertCurrent,
+              beforePersistentApply: assertForwardCurrent,
               ...(signal ? { signal } : {}),
             });
             if (!application) {
@@ -124,16 +128,20 @@ export const clawsAddHandlers: GatewayRequestHandlers = {
         ...(signal ? { signal } : {}),
         ...(reloadPlugins ? { reloadPlugins } : {}),
         cronGateway: {
-          add: async (input) => {
+          add: async (input, options) => {
+            const assertForwardCurrent = () => {
+              assertCurrent();
+              options?.commitGuard?.();
+            };
             assertCurrent();
             const normalized = normalizeCronJobCreate(input);
             if (!normalized || !validateCronAddParams(normalized)) {
               throw new Error("Claw schedule declaration is invalid.");
             }
             await assertValidCronCreateDelivery(context.getRuntimeConfig(), normalized);
-            assertCurrent();
+            assertForwardCurrent();
             return await context.cron.add(normalized, {
-              commitGuard: assertCurrent,
+              commitGuard: assertForwardCurrent,
               matchesExisting: (job) => {
                 if (job.declarationKey === normalized.declarationKey) {
                   throw new Error("Claw schedule declaration appeared after the list check.");
