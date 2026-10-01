@@ -19,6 +19,12 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import {
+  persistClawWorkspaceFileForAdd,
+  readClawWorkspaceFileForAdd,
+  updateClawWorkspaceFileStatusForAdd,
+  type ClawAddStateOptions,
+} from "./add-state-write.js";
 import { digestClawBytes } from "./digest.js";
 import { clawContainedRelativePath } from "./path-containment.js";
 import { parseClawMarkdown } from "./reader.js";
@@ -147,7 +153,7 @@ export async function readClawWorkspaceActionSource(params: {
   return { content: parsed.body, sourcePath, sourceRelative };
 }
 
-function persistWorkspaceFile(
+export function persistClawWorkspaceFile(
   record: PersistedClawWorkspaceFile,
   options: OpenClawStateDatabaseOptions,
 ): void {
@@ -161,7 +167,7 @@ function persistWorkspaceFile(
   }, options);
 }
 
-function readWorkspaceFile(
+export function readClawWorkspaceFile(
   agentId: string,
   targetPath: string,
   options: OpenClawStateDatabaseOptions,
@@ -203,7 +209,7 @@ function sameWorkspaceFileOwner(
   );
 }
 
-function updateWorkspaceFileStatus(
+export function updateClawWorkspaceFileStatus(
   record: PersistedClawWorkspaceFile,
   expectedStatuses: PersistedClawWorkspaceFile["status"][],
   options: OpenClawStateDatabaseOptions,
@@ -329,7 +335,7 @@ export function readAllClawWorkspaceFilesInDatabase(
 
 export async function createClawWorkspaceFiles(
   plan: ClawAddPlan,
-  options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},
+  options: ClawAddStateOptions & { nowMs?: number } = {},
 ): Promise<PersistedClawWorkspaceFile[]> {
   const actions = plan.actions.filter((action) => action.kind === "workspaceFile");
   if (actions.length === 0) {
@@ -389,7 +395,7 @@ export async function createClawWorkspaceFiles(
         createdAtMs: nowMs,
         updatedAtMs: nowMs,
       };
-      const existingRecord = readWorkspaceFile(
+      const existingRecord = await readClawWorkspaceFileForAdd(
         expectedRecord.agentId,
         expectedRecord.path,
         options,
@@ -421,7 +427,7 @@ export async function createClawWorkspaceFiles(
         const previousStatus = existingRecord.status;
         existingRecord.status = "complete";
         existingRecord.updatedAtMs = nowMs;
-        updateWorkspaceFileStatus(existingRecord, [previousStatus], options);
+        await updateClawWorkspaceFileStatusForAdd(existingRecord, [previousStatus], options);
         createdFiles.push(existingRecord);
         continue;
       }
@@ -430,22 +436,24 @@ export async function createClawWorkspaceFiles(
         const previousStatus = record.status;
         record.status = "pending";
         record.updatedAtMs = nowMs;
-        updateWorkspaceFileStatus(record, [previousStatus], options);
+        await updateClawWorkspaceFileStatusForAdd(record, [previousStatus], options);
       } else {
-        persistWorkspaceFile(record, options);
+        await persistClawWorkspaceFileForAdd(record, options);
       }
       try {
+        options.assertCurrent?.();
         await workspace.write(targetRelative, resolvedSource.content, {
           mkdir: true,
           overwrite: false,
+          assertBeforeMutation: options.assertCurrent,
         });
         record.status = "complete";
-        updateWorkspaceFileStatus(record, ["pending"], options);
+        await updateClawWorkspaceFileStatusForAdd(record, ["pending"], options);
         createdFiles.push(record);
       } catch (error) {
         record.status = "failed";
         try {
-          updateWorkspaceFileStatus(record, ["pending"], options);
+          await updateClawWorkspaceFileStatusForAdd(record, ["pending"], options);
         } catch {
           // A pending row intentionally remains as evidence of uncertain owner state.
           record.status = "pending";

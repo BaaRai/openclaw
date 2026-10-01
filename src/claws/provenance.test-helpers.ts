@@ -2,7 +2,11 @@ import { join } from "node:path";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { parseClawManifest } from "./schema.js";
-import type { ClawOpenClawProfile, ClawSourceIdentity } from "./types.js";
+import type {
+  ClawOpenClawProfile,
+  ClawSourceIdentity,
+  ClawWorkspaceSourceSnapshot,
+} from "./types.js";
 
 export async function makeProvenancePlan(
   root: string,
@@ -10,6 +14,7 @@ export async function makeProvenancePlan(
   options: {
     workspace?: string;
     openClawProfile?: ClawOpenClawProfile;
+    packageBootstrap?: ClawWorkspaceSourceSnapshot;
     packagePreflight?: NonNullable<
       Parameters<typeof buildClawAddPlan>[0]["context"]
     >["packagePreflight"];
@@ -32,6 +37,7 @@ export async function makeProvenancePlan(
   const plan = await buildClawAddPlan({
     manifest: parsed.manifest,
     openClawProfile: options.openClawProfile,
+    packageBootstrap: options.packageBootstrap,
     source,
     context: {
       workspace: options.workspace ?? join(root, "workspace-worker"),

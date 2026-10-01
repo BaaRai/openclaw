@@ -120,13 +120,6 @@ export function portableOpenClawProfile(
     }
   }
   const settings = definedFields({
-    model: typeof agent.model === "string" ? { primary: agent.model } : agent.model,
-    subagents: agent.subagents
-      ? definedFields({
-          allowAgents: agent.subagents.allowAgents,
-          delegationMode: agent.subagents.delegationMode,
-        })
-      : undefined,
     groupChat: agent.groupChat?.mentionPatterns?.length
       ? { mentionPatterns: agent.groupChat.mentionPatterns }
       : undefined,
