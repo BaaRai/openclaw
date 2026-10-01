@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
 import type { CronJob, CronStoredJob } from "../cron/types.js";
-import { clawCronGatewayInput, type PersistedClawCronRef } from "./cron.js";
+import {
+  CLAW_CRON_REF_SCHEMA_VERSION,
+  clawCronGatewayInput,
+  type PersistedClawCronRef,
+} from "./cron.js";
 import { projectClawsStatus } from "./gateway-status-projection.js";
 import type { ClawPackageStatus, ClawStatusRecord } from "./lifecycle-status.js";
 import { CLAW_PACKAGE_REF_SCHEMA_VERSION } from "./package-extension-provenance.js";
@@ -58,7 +62,9 @@ describe("Gateway Claw status projection", () => {
             extensionCompatibility: { state: "drifted", mapped: [], unavailable: [] },
           }),
         ],
-        cronJobs: [{ manifestId: "daily", status: "complete" }] as ClawStatusRecord["cronJobs"],
+        cronJobs: [
+          { schemaVersion: CLAW_CRON_REF_SCHEMA_VERSION, manifestId: "daily", status: "complete" },
+        ] as ClawStatusRecord["cronJobs"],
       }),
     ]);
 
@@ -84,6 +90,7 @@ describe("Gateway Claw status projection", () => {
 
   it("checks complete cron refs against the live scheduler before marking them healthy", () => {
     const cron = {
+      schemaVersion: CLAW_CRON_REF_SCHEMA_VERSION,
       agentId: "workflow-operator",
       manifestId: "daily",
       declarationKey: "claw:workflow-operator:daily",
@@ -153,7 +160,12 @@ describe("Gateway Claw status projection", () => {
           }),
         ],
         cronJobs: [
-          { manifestId: "daily", status: "failed", error: "secret-token from scheduler" },
+          {
+            schemaVersion: CLAW_CRON_REF_SCHEMA_VERSION,
+            manifestId: "daily",
+            status: "failed",
+            error: "secret-token from scheduler",
+          },
         ] as ClawStatusRecord["cronJobs"],
       }),
     ]);
