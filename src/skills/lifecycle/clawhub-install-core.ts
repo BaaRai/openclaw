@@ -58,7 +58,7 @@ export type ClawHubInstallParams = ClawHubSkillRef & {
   baseUrl?: string;
   force?: boolean;
   forceInstall?: boolean;
-  confirmInstall?: () => boolean | Promise<boolean>;
+  confirmInstall?: (warning?: string) => boolean | Promise<boolean>;
   logger?: Logger;
   config?: OpenClawConfig;
   onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];

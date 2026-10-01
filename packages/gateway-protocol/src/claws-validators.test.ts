@@ -64,8 +64,30 @@ describe("Claws Gateway contract", () => {
       validateClawsAddApplyParams({
         source: { packageName: "@openclaw/workflow-operator", version: "1.0.0" },
         planIntegrity: "sha256:reviewed-plan",
+        acknowledgeSkillWarnings: [
+          {
+            actionId: "skill:@community/triage",
+            ref: "@community/triage",
+            reviewToken: "sha256:reviewed-skill",
+            acknowledgeRiskWarning: true,
+          },
+        ],
       }),
     ).toBe(true);
+    expect(
+      validateClawsAddApplyParams({
+        source: { packageName: "@openclaw/workflow-operator", version: "1.0.0" },
+        planIntegrity: "sha256:reviewed-plan",
+        acknowledgeSkillWarnings: [
+          {
+            actionId: "skill:@community/triage",
+            ref: "@community/triage",
+            reviewToken: "sha256:reviewed-skill",
+            acknowledgeRiskWarning: false,
+          },
+        ],
+      }),
+    ).toBe(false);
     expect(
       validateClawsAddApplyParams({
         source: { packageName: "@someone-else/workflow-operator", version: "1.0.0" },
@@ -96,6 +118,7 @@ describe("Claws Gateway contract", () => {
       actions: [],
       capabilities: [],
       pluginReviews: [],
+      skillReviews: [],
       blockers: [],
       riskAcknowledgementRequired: false,
     };
@@ -166,6 +189,7 @@ describe("Claws Gateway contract", () => {
       actions: [],
       capabilities: [],
       pluginReviews: [],
+      skillReviews: [],
       blockers: [],
       riskAcknowledgementRequired: false,
       configuredAccess: {

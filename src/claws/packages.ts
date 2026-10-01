@@ -171,10 +171,17 @@ export type ClawPluginInstallConsent = {
   confirmInstall?: () => Promise<boolean>;
 };
 
+export type ClawSkillInstallConsent = {
+  assertApproved: (
+    pkg: Pick<PlannedClawPackage, "ref" | "version" | "integrity"> & { riskWarning: string },
+  ) => void;
+};
+
 type InstallClawPackagesOptions = ClawPluginRuntimeOptions &
   ClawAddStateOptions & {
     config?: OpenClawConfig;
     pluginConsent?: ClawPluginInstallConsent;
+    skillConsent?: ClawSkillInstallConsent;
     deps?: PackageInstallerDeps;
     pluginInstallMode?: "install" | "update";
     nowMs?: number;
@@ -309,6 +316,21 @@ async function installClawPackagesUnlocked(
           );
           continue;
         }
+        if (pkg.riskWarning) {
+          if (!options.skillConsent) {
+            throw new ClawPackageInstallError(
+              "skill_consent_required",
+              `Skill ${pkg.ref}@${pkg.version} requires an explicit trust warning acknowledgement.`,
+              installedPackages,
+            );
+          }
+          options.skillConsent.assertApproved({
+            ref: pkg.ref,
+            version: pkg.version,
+            integrity: pkg.integrity,
+            riskWarning: pkg.riskWarning,
+          });
+        }
         let packageRef = await persistPackageRef(plan, pkg, {
           ...options,
           status: "pending",
@@ -317,17 +339,21 @@ async function installClawPackagesUnlocked(
           independentOwner: false,
         });
         installedPackages.push(packageRef);
-        // The installer has no mutation receipt. Mark the boundary before calling it so a throw
-        // after an on-disk change is treated as uncertain instead of falsely reported as rolled back.
         assertCurrent();
-        options.onExternalMutation?.(pkg);
         const installed = await installSkill({
           workspaceDir: plan.agent.workspace,
           slug: pkg.ref,
           version: pkg.version,
           expectedIntegrity: pkg.integrity,
           clawManaged: true,
-          beforePersistentApply: assertCurrent,
+          beforePersistentApply: () => {
+            assertCurrent();
+            options.onExternalMutation?.(pkg);
+          },
+          confirmInstall: (warning) => {
+            assertCurrent();
+            return warning === pkg.riskWarning;
+          },
         });
         assertCurrent();
         if (!installed.ok) {

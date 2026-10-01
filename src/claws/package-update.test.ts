@@ -136,6 +136,138 @@ describe("applyClawPackageUpdate", () => {
     ).toBe(digestClawPackageRef(persisted));
   });
 
+  it("keeps existing skill bytes and index untouched when update warning consent is missing", async () => {
+    const root = dirs.make("claw-skill-warning-");
+    const skillFile = path.join(root, "skills", "triage", "SKILL.md");
+    const indexFile = path.join(root, "skills", ".clawhub", "lock.json");
+    await fs.mkdir(path.dirname(skillFile), { recursive: true });
+    await fs.mkdir(path.dirname(indexFile), { recursive: true });
+    await fs.writeFile(skillFile, "previous skill bytes");
+    await fs.writeFile(indexFile, '{"version":"1.0.0"}');
+    const previous = ref("skill", "triage", "1.0.0");
+    const targetAction = addPlan.actions.find((action) => action.id === "skill:triage")!;
+    const targetPlan: ClawAddPlan = {
+      ...addPlan,
+      actions: [
+        {
+          ...targetAction,
+          details: { ...targetAction.details, riskWarning: "Review this skill update." },
+        },
+      ],
+    };
+    const replaceExpected = vi.fn();
+    const installPackages = vi.fn(async () => {
+      await fs.writeFile(skillFile, "new skill bytes");
+      await fs.writeFile(indexFile, '{"version":"2.0.0"}');
+      return [];
+    });
+
+    await expect(
+      applyClawPackageUpdate(
+        plan([
+          {
+            kind: "package",
+            id: "skill:triage",
+            action: "change",
+            target: "clawhub:triage@2.0.0",
+            blocked: false,
+            reason: "Upgrade managed skill",
+            currentDigest: digestClawPackageRef(previous),
+          },
+        ]),
+        targetPlan,
+        { readRefs: () => [previous], replaceExpected, installPackages },
+      ),
+    ).rejects.toThrow(/trust warning acknowledgement/i);
+    expect(replaceExpected).not.toHaveBeenCalled();
+    expect(installPackages).not.toHaveBeenCalled();
+    expect(await fs.readFile(skillFile, "utf8")).toBe("previous skill bytes");
+    expect(await fs.readFile(indexFile, "utf8")).toBe('{"version":"1.0.0"}');
+  });
+
+  it("rolls back a skill update when the live installer warning differs from the reviewed warning", async () => {
+    const root = dirs.make("claw-skill-warning-change-");
+    const skillFile = path.join(root, "skills", "triage", "SKILL.md");
+    const indexFile = path.join(root, "skills", ".clawhub", "lock.json");
+    await fs.mkdir(path.dirname(skillFile), { recursive: true });
+    await fs.mkdir(path.dirname(indexFile), { recursive: true });
+    await fs.writeFile(skillFile, "previous skill bytes");
+    const previous = ref("skill", "triage", "1.0.0");
+    let current: PersistedClawPackageRef | undefined = previous;
+    await fs.writeFile(indexFile, JSON.stringify(previous));
+    const integrity = `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`;
+    const targetAction = addPlan.actions.find((action) => action.id === "skill:triage")!;
+    const targetPlan: ClawAddPlan = {
+      ...addPlan,
+      agent: { ...addPlan.agent, workspace: root },
+      actions: [
+        {
+          ...targetAction,
+          details: {
+            ...targetAction.details,
+            integrity,
+            riskWarning: "Reviewed skill warning.",
+          },
+        },
+      ],
+    };
+    const replaceExpected = vi.fn(
+      async (
+        expected: PersistedClawPackageRef | undefined,
+        replacement: PersistedClawPackageRef | undefined,
+      ) => {
+        expect(current).toEqual(expected);
+        current = replacement;
+        await fs.writeFile(indexFile, JSON.stringify(replacement));
+      },
+    );
+    const installSkill = vi.fn(
+      async (params: {
+        confirmInstall?: (warning?: string) => boolean | Promise<boolean>;
+        beforePersistentApply?: () => void;
+      }) => {
+        expect(await params.confirmInstall?.("Changed skill warning.")).toBe(false);
+        return { ok: false as const, error: "Install cancelled." };
+      },
+    );
+
+    await expect(
+      applyClawPackageUpdate(
+        plan([
+          {
+            kind: "package",
+            id: "skill:triage",
+            action: "change",
+            target: "clawhub:triage@2.0.0",
+            blocked: false,
+            reason: "Upgrade managed skill",
+            currentDigest: digestClawPackageRef(previous),
+          },
+        ]),
+        targetPlan,
+        {
+          readRefs: () => (current ? [current] : []),
+          replaceExpected,
+          skillConsent: { assertApproved: vi.fn() },
+          packageDeps: {
+            preflightSkill: vi.fn().mockResolvedValue({
+              ok: true,
+              action: "install",
+              integrity,
+              warning: "Reviewed skill warning.",
+            }),
+            installSkill,
+            acquirePackageLease: vi.fn(() => ({ heartbeat: vi.fn(), release: vi.fn() })),
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ partial: false });
+    expect(installSkill).toHaveBeenCalledOnce();
+    expect(current).toEqual(previous);
+    expect(await fs.readFile(skillFile, "utf8")).toBe("previous skill bytes");
+    expect(await fs.readFile(indexFile, "utf8")).toBe(JSON.stringify(previous));
+  });
+
   it("adds extension metadata to a reused v1 plugin edge without changing ownership", async () => {
     const previous = ref("plugin", "audit", "1.0.0");
     const extension = {

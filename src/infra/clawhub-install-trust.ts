@@ -522,7 +522,7 @@ export async function checkClawHubPackageTrust(params: {
   fetchImpl?: ClawHubFetch;
   logger?: ClawHubInstallLogger;
   mode?: "install" | "update";
-  confirmInstall?: () => boolean | Promise<boolean>;
+  confirmInstall?: (warning?: string) => boolean | Promise<boolean>;
 }): Promise<ClawHubTrustFailure | ClawHubTrustAcceptedResult> {
   let trust: ClawHubPackageSecurityTrust;
   let overview: string;
@@ -587,7 +587,11 @@ export async function checkClawHubPackageTrust(params: {
       version: params.version,
     };
   }
-  if (params.mode !== "update" && params.confirmInstall && !(await params.confirmInstall())) {
+  if (
+    params.mode !== "update" &&
+    params.confirmInstall &&
+    !(await params.confirmInstall(disposition === "clean" ? undefined : audit))
+  ) {
     return {
       ok: false,
       error: "Install cancelled.",

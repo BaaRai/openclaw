@@ -36,7 +36,7 @@ import {
   ClawPackageUpdateError,
   type ClawPackageUpdateExecution,
 } from "./package-update.js";
-import type { ClawPluginInstallConsent } from "./packages.js";
+import type { ClawPluginInstallConsent, ClawSkillInstallConsent } from "./packages.js";
 import { runClawPluginBatch, type ClawPluginRuntimeOptions } from "./plugin-runtime.js";
 import {
   readClawInstallRecord,
@@ -136,6 +136,7 @@ export async function applyClawUpdatePlan(
     packagePreflight?: ClawAddPlanContext["packagePreflight"];
     runtime?: RuntimeEnv;
     pluginConsent?: ClawPluginInstallConsent;
+    skillConsent?: ClawSkillInstallConsent;
     reloadPlugins?: PluginInstallBatchReload;
     commitConfig?: ConfigCommit;
     rebuildPlan?: typeof buildClawUpdatePlan;

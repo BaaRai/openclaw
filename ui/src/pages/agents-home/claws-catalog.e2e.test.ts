@@ -129,6 +129,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
             },
           ],
           blockers: [],
+          skillReviews: [],
           pluginReviews: [
             {
               actionId: "package:workflow-tools",

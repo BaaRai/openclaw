@@ -7,7 +7,11 @@ import {
   digestClawPackageRef,
   replaceClawPackageRefExpected,
 } from "./package-update-provenance.js";
-import { installClawPackages, type ClawPluginInstallConsent } from "./packages.js";
+import {
+  installClawPackages,
+  type ClawPluginInstallConsent,
+  type ClawSkillInstallConsent,
+} from "./packages.js";
 import type { ClawPluginRuntimeOptions } from "./plugin-runtime.js";
 import {
   CLAW_PACKAGE_REF_SCHEMA_VERSION,
@@ -51,6 +55,7 @@ export async function applyClawPackageUpdate(
     ClawUpdateStateOptions & {
       config?: OpenClawConfig;
       pluginConsent?: ClawPluginInstallConsent;
+      skillConsent?: ClawSkillInstallConsent;
       installPackages?: typeof installClawPackages;
       readRefs?: (
         options?: Parameters<typeof readClawPackageRefs>[0],
@@ -126,6 +131,7 @@ export async function applyClawPackageUpdate(
         | (ClawPackage & {
             integrity?: string;
             ownerAction?: "install" | "reuse";
+            riskWarning?: string;
             extension?: PersistedClawPackageRef["extension"];
           })
         | undefined;
@@ -147,6 +153,20 @@ export async function applyClawPackageUpdate(
           `Target package action ${JSON.stringify(action.id)} has no resolved integrity.`,
           false,
         );
+      }
+      if (target.kind === "skill" && target.ownerAction === "install" && target.riskWarning) {
+        if (!options.skillConsent) {
+          throw new ClawPackageUpdateError(
+            `Skill ${target.ref}@${target.version} requires a trust warning acknowledgement.`,
+            false,
+          );
+        }
+        options.skillConsent.assertApproved({
+          ref: target.ref,
+          version: target.version,
+          integrity: targetIntegrity,
+          riskWarning: target.riskWarning,
+        });
       }
       if (
         target.kind === "plugin" &&

@@ -39,6 +39,7 @@ import {
   ClawPackageInstallError,
   installClawPackages,
   type ClawPluginInstallConsent,
+  type ClawSkillInstallConsent,
 } from "./packages.js";
 import {
   deleteClawInstallRecord,
@@ -62,6 +63,7 @@ type ClawAddApplyOptions = ClawAddStateOptions & {
   config?: OpenClawConfig;
   assertReviewedConfig?: (config: OpenClawConfig) => void;
   pluginConsent?: ClawPluginInstallConsent;
+  skillConsent?: ClawSkillInstallConsent;
   reloadPlugins?: PluginInstallBatchReload;
   consentPlanIntegrity?: string;
   resumeRecord?: PersistedClawInstall;

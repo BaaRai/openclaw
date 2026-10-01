@@ -133,6 +133,22 @@ export const ClawPluginAcknowledgementSchema = closedObject({
   acknowledgeRiskWarning: Type.Optional(Type.Literal(true)),
 });
 
+export const ClawSkillReviewSchema = closedObject({
+  actionId: NonEmptyString,
+  ref: NonEmptyString,
+  version: NonEmptyString,
+  integrity: NonEmptyString,
+  riskWarning: NonEmptyString,
+  reviewToken: NonEmptyString,
+});
+
+export const ClawSkillAcknowledgementSchema = closedObject({
+  actionId: NonEmptyString,
+  ref: NonEmptyString,
+  reviewToken: NonEmptyString,
+  acknowledgeRiskWarning: Type.Literal(true),
+});
+
 export const ClawsAddPlanParamsSchema = closedObject({
   source: ClawCatalogCoordinateSchema,
   agentId: Type.Optional(NonEmptyString),
@@ -144,6 +160,7 @@ export const ClawsAddApplyParamsSchema = closedObject({
   planIntegrity: NonEmptyString,
   acknowledgeClawHubRisk: Type.Optional(Type.Boolean()),
   acknowledgeCapabilities: Type.Optional(Type.Array(ClawPluginAcknowledgementSchema)),
+  acknowledgeSkillWarnings: Type.Optional(Type.Array(ClawSkillAcknowledgementSchema)),
 });
 
 export const ClawsUpdatePlanParamsSchema = closedObject({
@@ -157,6 +174,7 @@ export const ClawsUpdateApplyParamsSchema = closedObject({
   planIntegrity: NonEmptyString,
   acknowledgeClawHubRisk: Type.Optional(Type.Boolean()),
   acknowledgeCapabilities: Type.Optional(Type.Array(ClawPluginAcknowledgementSchema)),
+  acknowledgeSkillWarnings: Type.Optional(Type.Array(ClawSkillAcknowledgementSchema)),
 });
 
 export const ClawsRemovePlanParamsSchema = closedObject({ agentId: NonEmptyString });
@@ -273,6 +291,7 @@ export const ClawLifecyclePlanResultSchema = closedObject({
     }),
   ),
   pluginReviews: Type.Array(ClawPluginReviewSchema),
+  skillReviews: Type.Array(ClawSkillReviewSchema),
   blockers: Type.Array(
     closedObject({
       code: NonEmptyString,
@@ -318,6 +337,8 @@ export type ClawsRemovePlanParams = Static<typeof ClawsRemovePlanParamsSchema>;
 export type ClawsRemoveApplyParams = Static<typeof ClawsRemoveApplyParamsSchema>;
 export type ClawPluginReview = Static<typeof ClawPluginReviewSchema>;
 export type ClawPluginAcknowledgement = Static<typeof ClawPluginAcknowledgementSchema>;
+export type ClawSkillReview = Static<typeof ClawSkillReviewSchema>;
+export type ClawSkillAcknowledgement = Static<typeof ClawSkillAcknowledgementSchema>;
 export type ClawConfiguredAccess = Static<typeof ClawConfiguredAccessSchema>;
 export type ClawScheduledJobs = Static<typeof ClawScheduledJobsSchema>;
 export type ClawLifecyclePlanResult = Static<typeof ClawLifecyclePlanResultSchema>;

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClawGatewayPlanChangedError } from "../../claws/gateway-add-apply.js";
 import { ClawGatewayPlanError } from "../../claws/gateway-lifecycle-plan.js";
 import { ClawGatewayConsentError } from "../../claws/gateway-plugin-consent.js";
+import { ClawSkillConsentError } from "../../claws/gateway-skill-consent.js";
 import { authorizeOperatorScopesForMethod } from "../method-scopes.js";
 import { clawsLifecycleHandlers } from "./claws-lifecycle.js";
 import { coreGatewayHandlers } from "./core-handlers.js";
@@ -362,6 +363,16 @@ describe("claws.update.apply Gateway method", () => {
     const consent = callUpdateApply(params, () => enabled);
     await consent.run();
     expect(consent.replies[0]?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
+
+    applyClawUpdateForGateway.mockRejectedValueOnce(
+      new ClawSkillConsentError("Review and acknowledge each skill trust warning again."),
+    );
+    const skillConsent = callUpdateApply(params, () => enabled);
+    await skillConsent.run();
+    expect(skillConsent.replies[0]?.[2]).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "Review and acknowledge each skill trust warning again.",
+    });
 
     const partialResult = {
       agentId: "worker",

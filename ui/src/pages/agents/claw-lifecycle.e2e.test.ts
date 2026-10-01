@@ -99,6 +99,7 @@ describe.skipIf(!browserAvailable)("Claw lifecycle on agent Overview", () => {
             capabilities: [],
             blockers: [],
             pluginReviews: [],
+            skillReviews: [],
             riskAcknowledgementRequired: false,
           },
         },
@@ -289,6 +290,7 @@ describe.skipIf(!browserAvailable)("Claw lifecycle on agent Overview", () => {
               reviewToken: "review-workflow-tools-1.3.0",
             },
           ],
+          skillReviews: [],
           blockers: [],
           riskAcknowledgementRequired: false,
           configuredAccess: {

@@ -119,6 +119,7 @@ function createPage(
     statusRecord?: { agentId: string; version: string; status: string };
     newAgentVisible?: boolean;
     pluginRiskWarning?: string;
+    skillRiskWarning?: string;
     reusePlugin?: boolean;
     missingPluginReview?: boolean;
     missingDisclosure?: boolean;
@@ -266,6 +267,18 @@ function createPage(
           },
         ],
         blockers: [],
+        skillReviews: options.skillRiskWarning
+          ? [
+              {
+                actionId: "skill:@community/triage",
+                ref: "@community/triage",
+                version: "1.0.0",
+                integrity: "sha256:reviewed-skill",
+                riskWarning: options.skillRiskWarning,
+                reviewToken: "sha256:skill-review",
+              },
+            ]
+          : [],
         ...(options.missingPluginReview
           ? {}
           : {
@@ -588,6 +601,39 @@ describe("AgentsHomePage", () => {
               pluginId: "workflow-tools",
               acknowledgeRiskWarning: true,
             }),
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("requires explicit review of a warned skill before Add", async () => {
+    const { page, request } = createPage({
+      clawsEnabled: true,
+      skillRiskWarning: "This community skill needs review.",
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("This community skill needs review."),
+    );
+    expect(page.querySelector<HTMLButtonElement>("[data-claws-confirm]")?.disabled).toBe(true);
+    page.querySelector<HTMLInputElement>("[data-claw-skill-risk]")?.click();
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>("[data-claws-confirm]")?.disabled).toBe(false),
+    );
+    page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "claws.add.apply",
+        expect.objectContaining({
+          acknowledgeSkillWarnings: [
+            {
+              actionId: "skill:@community/triage",
+              ref: "@community/triage",
+              reviewToken: "sha256:skill-review",
+              acknowledgeRiskWarning: true,
+            },
           ],
         }),
       ),

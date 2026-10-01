@@ -97,6 +97,7 @@ const updatePlan: ClawUpdatePlan = {
     },
   ],
   pluginReviews: [updatePluginReview],
+  skillReviews: [],
   blockers: [],
   riskAcknowledgementRequired: false,
   configuredAccess: {
@@ -150,6 +151,7 @@ const removePlan: ClawLifecyclePlan = {
   capabilities: [],
   blockers: [],
   pluginReviews: [],
+  skillReviews: [],
   riskAcknowledgementRequired: false,
 };
 
@@ -581,6 +583,48 @@ describe("Agent Claw lifecycle", () => {
               pluginId: "workflow-tools",
               acknowledgeRiskWarning: true,
             }),
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("requires a warned skill receipt on Update", async () => {
+    const plan: ClawUpdatePlan = {
+      ...updatePlan,
+      skillReviews: [
+        {
+          actionId: "skill:@community/triage",
+          ref: "@community/triage",
+          version: "2.0.0",
+          integrity: "sha256:reviewed-skill",
+          riskWarning: "This skill update needs review.",
+          reviewToken: "sha256:skill-update-review",
+        },
+      ],
+    };
+    const { panel, request } = mount({ clawsEnabled: true, updatePlan: plan });
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.click();
+    await vi.waitFor(() => expect(panel.textContent).toContain("This skill update needs review."));
+    const confirm = panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]");
+    expect(confirm?.disabled).toBe(true);
+    panel.querySelector<HTMLInputElement>("[data-claw-skill-risk]")?.click();
+    await vi.waitFor(() => expect(confirm?.disabled).toBe(false));
+    confirm?.click();
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "claws.update.apply",
+        expect.objectContaining({
+          acknowledgeSkillWarnings: [
+            {
+              actionId: "skill:@community/triage",
+              ref: "@community/triage",
+              reviewToken: "sha256:skill-update-review",
+              acknowledgeRiskWarning: true,
+            },
           ],
         }),
       ),

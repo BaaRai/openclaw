@@ -138,6 +138,45 @@ describe("Claw Gateway plan consent", () => {
     );
   });
 
+  it("binds a skill trust warning and exact artifact to the Add review", () => {
+    const root = "/tmp/private-claw-source";
+    const plan = addPlan(root);
+    plan.actions.push({
+      kind: "package",
+      id: "skill:@community/triage",
+      action: "install",
+      target: "clawhub:@community/triage@1.0.0",
+      blocked: false,
+      details: {
+        kind: "skill",
+        ref: "@community/triage",
+        version: "1.0.0",
+        integrity: "sha256:skill-artifact",
+        ownerAction: "install",
+        riskWarning: "Review this community skill before installation.",
+      },
+    });
+
+    const projected = projectClawAddPlan(plan, root, [], config);
+    expect(projected.skillReviews).toMatchObject([
+      {
+        actionId: "skill:@community/triage",
+        integrity: "sha256:skill-artifact",
+        riskWarning: "Review this community skill before installation.",
+      },
+    ]);
+    expect(projected.skillReviews[0]?.reviewToken).toMatch(/^sha256:/);
+    expect(JSON.stringify(projected)).not.toContain(root);
+
+    const changed = structuredClone(plan);
+    changed.actions.at(-1)!.details!.riskWarning = "Trust state changed.";
+    const changedProjection = projectClawAddPlan(changed, root, [], config);
+    expect(changedProjection.planIntegrity).not.toBe(projected.planIntegrity);
+    expect(changedProjection.skillReviews[0]?.reviewToken).not.toBe(
+      projected.skillReviews[0]?.reviewToken,
+    );
+  });
+
   it("discloses configured spawn targets inherited from the host", () => {
     const root = "/tmp/private-claw-source";
     const projected = projectClawAddPlan(addPlan(root), root, [], {
