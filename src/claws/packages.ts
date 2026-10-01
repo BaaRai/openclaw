@@ -123,7 +123,7 @@ export async function preflightClawPackage(
 
 export type ClawPluginInstallConsent = {
   onCapabilityConsent: PluginCapabilityConsentHandler;
-  confirmInstall?: () => Promise<boolean>;
+  confirmInstall?: (pluginId: string, warning?: string) => Promise<boolean>;
 };
 
 export type ClawSkillInstallConsent = {
@@ -532,7 +532,17 @@ async function installClawPackagesUnlocked(
         beforePersistentApply: assertForwardCurrent,
         beforePersistentEffect: bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent),
         logger: createPluginInstallLogger(runtime),
-        confirmInstall: pluginConsent.confirmInstall,
+        confirmInstall: async (warning) => {
+          assertCurrent();
+          if (warning !== pkg.riskWarning) {
+            throw new ClawPackageInstallError(
+              "package_owner_state_changed",
+              `Plugin ${pkg.ref}@${pkg.version} trust state changed after planning; review the Claw again.`,
+              installedPackages,
+            );
+          }
+          return (await pluginConsent.confirmInstall?.(probe.pluginId, warning)) ?? true;
+        },
         onCapabilityConsent: async (review) => {
           if (review.reviewToken !== capabilityReviewToken) {
             throw new Error(
