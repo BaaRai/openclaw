@@ -153,6 +153,24 @@ beforeEach(() => {
 });
 
 describe("Gateway Claw Update application", () => {
+  it("keeps the local ClawHub source for plugin installation without widening worker state env", async () => {
+    vi.stubEnv("OPENCLAW_CLAWHUB_URL", "http://127.0.0.1:3323");
+    try {
+      await applyClawUpdateForGateway(applyInput());
+
+      expect(mocks.apply).toHaveBeenCalledWith(
+        plan,
+        expect.anything(),
+        expect.objectContaining({
+          env: {},
+          clawHubBaseUrl: "http://127.0.0.1:3323",
+        }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("replans the verified release under a lease and uses the canonical worker updater", async () => {
     const input = applyInput();
     const result = await applyClawUpdateForGateway(input);

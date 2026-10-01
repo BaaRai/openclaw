@@ -68,6 +68,7 @@ export async function applyClawPackageUpdate(
   options: ClawPluginRuntimeOptions &
     ClawUpdateStateOptions & {
       config?: OpenClawConfig;
+      clawHubBaseUrl?: string;
       pluginConsent?: ClawPluginInstallConsent;
       skillConsent?: ClawSkillInstallConsent;
       installPackages?: typeof installClawPackages;

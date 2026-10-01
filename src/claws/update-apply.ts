@@ -142,6 +142,7 @@ export async function applyClawUpdatePlan(
       phase?: "after-agent-commit",
     ) => void;
     sourceMcpServers: Record<string, Record<string, unknown>>;
+    clawHubBaseUrl?: string;
     planPackageDeps?: PackageRemovalDeps;
     consentPlanIntegrity: string | undefined;
     packagePreflight?: ClawAddPlanContext["packagePreflight"];

@@ -135,6 +135,7 @@ export type ClawSkillInstallConsent = {
 type InstallClawPackagesOptions = ClawPluginRuntimeOptions &
   ClawAddStateOptions & {
     config?: OpenClawConfig;
+    clawHubBaseUrl?: string;
     pluginConsent?: ClawPluginInstallConsent;
     skillConsent?: ClawSkillInstallConsent;
     deps?: PackageInstallerDeps;
@@ -533,7 +534,9 @@ async function installClawPackagesUnlocked(
           expectedIntegrity: pkg.integrity,
           expectedPluginId: probe.pluginId,
         },
-        env: options.env,
+        env: options.clawHubBaseUrl
+          ? { ...options.env, OPENCLAW_CLAWHUB_URL: options.clawHubBaseUrl }
+          : options.env,
         beforePersistentApply: assertForwardCurrent,
         onBeforePluginArtifactCommit: (artifact, config) => {
           const current = inspectClawPluginCapabilities(
