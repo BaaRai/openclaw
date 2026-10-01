@@ -459,6 +459,7 @@ describe("applyClawPackageUpdate", () => {
         if (!result.ok) {
           throw new Error(result.error);
         }
+        await params.beforePersistentEffect?.();
         const write = await commitPluginInstallRecordsWithConfig({
           previousInstallRecords: priorRecords,
           nextInstallRecords: currentRecords,

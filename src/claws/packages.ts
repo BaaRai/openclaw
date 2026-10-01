@@ -501,10 +501,7 @@ async function installClawPackagesUnlocked(
       });
       installedPackages.push(packageRef);
 
-      // The installer has no mutation receipt. Mark the boundary before calling it so a throw
-      // after an on-disk change is treated as uncertain instead of falsely reported as rolled back.
       assertCurrent();
-      options.onExternalMutation?.(pkg);
       await installPlugin({
         request: {
           source: "clawhub",
@@ -516,6 +513,10 @@ async function installClawPackagesUnlocked(
         },
         env: options.env,
         beforePersistentApply: assertCurrent,
+        beforePersistentEffect: () => {
+          assertCurrent();
+          options.onExternalMutation?.(pkg);
+        },
         logger: createPluginInstallLogger(runtime),
         confirmInstall: pluginConsent.confirmInstall,
         onCapabilityConsent: async (review) => {
