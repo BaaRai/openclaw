@@ -32,6 +32,7 @@ import { raceNodeWorkerOperation } from "./node-worker-abort.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import {
   bindWorkerTurnCapabilities,
+  bindWorkerTurnGitHubGrant,
   getWorkerTurnToolSurface,
 } from "./placement-turn-claim-events.js";
 import { prepareWorkerDesktopLaunchPlan } from "./worker-desktop-launch-plan.js";
@@ -39,6 +40,7 @@ import type { WorkerGatewayToolRuntime } from "./worker-gateway-tool-contract.js
 import { createWorkerGatewayToolRuntime } from "./worker-gateway-tool-runtime.js";
 import {
   prepareWorkerGitHubBindingGrant,
+  revokeWorkerGitHubBindingGrant,
   type WorkerGitHubBindingGrant,
 } from "./worker-github-binding.js";
 import { createWorkerReplyMedia } from "./worker-reply-media.js";
@@ -304,10 +306,8 @@ export async function executeWorkerTurn(
     ),
   );
   const cancel = () => authorityAbort.abort(new Error("Worker turn authority closed"));
-  // Keep exact closure wired through transfer and launch dispatch, including awaited
-  // node readiness. The workspace/tunnel lifetime alone outlives this admitted turn.
   const stopWatchingRun = registerAgentRunDelegatedAuthorityClosedHandler((closed) => {
-    if (closed === authority) {
+    if (closed === runtimeIdentity.approvalAuthority) {
       cancel();
     }
   });
@@ -366,10 +366,12 @@ export async function executeWorkerTurn(
       assertCurrent: isAuthorized,
     });
     if (signal.aborted) {
-      await githubGrant?.revoke();
+      await revokeWorkerGitHubBindingGrant(githubGrant);
       signal.throwIfAborted();
     }
-    const github = githubGrant?.binding;
+    if (githubGrant?.refresh) {
+      bindWorkerTurnGitHubGrant(params.placements, params.turnClaim, githubGrant);
+    }
     const skillWorkshop = turn.skillLibraryAuthoring
       ? createLibrarySkillWorkshopTool({ ...turn.skillLibraryAuthoring, defaultTarget: "personal" })
       : undefined;
@@ -589,7 +591,7 @@ export async function executeWorkerTurn(
             prompt: media.prompt,
             suppressPromptTranscript: true,
             workspaceDir: placement.remoteWorkspaceDir,
-            ...(github ? { github } : {}),
+            ...(githubGrant ? { github: githubGrant.binding } : {}),
             ...(skillResources ? { skillResources } : {}),
             ...(turn.permissionMode
               ? {
@@ -712,9 +714,7 @@ export async function executeWorkerTurn(
       baseLeafId,
       promptContext,
       prepareReplyMedia,
-      revokeExecutionCredentials: async () => {
-        await githubGrant?.revoke();
-      },
+      revokeExecutionCredentials: () => revokeWorkerGitHubBindingGrant(githubGrant),
       takeFinishingOutcome: () => takeFinishingOutcome(credential.deliveryId),
       settleSteering: async () => {
         if (steering.lease) {
@@ -726,7 +726,7 @@ export async function executeWorkerTurn(
       startedAt,
     });
   } finally {
-    await githubGrant?.revoke();
+    await revokeWorkerGitHubBindingGrant(githubGrant);
     await toolRuntime?.close();
     stopWatchingClaim();
     stopWatchingRun();
