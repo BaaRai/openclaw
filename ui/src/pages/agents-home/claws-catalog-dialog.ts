@@ -328,8 +328,19 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         return;
       }
       this.onAdded?.();
-      if (result.status === "complete" && result.readiness.ready) {
+      if (result.status === "complete") {
         if (!roster?.agents.some((agent) => agent.id === result.agentId)) {
+          return;
+        }
+        const record = await readClawStatus(scope.client, result.agentId).catch(() => null);
+        if (
+          !this.gateway.isCurrent(scope) ||
+          revision !== this.reviewRevision ||
+          this.context !== context ||
+          record?.version !== source.version ||
+          record.status !== "complete" ||
+          record.agentState !== "present"
+        ) {
           return;
         }
         const mainKey =

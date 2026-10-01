@@ -121,7 +121,7 @@ function createPage(
     };
     applyError?: boolean;
     applyRejectedOnce?: boolean;
-    statusRecord?: { agentId: string; version: string; status: string };
+    statusRecord?: { agentId: string; version: string; status: string; agentState?: string };
     newAgentVisible?: boolean;
     pluginRiskWarning?: string;
     skillRiskWarning?: string;
@@ -130,6 +130,7 @@ function createPage(
     missingDisclosure?: boolean;
     malformedDisclosure?: boolean;
     rosterErrorAfterAdd?: boolean;
+    statusErrorAfterAdd?: boolean;
     catalogSearch?: (query: string) => Promise<{ entries: ClawCatalogEntry[] }>;
   } = {},
 ) {
@@ -328,7 +329,20 @@ function createPage(
       );
     }
     if (method === "claws.status") {
-      return { records: options.statusRecord ? [options.statusRecord] : [] };
+      if (addedAgent && options.statusErrorAfterAdd) {
+        throw new Error("Status unavailable");
+      }
+      const record = options.statusRecord
+        ? { agentState: "present", ...options.statusRecord }
+        : addedAgent
+          ? {
+              agentId: "workflow-operator",
+              version: "1.2.0",
+              status: options.applyResult?.status ?? "complete",
+              agentState: "present",
+            }
+          : null;
+      return { records: record ? [record] : [] };
     }
     throw new Error(`Unexpected RPC: ${method}`);
   });
@@ -818,8 +832,8 @@ describe("AgentsHomePage", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("leaves a Claw needing setup on the review screen instead of opening chat", async () => {
-    const { page, navigate } = createPage({
+  it("opens an installed Claw's home chat after Add when it needs setup", async () => {
+    const { page, request, navigate, agentSelection, gateway } = createPage({
       clawsEnabled: true,
       applyResult: {
         agentId: "workflow-operator",
@@ -832,29 +846,68 @@ describe("AgentsHomePage", () => {
     page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
     await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
     page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
-    await vi.waitFor(() => expect(page.textContent).toContain("Needs setup"));
-    expect(page.textContent).toContain("oauth: workflows");
-    expect(navigate).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("chat", { pathname: "/chat/workflow-operator" }),
+    );
+    expect(request).toHaveBeenCalledWith("claws.status", { target: "workflow-operator" });
+    expect(agentSelection.state.selectedId).toBe("workflow-operator");
+    expect(gateway.setSessionKey).toHaveBeenCalledWith("agent:workflow-operator:team-room");
+    expect(page.querySelector("openclaw-claws-catalog-dialog")).toBeNull();
   });
 
-  it("shows a partial install error without claiming an agent settings page exists", async () => {
-    const { page, navigate } = createPage({
-      clawsEnabled: true,
-      applyResult: {
-        agentId: "workflow-operator",
-        status: "partial",
-        readiness: { ready: false },
-        error: { code: "plugin_install_failed", message: "Plugin installation failed" },
+  const confirmedStatus = { agentId: "workflow-operator", version: "1.2.0", status: "complete" };
+  const safeAddOutcomes: Array<[string, Parameters<typeof createPage>[0], string]> = [
+    [
+      "the agent is missing",
+      {
+        applyResult: {
+          agentId: "workflow-operator",
+          status: "complete",
+          readiness: { ready: false, requirements: [{ kind: "oauth", owner: "workflows" }] },
+        },
+        statusRecord: { ...confirmedStatus, agentState: "missing" },
       },
-      newAgentVisible: false,
+      "Needs setup",
+    ],
+    [
+      "Add is partial",
+      {
+        applyResult: {
+          agentId: "workflow-operator",
+          status: "partial",
+          readiness: { ready: false },
+          error: { code: "plugin_install_failed", message: "Plugin installation failed" },
+        },
+      },
+      "Check Claws status",
+    ],
+    ["the status read fails", { statusErrorAfterAdd: true }, "Claw added"],
+    [
+      "the status record is stale",
+      { statusRecord: { ...confirmedStatus, version: "1.1.0", agentState: "present" } },
+      "Claw added",
+    ],
+  ];
+
+  it.each(safeAddOutcomes)("stays in review: %s", async (_condition, options, message) => {
+    const { page, navigate, agentSelection } = createPage({
+      clawsEnabled: true,
+      ...options,
     });
-    await vi.waitFor(() => expect(page.querySelector("[data-claws-explore]")).not.toBeNull());
     await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
     page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
     await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
     page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
-    await vi.waitFor(() => expect(page.textContent).toContain("Plugin installation failed"));
-    expect(page.textContent).toContain("Check Claws status");
+    await vi.waitFor(() => expect(page.querySelectorAll(".agents-home__card")).toHaveLength(3));
+    await vi.waitFor(() => {
+      const done = page.querySelector<HTMLButtonElement>(".claws-catalog__footer button");
+      expect(done?.textContent?.trim()).toBe("Done");
+      expect(done?.disabled).toBe(false);
+    });
+    expect(page.textContent).toContain(message);
+    expect(page.textContent).not.toContain("Add outcome unknown");
+    expect(page.querySelector("[data-claws-confirm]")).toBeNull();
+    expect(agentSelection.state.selectedId).toBe("harbor");
     expect(navigate).not.toHaveBeenCalled();
   });
 
