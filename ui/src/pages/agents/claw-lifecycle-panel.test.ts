@@ -412,6 +412,10 @@ describe("Agent Claw lifecycle", () => {
     expect(panel.textContent).toContain("shared-search");
     expect(panel.textContent).toMatch(/Other Claws\s+2/u);
     expect(panel.textContent).toContain("sha256:current-private-task");
+    expect(panel.textContent).toContain(
+      "Some resources may stay installed even when no other Claw uses them.",
+    );
+    expect(panel.textContent).not.toContain("Release plugin reference");
     expect(request).not.toHaveBeenCalledWith("claws.remove.apply", expect.anything());
 
     panel.querySelector<HTMLButtonElement>("[data-claw-remove-confirm]")?.click();
@@ -422,6 +426,40 @@ describe("Agent Claw lifecycle", () => {
       }),
     );
     await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("agents"));
+  });
+
+  it("explains that releasing a Claw-introduced plugin keeps it installed", async () => {
+    const { panel } = mount({
+      plan: {
+        ...removePlan,
+        actions: [
+          ...removePlan.actions,
+          {
+            kind: "packageRef",
+            id: "plugin:@openclaw/lobster@2026.9.7",
+            action: "release",
+            blocked: false,
+            effect: {
+              type: "ownership",
+              relationship: "referenced",
+              origin: "claw-introduced",
+              independentOwner: false,
+              affectedClawCount: 0,
+            },
+          },
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(panel.textContent).toContain(installed.name));
+    panel.querySelector<HTMLButtonElement>(".settings-row .btn.danger")?.click();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-remove-confirm]")?.disabled).toBe(
+        false,
+      ),
+    );
+    expect(panel.textContent).toContain("Release plugin reference");
+    expect(panel.textContent).toContain("the plugin remains installed");
+    expect(panel.textContent).toContain("in Plugins or with the CLI");
   });
 
   it("does not call apply for a blocked removal plan", async () => {

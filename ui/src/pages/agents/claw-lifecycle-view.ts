@@ -454,10 +454,25 @@ function renderReview(props: AgentClawPanelProps) {
                   ${plan.actions.map(
                     (action) => html`<li>
                       <div>
-                        <strong>${labelAction(action.action)} ${labelState(action.kind)}</strong>
+                        <strong
+                          >${
+                            action.kind === "packageRef" &&
+                            action.action === "release" &&
+                            action.id.startsWith("plugin:")
+                              ? t("clawsLifecycle.releasePluginReference")
+                              : `${labelAction(action.action)} ${labelState(action.kind)}`
+                          }</strong
+                        >
                         <span>${action.id}</span>
                         ${action.reason ? html`<span>${action.reason}</span>` : nothing}
                         ${renderClawActionEffect(action.effect)}
+                        ${
+                          action.kind === "packageRef" &&
+                          action.action === "release" &&
+                          action.id.startsWith("plugin:")
+                            ? html`<span>${t("clawsLifecycle.releasedPluginNotice")}</span>`
+                            : nothing
+                        }
                       </div>
                       ${
                         action.action === "retain"
