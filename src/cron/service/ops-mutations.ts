@@ -69,7 +69,7 @@ const RETRY_ADD_AFTER_SESSION_CLEANUP = new Error("retry add after session clean
 export async function quiesceJobs(
   state: CronServiceState,
   jobs: readonly { id: string; revision: string }[],
-  commitGuard: () => void,
+  commitGuard: (cancel: () => void) => void | Promise<void>,
 ): Promise<void> {
   await locked(state, async () => {
     await ensureLoadedForOperation(state);
@@ -79,10 +79,18 @@ export async function quiesceJobs(
         throw new Error(`Cron job ${expected.id} changed before cancellation.`);
       }
     }
-    commitGuard();
-    for (const job of jobs) {
-      requestActiveCronJobCancellation(job.id, "Claw agent removal.");
-    }
+    let cancelled = false;
+    const cancel = () => {
+      if (cancelled) {
+        return;
+      }
+      cancelled = true;
+      for (const job of jobs) {
+        requestActiveCronJobCancellation(job.id, "Claw agent removal.");
+      }
+    };
+    await commitGuard(cancel);
+    cancel();
   });
 }
 

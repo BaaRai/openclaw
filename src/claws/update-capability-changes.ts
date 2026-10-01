@@ -1,4 +1,5 @@
 import { stableStringify } from "@openclaw/normalization-core";
+import type { PluginOperatorGrants } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import {
   listAgentEntries,
   toAgentEntriesRecord,
@@ -9,8 +10,10 @@ import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginAcceptedDeclaredSurface } from "../config/types.plugins.js";
 import { resolveHeartbeatSummaryForAgent } from "../infra/heartbeat-summary.js";
 import { resolveRememberAcrossConversations } from "../memory-host-sdk/host/config-utils.js";
+import { preserveOperatorAgentSettings } from "./agent-config-ownership.js";
 import { digestClawValue } from "./digest.js";
 import {
   resolveClawProfileCapabilities,
@@ -135,12 +138,6 @@ function classifyAgentCapability(
   desired: unknown,
   currentAgentExists: boolean,
 ): ClawUpdateCapabilityChange["classification"] {
-  if (path === "subagents.allowAgents") {
-    if (!Array.isArray(current) || !Array.isArray(desired)) {
-      return "escalation";
-    }
-    return desired.some((target) => !current.includes(target)) ? "escalation" : "reduction";
-  }
   if (path === "tools.profile" || path === "tools.allow" || path === "tools.deny") {
     if (!currentAgentExists && desired !== undefined) {
       return "escalation";
@@ -232,7 +229,6 @@ function classifyAgentCapability(
   return path.startsWith("sandbox.") ||
     path.startsWith("tools.") ||
     path.startsWith("heartbeat.") ||
-    path.startsWith("subagents.") ||
     path.startsWith("memory.search.")
     ? "escalation"
     : "neutral";
@@ -253,9 +249,6 @@ function pushAgentCapabilityChanges(params: {
   desiredTools?: unknown;
 }): void {
   const fields = [
-    ["model"],
-    ["subagents", "allowAgents"],
-    ["subagents", "delegationMode"],
     ["sandbox", "mode"],
     ["sandbox", "scope"],
     ["sandbox", "workspaceAccess"],
@@ -452,7 +445,10 @@ export function pushResolvedAgentCapabilityChanges(params: {
   if (currentIndex === -1) {
     desiredAgents.push(params.desiredAgent);
   } else {
-    desiredAgents[currentIndex] = params.desiredAgent;
+    desiredAgents[currentIndex] = preserveOperatorAgentSettings(
+      params.desiredAgent,
+      currentAgents[currentIndex],
+    );
   }
   const currentConfig = prepareCapabilityComparisonConfig(
     params.config,
@@ -492,6 +488,8 @@ export function packageCapabilityChange(params: {
   integrity?: string;
   installId?: string;
   riskWarning?: string;
+  desiredDeclaredCapabilities?: PluginAcceptedDeclaredSurface;
+  desiredCapabilityGrants?: PluginOperatorGrants;
   currentExtension?: unknown;
   desiredExtension?: unknown;
 }): ClawUpdateCapabilityChange | undefined {
@@ -516,6 +514,12 @@ export function packageCapabilityChange(params: {
       ...(params.integrity ? { integrity: params.integrity } : {}),
       ...(params.installId ? { installId: params.installId } : {}),
       ...(params.riskWarning ? { riskWarning: params.riskWarning } : {}),
+      ...(params.desiredDeclaredCapabilities
+        ? { declaredCapabilities: params.desiredDeclaredCapabilities }
+        : {}),
+      ...(params.desiredCapabilityGrants
+        ? { capabilityGrants: params.desiredCapabilityGrants }
+        : {}),
       ...(params.desiredExtension ? { extension: params.desiredExtension } : {}),
     },
     ...(params.currentVersion
@@ -535,6 +539,8 @@ export function packageCapabilityChange(params: {
             `version ${params.desiredVersion}${params.desiredExtension ? "; extension mapping updated" : ""}`,
             {
               version: params.desiredVersion,
+              declaredCapabilities: params.desiredDeclaredCapabilities,
+              capabilityGrants: params.desiredCapabilityGrants,
               extension: params.desiredExtension,
             },
           ),

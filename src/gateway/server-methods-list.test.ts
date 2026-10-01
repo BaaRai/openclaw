@@ -273,6 +273,15 @@ describe("listGatewayMethods", () => {
       "memory.get",
       "memory.status",
       "sessions.files.assets",
+      "claws.status",
+      "claws.catalog.search",
+      "claws.catalog.detail",
+      "claws.add.plan",
+      "claws.add.apply",
+      "claws.update.plan",
+      "claws.update.apply",
+      "claws.remove.plan",
+      "claws.remove.apply",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -352,6 +361,15 @@ describe("listGatewayMethods", () => {
       "memory.get",
       "memory.status",
       "sessions.files.assets",
+      "claws.status",
+      "claws.catalog.search",
+      "claws.catalog.detail",
+      "claws.add.plan",
+      "claws.add.apply",
+      "claws.update.plan",
+      "claws.update.apply",
+      "claws.remove.plan",
+      "claws.remove.apply",
     ]);
   });
 
@@ -559,6 +577,15 @@ describe("listGatewayMethods", () => {
       "memory.get",
       "memory.status",
       "sessions.files.assets",
+      "claws.status",
+      "claws.catalog.search",
+      "claws.catalog.detail",
+      "claws.add.plan",
+      "claws.add.apply",
+      "claws.update.plan",
+      "claws.update.apply",
+      "claws.remove.plan",
+      "claws.remove.apply",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
