@@ -366,7 +366,7 @@ afterEach(() => {
 });
 
 describe("Agent Claw lifecycle", () => {
-  it("shows installed status and allows reviewed removal while Labs is off", async () => {
+  it("allows reviewed removal with retained files while Labs is off", async () => {
     const { panel, request, navigate } = mount({
       plan: {
         ...removePlan,
@@ -389,6 +389,8 @@ describe("Agent Claw lifecycle", () => {
             },
           },
           { kind: "cronJob", id: "daily", action: "remove", blocked: false },
+          { kind: "workspaceFile", id: "AGENTS.md", action: "retain", blocked: false },
+          { kind: "bootstrap", id: "BOOTSTRAP.md", action: "retain", blocked: false },
         ],
         scheduledJobs: {
           coverage: "package-declarations",
