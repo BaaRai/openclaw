@@ -89,6 +89,18 @@ const workflowPluginReview: ClawPluginReview = {
   reviewToken: "review-workflow-tools",
 };
 
+const auditUrl =
+  "https://clawhub.ai/@openclaw/workflow-tools/versions/1.2.0/security-audit?review=pending-analysis";
+const auditWarning = [
+  "╭─ ClawHub Security Audit ──────────────────────────────────────────────╮",
+  "│ @openclaw/workflow-tools@1.2.0                                      │",
+  "│ Outcome: Review                                                      │",
+  "│ Overview:                                                            │",
+  "│ Analysis pending; review this release before installation.          │",
+  `│ Details: ${auditUrl} │`,
+  "╰─────────────────────────────────────────────────────────────────────╯",
+].join("\n");
+
 const reviewedAccess = {
   coverage: "configuration-only",
   desired: {
@@ -1010,6 +1022,44 @@ describe("AgentsHomePage", () => {
         }),
       ),
     );
+  });
+
+  it("presents the ClawHub audit in the Add review without terminal borders", async () => {
+    const { page, request } = createPage({
+      clawsEnabled: true,
+      pluginRiskWarning: auditWarning,
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() =>
+      expect(page.querySelector(".claws-plugin-review__entry .claws-trust-warning")).not.toBeNull(),
+    );
+
+    const warning = page.querySelector<HTMLElement>(
+      ".claws-plugin-review__entry .claws-trust-warning",
+    );
+    expect(warning?.textContent).toContain("ClawHub Security Audit");
+    expect(warning?.textContent).toContain("Outcome: Review");
+    expect(warning?.textContent).toContain("Analysis pending");
+    expect(warning?.textContent).not.toMatch(/[╭╮│╰╯]/u);
+    expect(warning?.querySelector<HTMLAnchorElement>("a")?.href).toBe(auditUrl);
+    expect(page.querySelector<HTMLButtonElement>("[data-claws-confirm]")?.disabled).toBe(true);
+    expect(request.mock.calls.some(([method]) => method === "claws.add.apply")).toBe(false);
+  });
+
+  it("does not link to a non-HTTP audit destination", async () => {
+    const { page } = createPage({
+      clawsEnabled: true,
+      pluginRiskWarning: auditWarning.replace(auditUrl, "javascript:alert(1)"),
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector(".claws-trust-warning")).not.toBeNull());
+
+    const warning = page.querySelector<HTMLElement>(".claws-trust-warning");
+    expect(warning?.textContent).toContain("javascript:alert(1)");
+    expect(warning?.querySelector("a")).toBeNull();
+    expect(page.querySelector<HTMLButtonElement>("[data-claws-confirm]")?.disabled).toBe(true);
   });
 
   it("requires explicit review of a warned skill before Add", async () => {

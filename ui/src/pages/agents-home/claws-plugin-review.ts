@@ -2,6 +2,7 @@ import { html, nothing } from "lit";
 import type { PluginOperatorGrants } from "../../../../packages/gateway-protocol/src/schema/plugins.js";
 import type { PluginAcceptedDeclaredSurface } from "../../../../src/config/types.plugins.js";
 import { t } from "../../i18n/index.ts";
+import { renderClawTrustWarning } from "./claws-trust-warning.ts";
 import "../../styles/claws-plugin-review.css";
 
 export type ClawPluginReview = {
@@ -188,11 +189,7 @@ export function renderClawPluginReviews(params: {
         </dl>
         ${renderDeclaredCapabilities(review.declaredCapabilities)}
         ${renderGrants(review.capabilityGrants)}
-        ${
-          review.riskWarning
-            ? html`<div class="callout warn" role="alert">${review.riskWarning}</div>`
-            : nothing
-        }
+        ${review.riskWarning ? renderClawTrustWarning(review.riskWarning) : nothing}
         ${
           review.ownerAction === "install" && review.riskWarning
             ? html`<label class="claws-plugin-review__risk">
