@@ -12,6 +12,7 @@ import type { RespondFn } from "./types.js";
 const planClawAddForGateway = vi.hoisted(() => vi.fn());
 const applyClawAddForGateway = vi.hoisted(() => vi.fn());
 const listConfiguredMcpServers = vi.hoisted(() => vi.fn());
+const readCurrentConfigForPolicyCheck = vi.hoisted(() => vi.fn());
 const assertValidCronCreateDelivery = vi.hoisted(() => vi.fn());
 const reloadManagedPlugin = vi.hoisted(() => vi.fn());
 vi.mock("../../claws/gateway-add-plan.js", () => ({ planClawAddForGateway }));
@@ -20,6 +21,10 @@ vi.mock("../../claws/gateway-add-apply.js", async (importOriginal) => ({
   applyClawAddForGateway,
 }));
 vi.mock("../../config/mcp-config.js", () => ({ listConfiguredMcpServers }));
+vi.mock("../../config/io.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/io.js")>()),
+  readCurrentConfigForPolicyCheck,
+}));
 vi.mock("../../cron/delivery-channel-validation.js", () => ({ assertValidCronCreateDelivery }));
 vi.mock("../../plugins/management-mutations.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/management-mutations.js")>()),
@@ -28,6 +33,7 @@ vi.mock("../../plugins/management-mutations.js", async (importOriginal) => ({
 
 afterEach(() => {
   vi.clearAllMocks();
+  readCurrentConfigForPolicyCheck.mockReset();
 });
 
 function callAddPlan(params: Record<string, unknown>, getRuntimeConfig: () => unknown) {
@@ -208,6 +214,25 @@ describe("claws.add.apply Gateway method", () => {
         },
       ],
     ]);
+  });
+
+  it("checks persisted config after agent commit even before the Gateway cache refreshes", async () => {
+    const stale = { agents: { list: [] } };
+    const committed = { agents: { list: [{ id: "workflow-operator" }] } };
+    let persisted: typeof stale | typeof committed = stale;
+    readCurrentConfigForPolicyCheck.mockImplementation(() => persisted);
+    applyClawAddForGateway.mockImplementation(async (input) => {
+      expect(input.getRuntimeConfig()).toEqual(stale);
+      persisted = committed;
+      expect(input.getRuntimeConfig()).toEqual(committed);
+      return { agentId: "workflow-operator", status: "complete" };
+    });
+
+    const request = callAddApply(params, () => stale);
+    await request.run();
+
+    expect(readCurrentConfigForPolicyCheck).toHaveBeenCalledTimes(2);
+    expect(request.replies).toEqual([[true, { agentId: "workflow-operator", status: "complete" }]]);
   });
 
   it("rejects revoked authority but continues when Labs changes during application", async () => {

@@ -13,7 +13,9 @@ import {
 import { planClawAddForGateway } from "../../claws/gateway-add-plan.js";
 import { ClawGatewayConsentError } from "../../claws/gateway-plugin-consent.js";
 import { ClawSkillConsentError } from "../../claws/gateway-skill-consent.js";
+import { readCurrentConfigForPolicyCheck } from "../../config/io.js";
 import { listConfiguredMcpServers } from "../../config/mcp-config.js";
+import { resolveConfigPath } from "../../config/paths.js";
 import { assertValidCronCreateDelivery } from "../../cron/delivery-channel-validation.js";
 import { normalizeCronJobCreate } from "../../cron/normalize.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -80,6 +82,8 @@ export const clawsAddHandlers: GatewayRequestHandlers = {
     };
     try {
       assertCurrent();
+      const configPath = resolveConfigPath();
+      const configEnv = process.env;
       const applyRuntime = context.applyPluginLifecycleChange;
       const reloadPlugins: PluginInstallBatchReload | undefined = applyRuntime
         ? async (plugins, options) => {
@@ -123,7 +127,7 @@ export const clawsAddHandlers: GatewayRequestHandlers = {
             sourceMcpServers: listedMcp.mcpServers,
           };
         },
-        getRuntimeConfig: () => context.getRuntimeConfig(),
+        getRuntimeConfig: () => readCurrentConfigForPolicyCheck({ configPath, env: configEnv }),
         assertCurrent,
         ...(signal ? { signal } : {}),
         ...(reloadPlugins ? { reloadPlugins } : {}),
