@@ -65,7 +65,7 @@ const plan = {
   actions: [],
 } as unknown as ClawUpdatePlan;
 const accessSnapshot = {
-  tools: { allowed: [], excluded: [] },
+  tools: { allowed: [], excluded: [], explicitAllow: [], explicitDeny: [] },
   sandbox: { mode: "off", scope: "agent", workspaceAccess: "none", backend: "other" },
   filesystem: { workspaceOnly: false },
   heartbeat: { enabled: false, intervalMs: null },
