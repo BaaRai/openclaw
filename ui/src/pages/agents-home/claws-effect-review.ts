@@ -37,7 +37,28 @@ export function hasCompleteClawActionEffects(
         (plan.operation !== "update" || Boolean(effect.currentDigest || effect.desiredDigest))
       );
     }
+    if (action.kind === "package" && action.id.startsWith("skill:")) {
+      if (effect?.type !== "skill-package" || !Value.Check(ClawActionEffectSchema, effect)) {
+        return false;
+      }
+      const artifact =
+        plan.operation === "update" && action.action === "release"
+          ? effect.current
+          : effect.desired;
+      return Boolean(artifact && action.id === `skill:${artifact.ref}`);
+    }
     if (plan.operation === "remove" && action.kind === "packageRef") {
+      if (action.id.startsWith("skill:")) {
+        return (
+          effect?.type === "skill-package" &&
+          Value.Check(ClawActionEffectSchema, effect) &&
+          Boolean(
+            effect.current &&
+            effect.ownership &&
+            action.id === `skill:${effect.current.ref}@${effect.current.version}`,
+          )
+        );
+      }
       return effect?.type === "ownership" && Value.Check(ClawActionEffectSchema, effect);
     }
     return true;
@@ -82,6 +103,37 @@ export function renderClawActionEffect(effect: ClawActionEffect | undefined) {
   }
   if (effect.type === "ownership") {
     return html`<dl class="claws-effect-review">${ownership(effect)}</dl>`;
+  }
+  if (effect.type === "skill-package") {
+    return html`<dl class="claws-effect-review">
+      ${
+        effect.current
+          ? fact(
+              t("clawsEffectReview.currentPackage"),
+              `${effect.current.source}:${effect.current.ref}@${effect.current.version}`,
+            )
+          : nothing
+      }
+      ${
+        effect.current
+          ? fact(t("clawsEffectReview.currentArtifact"), effect.current.integrity)
+          : nothing
+      }
+      ${
+        effect.desired
+          ? fact(
+              t("clawsEffectReview.newPackage"),
+              `${effect.desired.source}:${effect.desired.ref}@${effect.desired.version}`,
+            )
+          : nothing
+      }
+      ${
+        effect.desired
+          ? fact(t("clawsEffectReview.newArtifact"), effect.desired.integrity)
+          : nothing
+      }
+      ${effect.ownership ? ownership(effect.ownership) : nothing}
+    </dl>`;
   }
   const proposed = effect.proposed;
   return html`<dl class="claws-effect-review">

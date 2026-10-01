@@ -320,12 +320,14 @@ describe("Claw Gateway plan consent", () => {
       id: "skill:@community/triage",
       action: "install",
       target: "clawhub:@community/triage@1.0.0",
+      digest: `sha256:${"a".repeat(64)}`,
       blocked: false,
       details: {
         kind: "skill",
+        source: "clawhub",
         ref: "@community/triage",
         version: "1.0.0",
-        integrity: "sha256:skill-artifact",
+        integrity: `sha256:${"a".repeat(64)}`,
         ownerAction: "install",
         riskWarning: "Review this community skill before installation.",
       },
@@ -335,11 +337,12 @@ describe("Claw Gateway plan consent", () => {
     expect(projected.skillReviews).toMatchObject([
       {
         actionId: "skill:@community/triage",
-        integrity: "sha256:skill-artifact",
+        integrity: `sha256:${"a".repeat(64)}`,
         riskWarning: "Review this community skill before installation.",
       },
     ]);
     expect(projected.skillReviews[0]?.reviewToken).toMatch(/^sha256:/);
+    expect(projected.blockers).toEqual([]);
     expect(JSON.stringify(projected)).not.toContain(root);
 
     const changed = structuredClone(plan);

@@ -1,14 +1,47 @@
 import path from "node:path";
 import type { ClawActionEffect } from "../../packages/gateway-protocol/src/schema/claws.js";
+import { normalizeClawHubSha256Integrity } from "../infra/clawhub-integrity.js";
 import { digestClawValue } from "./digest.js";
 import type { ClawRemovePlanAction } from "./lifecycle-remove-contract.js";
 import { digestClawMcpServer } from "./mcp.js";
+import { digestClawPackageRef } from "./package-update-provenance.js";
+import type { PersistedClawPackageRef } from "./provenance.js";
 import { isSafeClawRelativePath } from "./schema-portability.js";
 import { mcpServerSchema } from "./schema.js";
 import type { ClawAddPlanAction } from "./types.js";
 import type { ClawUpdateAction } from "./update-plan-types.js";
 
 type OwnershipEffect = NonNullable<Extract<ClawActionEffect, { type: "mcp-server" }>["ownership"]>;
+type SkillArtifact = NonNullable<Extract<ClawActionEffect, { type: "skill-package" }>["desired"]>;
+
+function skillArtifact(details: Record<string, unknown> | undefined): SkillArtifact {
+  const source = details?.source;
+  const ref = details?.ref;
+  const version = details?.version;
+  const rawIntegrity = details?.integrity;
+  const integrity =
+    typeof rawIntegrity === "string" ? normalizeClawHubSha256Integrity(rawIntegrity) : null;
+  if (
+    source !== "clawhub" ||
+    typeof ref !== "string" ||
+    !ref ||
+    typeof version !== "string" ||
+    !version ||
+    !integrity
+  ) {
+    throw new Error("Claw skill artifact cannot be disclosed.");
+  }
+  return { source, ref, version, integrity };
+}
+
+function assertSkillActionTarget(action: { id: string; target: string }, artifact: SkillArtifact) {
+  if (
+    action.id !== `skill:${artifact.ref}` ||
+    action.target !== `${artifact.source}:${artifact.ref}@${artifact.version}`
+  ) {
+    throw new Error("Claw skill action does not match its artifact.");
+  }
+}
 
 function workspaceDestination(id: string): string {
   if (!isSafeClawRelativePath(id)) {
@@ -134,13 +167,14 @@ function ownership(details: Record<string, unknown> | undefined): OwnershipEffec
 
 export function clawActionNeedsEffect(
   operation: "add" | "update" | "remove",
-  kind: string,
+  action: { kind: string; id: string },
 ): boolean {
   return (
-    kind === "workspaceFile" ||
-    kind === "bootstrap" ||
-    kind === "mcpServer" ||
-    (operation === "remove" && kind === "packageRef")
+    action.kind === "workspaceFile" ||
+    action.kind === "bootstrap" ||
+    action.kind === "mcpServer" ||
+    (action.kind === "package" && action.id.startsWith("skill:")) ||
+    (operation === "remove" && action.kind === "packageRef")
   );
 }
 
@@ -159,12 +193,24 @@ export function projectClawAddActionEffect(
     const { declaration, digest } = mcpDeclaration(action.details ?? {});
     return { type: "mcp-server", desiredDigest: digest, proposed: declaration };
   }
+  if (action.kind === "package" && action.id.startsWith("skill:")) {
+    if (action.details?.kind !== "skill") {
+      throw new Error("Claw skill package kind cannot be disclosed.");
+    }
+    const desired = skillArtifact(action.details);
+    assertSkillActionTarget(action, desired);
+    if (!action.digest || normalizeClawHubSha256Integrity(action.digest) !== desired.integrity) {
+      throw new Error("Claw skill package integrity does not match its preflight.");
+    }
+    return { type: "skill-package", desired };
+  }
   return undefined;
 }
 
 export function projectClawUpdateActionEffect(
   action: ClawUpdateAction,
   targetActions: readonly ClawAddPlanAction[],
+  currentPackages: readonly PersistedClawPackageRef[],
   sourceRoot: string,
 ): ClawActionEffect | undefined {
   if (action.kind === "workspaceFile") {
@@ -206,6 +252,37 @@ export function projectClawUpdateActionEffect(
     }
     return { type: "mcp-server", currentDigest: action.currentDigest };
   }
+  if (action.kind === "package" && action.id.startsWith("skill:")) {
+    const currentRef = currentPackages.find(
+      (candidate) => candidate.kind === "skill" && action.id === `skill:${candidate.ref}`,
+    );
+    if (
+      Boolean(currentRef) !== Boolean(action.currentDigest) ||
+      (currentRef && digestClawPackageRef(currentRef) !== action.currentDigest)
+    ) {
+      throw new Error("Claw current skill artifact changed before disclosure.");
+    }
+    const current = currentRef ? skillArtifact(currentRef) : undefined;
+    if (action.action === "release") {
+      if (!current) {
+        throw new Error("Claw current skill artifact cannot be disclosed.");
+      }
+      assertSkillActionTarget(action, current);
+      return { type: "skill-package", current };
+    }
+    const target = targetActions.find(
+      (candidate) => candidate.kind === "package" && candidate.id === action.id,
+    );
+    if (!target || target.details?.kind !== "skill" || target.target !== action.target) {
+      throw new Error("Claw target skill artifact cannot be disclosed.");
+    }
+    const desired = skillArtifact(target.details);
+    assertSkillActionTarget(action, desired);
+    if (!target.digest || normalizeClawHubSha256Integrity(target.digest) !== desired.integrity) {
+      throw new Error("Claw target skill integrity does not match its preflight.");
+    }
+    return { type: "skill-package", ...(current ? { current } : {}), desired };
+  }
   return undefined;
 }
 
@@ -222,6 +299,16 @@ export function projectClawRemoveActionEffect(
     });
   }
   if (action.kind === "packageRef") {
+    if (action.id.startsWith("skill:")) {
+      const current = skillArtifact(action.details);
+      if (
+        action.id !== `skill:${current.ref}@${current.version}` ||
+        action.target !== `${current.source}:${current.ref}@${current.version}`
+      ) {
+        throw new Error("Claw removed skill does not match its artifact.");
+      }
+      return { type: "skill-package", current, ownership: ownership(action.details) };
+    }
     return { type: "ownership", ...ownership(action.details) };
   }
   if (action.kind === "mcpServer") {

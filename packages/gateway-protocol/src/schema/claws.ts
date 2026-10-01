@@ -5,7 +5,7 @@ import { PluginDeclaredSurfaceSchema, PluginOperatorGrantsSchema } from "./plugi
 import { NonEmptyString } from "./primitives.js";
 
 const OfficialClawName = Type.String({ pattern: "^@openclaw/[a-z0-9][a-z0-9._-]*$" });
-const ClawPluginIntegrity = Type.String({ pattern: "^sha256-[A-Za-z0-9+/]{43}=$" });
+const ClawArtifactIntegrity = Type.String({ pattern: "^sha256-[A-Za-z0-9+/]{43}=$" });
 const ClawCatalogCoordinateSchema = closedObject({
   packageName: OfficialClawName,
   version: NonEmptyString,
@@ -118,7 +118,7 @@ export const ClawPluginReviewSchema = closedObject({
   ref: NonEmptyString,
   version: NonEmptyString,
   ownerAction: Type.Union([Type.Literal("install"), Type.Literal("reuse")]),
-  integrity: ClawPluginIntegrity,
+  integrity: ClawArtifactIntegrity,
   declaredCapabilities: PluginDeclaredSurfaceSchema,
   capabilityGrants: PluginOperatorGrantsSchema,
   reviewToken: NonEmptyString,
@@ -278,6 +278,13 @@ const ClawOwnershipEffectSchema = closedObject({
   affectedClawCount: Type.Integer({ minimum: 0 }),
 });
 
+const ClawSkillArtifactSchema = closedObject({
+  source: Type.Literal("clawhub"),
+  ref: NonEmptyString,
+  version: NonEmptyString,
+  integrity: ClawArtifactIntegrity,
+});
+
 const ClawMcpDeclarationSchema = closedObject({
   transport: Type.Union([
     Type.Literal("stdio"),
@@ -322,6 +329,12 @@ export const ClawActionEffectSchema = Type.Union([
   closedObject({
     type: Type.Literal("ownership"),
     ...ClawOwnershipEffectSchema.properties,
+  }),
+  closedObject({
+    type: Type.Literal("skill-package"),
+    current: Type.Optional(ClawSkillArtifactSchema),
+    desired: Type.Optional(ClawSkillArtifactSchema),
+    ownership: Type.Optional(ClawOwnershipEffectSchema),
   }),
 ]);
 

@@ -199,6 +199,7 @@ export async function buildGatewayClawUpdatePlan(input: {
       .map((ref) => ref.job),
     targetJobs: source.manifest.cronJobs ?? [],
     targetActions: targetAddPlan?.actions,
+    currentPackages: prepared.inventory.packages.filter((ref) => ref.agentId === plan.agentId),
     pluginReviews,
     skillReviews,
   });

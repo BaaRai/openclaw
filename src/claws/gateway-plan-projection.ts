@@ -25,6 +25,7 @@ import {
   projectClawUpdateScheduledJobs,
 } from "./gateway-disclosure.js";
 import type { ClawRemovePlan } from "./lifecycle-remove-contract.js";
+import type { PersistedClawPackageRef } from "./provenance.js";
 import type {
   ClawAddPlan,
   ClawAddPlanAction,
@@ -32,8 +33,7 @@ import type {
   ClawDiagnostic,
   ClawLocalPrerequisite,
 } from "./types.js";
-import type { ClawUpdateAction } from "./update-plan-types.js";
-import type { ClawUpdatePlan } from "./update-plan-types.js";
+import type { ClawUpdateAction, ClawUpdatePlan } from "./update-plan-types.js";
 
 function safeBlocker(diagnostic: Pick<ClawDiagnostic, "code" | "path">) {
   return {
@@ -63,7 +63,7 @@ function projectActionsWithEffects<
   const blockers: Array<{ code: string; path: string; message: string }> = [];
   const projected = actions.map((action) => {
     const safe = safeAction(action);
-    if (!clawActionNeedsEffect(operation, action.kind)) {
+    if (!clawActionNeedsEffect(operation, action)) {
       return safe;
     }
     try {
@@ -285,11 +285,17 @@ export function projectClawUpdatePlan(
     targetJobs: readonly ClawCronJob[];
     pluginReviews?: ClawPluginReview[];
     targetActions?: readonly ClawAddPlanAction[];
+    currentPackages?: readonly PersistedClawPackageRef[];
     skillReviews?: ClawSkillReview[];
   },
 ): ClawLifecyclePlanResult {
   const effects = projectActionsWithEffects("update", plan.actions, (action: ClawUpdateAction) =>
-    projectClawUpdateActionEffect(action, review.targetActions ?? [], sourceRoot),
+    projectClawUpdateActionEffect(
+      action,
+      review.targetActions ?? [],
+      review.currentPackages ?? [],
+      sourceRoot,
+    ),
   );
   const expectedPluginActions = plan.actions
     .filter(

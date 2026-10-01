@@ -64,6 +64,39 @@ it("shows a redacted MCP endpoint and binds the complete URL by digest", () => {
   expect(container.textContent).toContain("token");
 });
 
+it("shows exact current and desired ClawHub skill artifacts and removal ownership", () => {
+  const container = document.createElement("div");
+  render(
+    renderClawActionEffect({
+      type: "skill-package",
+      current: {
+        source: "clawhub",
+        ref: "triage",
+        version: "1.0.0",
+        integrity: `sha256-${"A".repeat(43)}=`,
+      },
+      desired: {
+        source: "clawhub",
+        ref: "triage",
+        version: "2.0.0",
+        integrity: `sha256-${"B".repeat(43)}=`,
+      },
+      ownership: {
+        relationship: "managed",
+        origin: "claw-introduced",
+        independentOwner: false,
+        affectedClawCount: 0,
+      },
+    }),
+    container,
+  );
+  expect(container.textContent).toContain("clawhub:triage@1.0.0");
+  expect(container.textContent).toContain(`sha256-${"A".repeat(43)}=`);
+  expect(container.textContent).toContain("clawhub:triage@2.0.0");
+  expect(container.textContent).toContain(`sha256-${"B".repeat(43)}=`);
+  expect(container.textContent).toContain("Managed");
+});
+
 it("refuses Add, Update, or Remove when a required effect is absent", () => {
   expect(
     hasCompleteClawActionEffects({
@@ -83,4 +116,75 @@ it("refuses Add, Update, or Remove when a required effect is absent", () => {
       actions: [{ kind: "packageRef", id: "plugin:search", action: "release", blocked: false }],
     }),
   ).toBe(false);
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "add",
+      actions: [{ kind: "package", id: "skill:triage", action: "install", blocked: false }],
+    }),
+  ).toBe(false);
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "update",
+      actions: [{ kind: "package", id: "skill:triage", action: "release", blocked: false }],
+    }),
+  ).toBe(false);
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "remove",
+      actions: [
+        { kind: "packageRef", id: "skill:triage@1.0.0", action: "uninstall", blocked: false },
+      ],
+    }),
+  ).toBe(false);
+});
+
+it("requires the reviewed skill artifact to match the action", () => {
+  const desired = {
+    source: "clawhub" as const,
+    ref: "triage",
+    version: "2.0.0",
+    integrity: `sha256-${"A".repeat(43)}=`,
+  };
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "add",
+      actions: [
+        {
+          kind: "package",
+          id: "skill:other",
+          action: "install",
+          blocked: false,
+          effect: { type: "skill-package", desired },
+        },
+      ],
+    }),
+  ).toBe(false);
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "add",
+      actions: [
+        {
+          kind: "package",
+          id: "skill:triage",
+          action: "install",
+          blocked: false,
+          effect: { type: "skill-package", desired: { ...desired, integrity: "unresolved" } },
+        },
+      ],
+    }),
+  ).toBe(false);
+  expect(
+    hasCompleteClawActionEffects({
+      operation: "add",
+      actions: [
+        {
+          kind: "package",
+          id: "skill:triage",
+          action: "install",
+          blocked: false,
+          effect: { type: "skill-package", desired },
+        },
+      ],
+    }),
+  ).toBe(true);
 });
