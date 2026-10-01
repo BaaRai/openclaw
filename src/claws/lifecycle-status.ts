@@ -14,7 +14,11 @@ import {
 } from "../plugins/install-artifact-inspection.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { matchesClawAgentConfigDigest } from "./agent-config-ownership.js";
-import { readClawCronRefs, type PersistedClawCronRef } from "./cron.js";
+import {
+  CLAW_CRON_REF_SCHEMA_VERSION,
+  readClawCronRefs,
+  type PersistedClawCronRef,
+} from "./cron.js";
 import { digestClawValue } from "./digest.js";
 import type { ClawInventory } from "./inventory-read.kernel.js";
 import {
@@ -372,7 +376,10 @@ export async function readClawStatus(
       ).length,
       cronRefs: cronJobs.length,
       unresolvedCronRefs: cronJobs.filter(
-        (cron) => cron.status !== "complete" || !cron.schedulerJobId,
+        (cron) =>
+          cron.schemaVersion !== CLAW_CRON_REF_SCHEMA_VERSION ||
+          cron.status !== "complete" ||
+          !cron.schedulerJobId,
       ).length,
     },
   };

@@ -17,6 +17,7 @@ import {
   withClawAgentConfigRemoval,
   digestClawAgentRemovalSurface,
 } from "./lifecycle-config-removal.js";
+import { clawCronRemovalIssue, planClawCronRemovalAction } from "./lifecycle-cron-removal.js";
 import {
   clawRemoveQuietRuntime,
   ClawRemoveError,
@@ -344,22 +345,7 @@ export async function buildClawRemovePlan(
       });
     }
     for (const cron of record.cronJobs) {
-      const blocked =
-        cron.status !== "removed" && (cron.status !== "complete" || !cron.schedulerJobId);
-      actions.push({
-        kind: "cronJob",
-        id: cron.manifestId,
-        action: blocked ? "retain" : "remove",
-        target: cron.schedulerJobId ?? cron.declarationKey,
-        blocked,
-        details: {
-          expectedStatus: cron.status,
-          declarationKey: cron.declarationKey,
-          schedulerJobId: cron.schedulerJobId,
-          job: cron.job,
-        },
-        ...(blocked ? { reason: `Cron ownership state is ${cron.status}.` } : {}),
-      });
+      actions.push(planClawCronRemovalAction(cron));
     }
     actions.push({
       kind: "installRecord",
@@ -519,7 +505,7 @@ export async function applyClawRemovePlan(
         return partial("mcp_cleanup_failed", mcpRemoval.error);
       }
       for (const cron of record.cronJobs) {
-        if (cron.status !== "removed" && (!cron.schedulerJobId || cron.status !== "complete")) {
+        if (clawCronRemovalIssue(cron)) {
           throw new ClawRemoveError(
             "cron_cleanup_uncertain",
             `Cron declaration ${JSON.stringify(cron.manifestId)} is not safely removable.`,
