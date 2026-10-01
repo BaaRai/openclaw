@@ -12,6 +12,36 @@ afterEach(() => {
 });
 
 describe("Claw Remove one-shot CLI", () => {
+  it("keeps preview and apply child authority separate", async () => {
+    const applyBridge: ClawRemoveGatewayBridge = {
+      agentId: "worker",
+      assertCurrent: () => {},
+      allowedCronJobIds: new Set(),
+      createCallbacks: () => ({
+        monitorGateway: { inspect: async () => [], quiesce: async () => {}, drain: async () => {} },
+        packageGateway: async () => ({ packages: [] }),
+        cronGateway: { get: async () => null, remove: async () => {} },
+      }),
+    };
+    const previewBridge: ClawRemoveGatewayBridge = {
+      previewOnly: true,
+      agentId: "worker",
+      assertCurrent: () => {},
+      monitorGateway: { inspect: async () => [] },
+    };
+    await expect(
+      runClawRemoveCli({ agentId: "worker", gatewayBridge: applyBridge }),
+    ).rejects.toThrow("requires the reviewed plan");
+    await expect(
+      runClawRemoveCli({
+        agentId: "worker",
+        planIntegrity: `sha256:${"a".repeat(64)}`,
+        gatewayBridge: previewBridge,
+      }),
+    ).rejects.toThrow("preview bridge cannot apply");
+    expect(resolveCurrentOpenClawCliInvocation).not.toHaveBeenCalled();
+  });
+
   it("passes only the agent and canonical digest as argv, with bounded output", async () => {
     resolveCurrentOpenClawCliInvocation.mockImplementation((args) => ({
       command: "/usr/bin/node",

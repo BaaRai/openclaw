@@ -40,6 +40,48 @@ function request(id: number, fields: Record<string, unknown>) {
 }
 
 describe("Gateway Claw Remove child bridge", () => {
+  it("limits a preview child to monitor inspection for the reviewed agent", async () => {
+    const { child, sent } = fakeChild();
+    const inspect = vi.fn(async () => []);
+    attachClawRemoveGatewayBridge(
+      child as unknown as ChildProcess,
+      {
+        previewOnly: true,
+        agentId: "worker",
+        assertCurrent: vi.fn(),
+        monitorGateway: { inspect },
+      },
+      vi.fn(),
+    );
+    const digest = `sha256:${"a".repeat(64)}`;
+    const requests = [
+      request(1, { op: "monitor.inspect", agentId: "worker" }),
+      request(2, { op: "monitor.inspect", agentId: "other-agent" }),
+      request(3, { op: "monitor.quiesce", agentId: "worker", operationId: "op", monitors: [] }),
+      request(4, { op: "monitor.drain", agentId: "worker", operationId: "op" }),
+      request(5, {
+        op: "package.remove",
+        request: {
+          agentId: "worker",
+          operationId: "op",
+          expectedInstallDigest: digest,
+          expectedPackagePlanDigest: digest,
+          cleanup: { mode: "retain", selected: [], allowConflicts: false },
+        },
+      }),
+      request(6, { op: "cron.get", schedulerJobId: "scheduler-daily" }),
+      request(7, { op: "cron.remove", schedulerJobId: "scheduler-daily" }),
+    ];
+    for (const item of requests) {
+      child.emit("message", item);
+    }
+    await vi.waitFor(() => expect(sent).toHaveLength(requests.length));
+    const responses = new Map(sent.map((response) => [response.id, response]));
+    expect(responses.get(1)?.ok).toBe(true);
+    expect(requests.slice(1).every((item) => responses.get(item.id)?.ok === false)).toBe(true);
+    expect(inspect).toHaveBeenCalledExactlyOnceWith("worker");
+  });
+
   it("dispatches only scoped monitor, package, and cron operations", async () => {
     const { child, sent } = fakeChild();
     const inspect = vi.fn(async () => []);

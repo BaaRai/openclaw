@@ -23,12 +23,23 @@ type ClawRemoveGatewayCallbacks = {
   };
 };
 
-export type ClawRemoveGatewayBridge = {
+type ClawRemoveGatewayBridgeBase = {
   agentId: string;
   assertCurrent: () => void;
+};
+
+export type ClawRemoveGatewayPreviewBridge = ClawRemoveGatewayBridgeBase & {
+  previewOnly: true;
+  monitorGateway: Pick<ClawMonitorCleanupGateway, "inspect">;
+};
+
+export type ClawRemoveGatewayApplyBridge = ClawRemoveGatewayBridgeBase & {
+  previewOnly?: false;
   allowedCronJobIds: ReadonlySet<string>;
   createCallbacks: (assertCurrent: () => void) => ClawRemoveGatewayCallbacks;
 };
+
+export type ClawRemoveGatewayBridge = ClawRemoveGatewayPreviewBridge | ClawRemoveGatewayApplyBridge;
 
 function requestSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value) ?? "null");
@@ -57,7 +68,7 @@ export function attachClawRemoveGatewayBridge(
       throw denial;
     }
   };
-  const callbacks = bridge.createCallbacks(assertCurrent);
+  const callbacks = bridge.previewOnly ? undefined : bridge.createCallbacks(assertCurrent);
   const retire = () => {
     active = false;
   };
@@ -103,6 +114,15 @@ export function attachClawRemoveGatewayBridge(
   };
   const dispatch = async (request: ClawRemoveBridgeRequest): Promise<unknown> => {
     assertCurrent();
+    if (bridge.previewOnly) {
+      if (request.op !== "monitor.inspect" || request.agentId !== bridge.agentId) {
+        throw new Error("Claw removal preview permits only monitor inspection for its agent.");
+      }
+      return await bridge.monitorGateway.inspect(request.agentId);
+    }
+    if (!callbacks) {
+      throw new Error("Claw removal callbacks are unavailable.");
+    }
     switch (request.op) {
       case "monitor.inspect": {
         if (request.agentId !== bridge.agentId) {

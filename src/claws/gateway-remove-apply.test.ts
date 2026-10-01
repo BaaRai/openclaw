@@ -93,7 +93,18 @@ describe("Gateway Claw Remove Apply", () => {
       monitorGateway,
     });
     expect(runClawRemoveCli).toHaveBeenCalledTimes(2);
-    expect(runClawRemoveCli.mock.calls[0]).toEqual([{ agentId: "worker", signal: undefined }]);
+    expect(runClawRemoveCli.mock.calls[0]).toEqual([
+      {
+        agentId: "worker",
+        signal: undefined,
+        gatewayBridge: {
+          previewOnly: true,
+          agentId: "worker",
+          assertCurrent: expect.any(Function),
+          monitorGateway,
+        },
+      },
+    ]);
     expect(runClawRemoveCli.mock.calls.at(1)?.[0]).toMatchObject({
       agentId: "worker",
       planIntegrity: canonical.planIntegrity,

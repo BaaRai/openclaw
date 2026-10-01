@@ -21,7 +21,10 @@ export async function runClawRemoveCli(input: {
   signal?: AbortSignal;
   gatewayBridge?: ClawRemoveGatewayBridge;
 }): Promise<ClawRemoveCliResponse> {
-  if (input.gatewayBridge && !input.planIntegrity) {
+  if (input.gatewayBridge?.previewOnly && input.planIntegrity) {
+    throw new Error("Gateway Claw removal preview bridge cannot apply a plan.");
+  }
+  if (input.gatewayBridge && !input.gatewayBridge.previewOnly && !input.planIntegrity) {
     throw new Error("Gateway Claw removal bridge requires the reviewed plan.");
   }
   const invocation = resolveCurrentOpenClawCliInvocation(

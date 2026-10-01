@@ -4,7 +4,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { ClawGatewayPlanChangedError } from "./gateway-add-apply.js";
 import { planClawRemoveForGateway } from "./gateway-lifecycle-plan.js";
 import { projectClawRemovePlan } from "./gateway-plan-projection.js";
-import type { ClawRemoveGatewayBridge } from "./gateway-remove-bridge.js";
+import type { ClawRemoveGatewayApplyBridge } from "./gateway-remove-bridge.js";
 import { runClawRemoveCli } from "./gateway-remove-cli.js";
 import {
   CLAW_REMOVE_PLAN_SCHEMA_VERSION,
@@ -83,7 +83,7 @@ export async function applyClawRemoveForGateway(input: {
   createApplyCallbacks: (
     assertCurrent: () => void,
     reviewedPackageActions: readonly ClawRemovePlanAction[],
-  ) => ReturnType<ClawRemoveGatewayBridge["createCallbacks"]>;
+  ) => ReturnType<ClawRemoveGatewayApplyBridge["createCallbacks"]>;
   assertCurrent: () => void;
   signal?: AbortSignal;
 }): Promise<GatewayClawRemoveApplyResult> {
@@ -103,7 +103,16 @@ export async function applyClawRemoveForGateway(input: {
     throw new ClawGatewayPlanChangedError();
   }
 
-  const dryRun = await runClawRemoveCli({ agentId: input.agentId, signal: input.signal });
+  const dryRun = await runClawRemoveCli({
+    agentId: input.agentId,
+    signal: input.signal,
+    gatewayBridge: {
+      previewOnly: true,
+      agentId: input.agentId,
+      assertCurrent: input.assertCurrent,
+      monitorGateway: input.monitorGateway,
+    },
+  });
   input.assertCurrent();
   const parsed = removePlanSchema.safeParse(dryRun.payload);
   if (!parsed.success) {
