@@ -52,7 +52,7 @@ function statusRecord(overrides: Partial<ClawStatusRecord> = {}): ClawStatusReco
 }
 
 describe("Gateway Claw status projection", () => {
-  it("reports adopted agents and files as pre-existing without changing package ownership", () => {
+  it("reports adopted agent ownership without guessing workspace file origins", () => {
     const created = statusRecord();
     const result = projectClawsStatus([
       statusRecord({
@@ -70,6 +70,18 @@ describe("Gateway Claw status projection", () => {
             createdAtMs: 1,
             updatedAtMs: 2,
           },
+          {
+            schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+            agentId: "workflow-operator",
+            workspace: "/tmp/workflow-operator",
+            path: "NEW.md",
+            sourcePath: "NEW.md",
+            contentDigest: "sha256:added-on-update",
+            status: "complete",
+            state: "unchanged",
+            createdAtMs: 3,
+            updatedAtMs: 3,
+          },
         ],
         packages: [packageStatus()],
       }),
@@ -83,17 +95,18 @@ describe("Gateway Claw status projection", () => {
           independentOwner: true,
         }),
         expect.objectContaining({
-          kind: "workspace-file",
-          origin: "pre-existing",
-          independentOwner: true,
-        }),
-        expect.objectContaining({
           kind: "plugin",
           origin: "claw-introduced",
           independentOwner: false,
         }),
       ]),
     );
+    expect(
+      result.records[0]?.resources.filter((resource) => resource.kind === "workspace-file"),
+    ).toEqual([
+      { kind: "workspace-file", id: "SOUL.md", state: "unchanged", relationship: "managed" },
+      { kind: "workspace-file", id: "NEW.md", state: "unchanged", relationship: "managed" },
+    ]);
   });
 
   it("does not hide extension drift or unresolved scheduled jobs", () => {

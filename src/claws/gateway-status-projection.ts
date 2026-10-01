@@ -89,8 +89,7 @@ function projectResourceStatus(
       id: file.path,
       state: file.state,
       relationship: "managed" as const,
-      origin: agentOrigin,
-      independentOwner: adopted,
+      ...(adopted ? {} : { origin: "claw-introduced" as const, independentOwner: false }),
     })),
     ...record.packages.map((pkg) => ({
       kind: pkg.kind,
