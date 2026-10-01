@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -277,6 +278,7 @@ async function setupInstalledClaw() {
 
 describe("owned ClawHub skill upgrade", () => {
   afterEach(() => {
+    __setFsSafeTestHooksForTest(undefined);
     registry.detail.mockReset();
     registry.download.mockReset();
     registry.verify.mockReset();
@@ -332,6 +334,45 @@ describe("owned ClawHub skill upgrade", () => {
     expect((await readClawHubSkillsLockfile(current.workspace)).skills.triage?.version).toBe(
       "operator-version",
     );
+  });
+
+  it("keeps the upgraded skill and lockfile when the rollback lease closes during planning", async () => {
+    const current = await setup();
+    const readRefs = current.options.readRefs;
+    let leaseCount = 0;
+    let rollbackLeaseCurrent = true;
+    current.options.packageDeps.acquirePackageLease = vi.fn(() => {
+      const rollbackLease = ++leaseCount === 2;
+      return {
+        heartbeat: vi.fn(() => {
+          if (rollbackLease && !rollbackLeaseCurrent) {
+            throw new Error("rollback lease lost");
+          }
+        }),
+        release: vi.fn(),
+      };
+    });
+    current.options.readRefs = async (query) => {
+      const refs = await readRefs(query);
+      if (leaseCount === 2) {
+        rollbackLeaseCurrent = false;
+      }
+      return refs;
+    };
+    const execution = await applyClawPackageUpdate(
+      createClawUpdatePlanFixture([current.action]),
+      current.targetAddPlan,
+      current.options,
+    );
+    const upgradedLock = await readClawHubSkillsLockfile(current.workspace);
+
+    await expect(execution.rollback()).rejects.toMatchObject({ partial: true });
+    expect(leaseCount).toBe(2);
+    expect(current.current()).toMatchObject({ version: "2.0.0" });
+    expect(await fs.readFile(path.join(current.skillDir, "SKILL.md"), "utf8")).toBe(
+      current.v2.content,
+    );
+    expect(await readClawHubSkillsLockfile(current.workspace)).toEqual(upgradedLock);
   });
 
   it("does not touch bytes or ownership when the old tracked tree drifted", async () => {
@@ -481,6 +522,7 @@ describe("owned ClawHub skill upgrade", () => {
       clawManaged: true,
       deferCommit: true,
       expectedClawHubState: planned.plan,
+      assertOwned: () => undefined,
       beforePersistentApply: () => {
         try {
           if (
@@ -508,6 +550,61 @@ describe("owned ClawHub skill upgrade", () => {
     );
     expect(await readClawHubSkillsLockfile(current.workspace)).toEqual(current.oldLock);
     expect(await readClawHubSkillOrigin(current.skillDir)).toEqual(current.oldOrigin);
+  });
+
+  it("does not rewrite the lockfile after rollback loses its owner", async () => {
+    const current = await setup();
+    const planned = await planClawHubSkillUninstall({
+      workspaceDir: current.workspace,
+      slug: "triage",
+      expectedVersion: "1.0.0",
+    });
+    if (!planned.ok) {
+      throw new Error(planned.error);
+    }
+    const upgraded = await installSkillFromClawHub({
+      workspaceDir: current.workspace,
+      slug: "triage",
+      version: "2.0.0",
+      expectedIntegrity: current.v2.integrity,
+      force: true,
+      clawManaged: true,
+      deferCommit: true,
+      expectedClawHubState: planned.plan,
+      assertOwned: () => undefined,
+    });
+    if (!upgraded.ok || !upgraded.transaction) {
+      throw new Error("expected deferred skill upgrade");
+    }
+    const upgradedLock = await readClawHubSkillsLockfile(current.workspace);
+    const lost = new Error("rollback lease lost before lockfile restore");
+    let rollbackLeaseCurrent = true;
+    let sawRestoredDir = false;
+    __setFsSafeTestHooksForTest({
+      beforeRootFallbackMutation(operation, target) {
+        if (
+          operation === "remove" &&
+          path.basename(target).startsWith(".openclaw-install-rollback-")
+        ) {
+          sawRestoredDir =
+            fsSync.readFileSync(path.join(current.skillDir, "SKILL.md"), "utf8") ===
+            current.v1.content;
+          rollbackLeaseCurrent = false;
+        }
+      },
+    });
+    const assertCurrent = () => {
+      if (!rollbackLeaseCurrent) {
+        throw lost;
+      }
+    };
+
+    await expect(upgraded.transaction.rollback(assertCurrent)).rejects.toBe(lost);
+    expect(sawRestoredDir).toBe(true);
+    expect(await fs.readFile(path.join(current.skillDir, "SKILL.md"), "utf8")).toBe(
+      current.v1.content,
+    );
+    expect(await readClawHubSkillsLockfile(current.workspace)).toEqual(upgradedLock);
   });
 
   it("rolls back a fully planned skill upgrade when a later Claw stage fails", async () => {
@@ -585,6 +682,37 @@ describe("owned ClawHub skill upgrade", () => {
     });
     expect(nextPlan.actions).toContainEqual(
       expect.objectContaining({ kind: "package", id: "skill:triage", action: "unchanged" }),
+    );
+  });
+
+  it("retains the previous skill backup when the commit lease is lost", async () => {
+    const current = await setup();
+    let leaseCount = 0;
+    current.options.packageDeps.acquirePackageLease = vi.fn(() => {
+      const commitLease = ++leaseCount === 2;
+      return {
+        heartbeat: vi.fn(() => {
+          if (commitLease) {
+            throw new Error("commit lease lost");
+          }
+        }),
+        release: vi.fn(),
+      };
+    });
+    const execution = await applyClawPackageUpdate(
+      createClawUpdatePlanFixture([current.action]),
+      current.targetAddPlan,
+      current.options,
+    );
+    const backupRoot = path.join(current.workspace, "skills", ".openclaw-install-backups");
+    const backups = await fs.readdir(backupRoot);
+    expect(backups).toHaveLength(1);
+
+    await expect(execution.commit?.()).rejects.toThrow("commit lease lost");
+    expect(leaseCount).toBe(2);
+    expect(await fs.readdir(backupRoot)).toEqual(backups);
+    expect(await fs.readFile(path.join(current.skillDir, "SKILL.md"), "utf8")).toBe(
+      current.v2.content,
     );
   });
 

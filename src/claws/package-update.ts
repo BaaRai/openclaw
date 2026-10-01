@@ -97,6 +97,8 @@ export async function applyClawPackageUpdate(
   const readInstalls =
     options.readInstalls ?? (async () => (await readClawInventory(options)).installs);
   const replaceExpected = options.replaceExpected ?? replaceClawPackageRefForUpdate;
+  const acquirePackageLease =
+    options.packageDeps?.acquirePackageLease ?? acquireClawPackageLifecycleLease;
   const currentRefs = new Map(
     (await readRefs({ ...options, agentId: updatePlan.agentId })).map((ref) => [
       clawPackageKey(ref),
@@ -111,7 +113,11 @@ export async function applyClawPackageUpdate(
   const forwardOptions = { ...options, assertCurrent: assertForwardCurrent };
   const undo: Array<() => Promise<void>> = [];
   const externalMutations: string[] = [];
-  const skillTransactions: PackageDirInstallTransaction[] = [];
+  const skillTransactions: Array<{
+    transaction: PackageDirInstallTransaction;
+    ref: string;
+    workspace: string;
+  }> = [];
   const appliedIds: string[] = [];
 
   const rollback = async () => {
@@ -400,11 +406,13 @@ export async function applyClawPackageUpdate(
             externalMutations.push(`${target.kind}:${target.ref}@${target.version}`);
           },
           onSkillTransaction: (_pkg, transaction) => {
-            skillTransactions.push(transaction);
+            skillTransactions.push({
+              transaction,
+              ref: target.ref,
+              workspace: targetAddPlan.agent.workspace,
+            });
             undo[undoIndex] = async () => {
-              const acquireLease =
-                options.packageDeps?.acquirePackageLease ?? acquireClawPackageLifecycleLease;
-              const acquired = acquireLease(
+              const acquired = acquirePackageLease(
                 {
                   kind: "skill",
                   source: "clawhub",
@@ -418,7 +426,11 @@ export async function applyClawPackageUpdate(
               }
               const lease = maintainClawPackageLifecycleLease(acquired);
               try {
-                lease.assertCurrent();
+                const assertRollbackCurrent = () => {
+                  lease.assertCurrent();
+                  options.assertCurrent?.();
+                };
+                assertRollbackCurrent();
                 const liveRefs = await readRefs(options);
                 if (
                   previous &&
@@ -441,8 +453,8 @@ export async function applyClawPackageUpdate(
                     `Skill ${JSON.stringify(target.ref)} ownership changed during rollback.`,
                   );
                 }
-                await transaction.rollback();
-                lease.assertCurrent();
+                await transaction.rollback(assertRollbackCurrent);
+                assertRollbackCurrent();
                 await restoreRef();
               } finally {
                 lease.release();
@@ -494,8 +506,25 @@ export async function applyClawPackageUpdate(
     appliedIds,
     rollback,
     commit: async () => {
-      for (const transaction of skillTransactions) {
-        await transaction.commit();
+      for (const { transaction, ref, workspace } of skillTransactions) {
+        const acquired = acquirePackageLease(
+          { kind: "skill", source: "clawhub", ref, workspace },
+          { env: options.env, path: options.path, required: true },
+        );
+        if (!acquired) {
+          throw new Error(`Could not acquire package lifecycle lease for ${ref}.`);
+        }
+        const lease = maintainClawPackageLifecycleLease(acquired);
+        try {
+          const assertCommitCurrent = () => {
+            lease.assertCurrent();
+            assertForwardCurrent();
+          };
+          await transaction.commit(assertCommitCurrent);
+          assertCommitCurrent();
+        } finally {
+          lease.release();
+        }
       }
     },
   };

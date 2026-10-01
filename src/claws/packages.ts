@@ -330,6 +330,7 @@ async function installClawPackagesUnlocked(
               options.onExternalMutation?.(pkg);
             }
           },
+          ...(upgrade ? { assertOwned: assertCurrent } : {}),
           confirmInstall: (warning) => {
             assertCurrent();
             return warning === pkg.riskWarning;
