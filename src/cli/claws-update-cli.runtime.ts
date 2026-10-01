@@ -1,8 +1,17 @@
+import {
+  ClawHubSourceError,
+  readMatchingCachedClawHubSource,
+  withResolvedClawHubSource,
+} from "../claws/clawhub-source.js";
 import { readClawStatus, type ClawStatusRecord } from "../claws/lifecycle-state.js";
 import { withAuthoredAgentRoster } from "../claws/migrate-validation.js";
 import { preflightClawPackage } from "../claws/packages.js";
 import { readClawManifestFile } from "../claws/reader.js";
-import { CLAW_OUTPUT_STABILITY } from "../claws/types.js";
+import {
+  CLAW_OUTPUT_STABILITY,
+  type ClawReadResult,
+  type ClawSourceIdentity,
+} from "../claws/types.js";
 import {
   applyClawUpdatePlan,
   CLAW_UPDATE_RESULT_SCHEMA_VERSION,
@@ -69,6 +78,7 @@ export async function runClawsUpdateCommand(
   );
   let source = opts.from;
   let recordedInstall: ClawStatusRecord["install"] | undefined;
+  let recordedSource: ClawSourceIdentity | undefined;
   if (!source) {
     const database = await openExistingOpenClawStateDatabaseReadOnly();
     let status: Awaited<ReturnType<typeof readClawStatus>> | { records: never[] } = {
@@ -116,20 +126,51 @@ export async function runClawsUpdateCommand(
     }
     recordedInstall = status.records[0]!.install;
     const recorded = recordedInstall.claw;
+    recordedSource = recorded;
     source = recorded.kind === "package" ? recorded.packageRoot : recorded.manifestPath;
   }
 
-  const loaded = await readClawManifestFile(source, {
-    allowLegacyDynamicToolProfile: !opts.from,
-    authorizeLegacyLocalUpdateHostSettings: ({ manifest, source: loadedSource }) =>
-      !opts.from &&
-      recordedInstall?.claw.integrityKind === "development-snapshot" &&
-      recordedInstall.claw.kind === loadedSource.kind &&
-      recordedInstall.claw.name === loadedSource.name &&
-      recordedInstall.claw.packageRoot === loadedSource.packageRoot &&
-      recordedInstall.claw.manifestPath === loadedSource.manifestPath &&
-      recordedInstall.agentId === manifest.agent.id,
-  });
+  let loaded: ClawReadResult;
+  if (!opts.from && recordedSource?.integrityKind === "artifact") {
+    try {
+      const recorded = recordedSource;
+      const resolved = await withResolvedClawHubSource({
+        coordinate: { packageName: recorded.name, version: recorded.version },
+        mode: opts.dryRun ? "preview" : "apply",
+        ...(!opts.dryRun && opts.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
+        run: async (verified, trust) =>
+          await readMatchingCachedClawHubSource({ recorded, verified, trust }),
+      });
+      loaded = resolved.value;
+    } catch (error) {
+      const code = error instanceof ClawHubSourceError ? error.code : "clawhub_source_unavailable";
+      const message = error instanceof Error ? error.message : String(error);
+      const diagnostics = [
+        { level: "error" as const, code, phase: "plan" as const, path: "$", message },
+      ];
+      emitClawFailure(runtime, opts.json, formatClawDiagnostics(diagnostics), {
+        schemaVersion: CLAW_UPDATE_PLAN_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: true,
+        mutationAllowed: false,
+        valid: false,
+        diagnostics,
+      });
+      return;
+    }
+  } else {
+    loaded = await readClawManifestFile(source, {
+      allowLegacyDynamicToolProfile: !opts.from,
+      authorizeLegacyLocalUpdateHostSettings: ({ manifest, source: loadedSource }) =>
+        !opts.from &&
+        recordedInstall?.claw.integrityKind === "development-snapshot" &&
+        recordedInstall.claw.kind === loadedSource.kind &&
+        recordedInstall.claw.name === loadedSource.name &&
+        recordedInstall.claw.packageRoot === loadedSource.packageRoot &&
+        recordedInstall.claw.manifestPath === loadedSource.manifestPath &&
+        recordedInstall.agentId === manifest.agent.id,
+    });
+  }
   if (!loaded.ok) {
     const diagnostics = opts.from
       ? loaded.diagnostics

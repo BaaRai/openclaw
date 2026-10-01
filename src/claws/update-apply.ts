@@ -180,7 +180,7 @@ export async function applyClawUpdatePlan(
     targetClawMarkdownBody: params.targetClawMarkdownBody,
     targetOpenClawProfile: params.targetOpenClawProfile,
     targetSource: params.targetSource,
-    ...(params.targetDiagnostics ? { diagnostics: params.targetDiagnostics } : {}),
+    diagnostics: params.targetDiagnostics ?? plan.diagnostics,
     config: options.config,
     sourceMcpServers: options.sourceMcpServers,
     ...(inventory ? { inventory, exactAgentId: true } : {}),
