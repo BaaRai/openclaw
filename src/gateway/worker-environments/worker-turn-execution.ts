@@ -677,6 +677,7 @@ export async function executeWorkerTurn(
     };
     let processResult: Awaited<ReturnType<NonNullable<typeof tunnel.launchTurn>>>;
     try {
+      githubGrant?.assertCurrent?.();
       processResult = await tunnel.launchTurn({
         plan: launchPlan.plan,
         turnClaim: params.turnClaim,
