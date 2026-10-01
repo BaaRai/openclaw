@@ -19,6 +19,9 @@ type LobsterToolOptions = {
 
 const APPROVAL_TIMEOUT_MS = 120_000;
 const MAX_APPROVAL_CHECKPOINTS = 8;
+// Match plugin.approval.request limits without truncating operator review content.
+const MAX_APPROVAL_PROMPT_LENGTH = 512;
+const MAX_APPROVAL_DETAIL_LENGTH = 16_384;
 
 type OperatorApprovalDecision = { decision: "allow-once" | "allow-always" | "deny" | null };
 
@@ -106,6 +109,17 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
           throw new Error("Lobster approval requires an active host invocation");
         }
         assertInvocationCurrent();
+        const detail = JSON.stringify(checkpoint.items);
+        const sizeError =
+          Array.from(checkpoint.prompt).length > MAX_APPROVAL_PROMPT_LENGTH
+            ? "Lobster approval prompt exceeds the Gateway's 512-character review limit; shorten the approval prompt and rerun the workflow"
+            : Array.from(detail).length > MAX_APPROVAL_DETAIL_LENGTH
+              ? "Lobster approval preview exceeds the Gateway's 16,384-character review limit; reduce the approval items and rerun the workflow"
+              : null;
+        if (sizeError) {
+          await runner.run({ ...resume, approve: false }).catch(() => undefined);
+          throw new Error(sizeError);
+        }
         let decision: OperatorApprovalDecision;
         try {
           decision = await api.runtime.gateway.request<OperatorApprovalDecision>(
@@ -114,7 +128,7 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
               pluginId: api.id,
               title: "Lobster workflow approval",
               description: checkpoint.prompt,
-              detail: JSON.stringify(checkpoint.items),
+              detail,
               allowedDecisions: ["allow-once", "deny"],
               toolName: "lobster",
               toolCallId: _id,

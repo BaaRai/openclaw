@@ -286,6 +286,64 @@ describe("lobster plugin tool", () => {
     );
   });
 
+  it.each([
+    {
+      field: "prompt",
+      prompt: "p".repeat(513),
+      items: [],
+      error: "Lobster approval prompt exceeds the Gateway's 512-character review limit",
+    },
+    {
+      field: "preview",
+      prompt: "Publish?",
+      items: ["x".repeat(16_381)],
+      error: "Lobster approval preview exceeds the Gateway's 16,384-character review limit",
+    },
+  ])(
+    "denies an oversized approval $field with an actionable error",
+    async ({ prompt, items, error }) => {
+      const runner = {
+        run: vi
+          .fn()
+          .mockResolvedValueOnce({
+            ok: true,
+            status: "needs_approval",
+            output: [],
+            requiresApproval: {
+              type: "approval_request",
+              prompt,
+              items,
+              resumeToken: "private-resume-token",
+            },
+          })
+          .mockResolvedValueOnce({
+            ok: true,
+            status: "cancelled",
+            output: [],
+            requiresApproval: null,
+          }),
+      };
+      const request = vi.fn(async () => ({ decision: "allow-once" }));
+      const tool = createLobsterTool(
+        fakeApi({ runtime: { version: "test", gateway: { request } } as never }),
+        { runner, context: fakeCtx({ assertInvocationCurrent: vi.fn() }) },
+      );
+
+      await expect(
+        tool.execute("oversized-approval", { action: "run", pipeline: "publish" }),
+      ).rejects.toThrow(error);
+      expect(request).not.toHaveBeenCalled();
+      expect(runner.run).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          action: "resume",
+          token: "private-resume-token",
+          approve: false,
+        }),
+      );
+    },
+  );
+
   it("keeps approval credentials off the tool result until an operator decides", async () => {
     let resolveDecision!: (value: { decision: "allow-once" }) => void;
     const decision = new Promise<{ decision: "allow-once" }>((resolve) => {

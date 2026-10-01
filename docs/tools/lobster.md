@@ -375,6 +375,11 @@ operator. The operator reviews the workflow prompt and preview, then selects
 and resumes internally only on **Allow once**. If no approval route is available,
 the workflow cannot be approved.
 
+The review prompt is limited to 512 characters and the serialized preview to
+16,384 characters. Lobster denies an oversized checkpoint and identifies which
+field to shorten before rerunning the workflow; it does not truncate review
+content.
+
 Use `approve --preview-from-stdin --limit N` to attach a JSON preview to
 approval requests without custom jq/heredoc glue. Resume state is stored as
 small JSON files under the Lobster state directory (`~/.lobster/state` by
