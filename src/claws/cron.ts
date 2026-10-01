@@ -42,7 +42,10 @@ type CronRefDatabase = Pick<DB, "claw_cron_refs">;
 type CronRefRow = Selectable<CronRefDatabase["claw_cron_refs"]>;
 
 export type ClawCronGateway = {
-  add: (input: Record<string, unknown>, options?: { commitGuard?: () => void }) => Promise<unknown>;
+  add: (
+    input: Record<string, unknown>,
+    options?: { commitGuard?: () => void; existingRef?: PersistedClawCronRef },
+  ) => Promise<unknown>;
   get?: (schedulerJobId: string) => Promise<unknown>;
   list?: (agentId: string) => Promise<unknown>;
   remove: (schedulerJobId: string, options?: { commitGuard?: () => void }) => Promise<unknown>;
