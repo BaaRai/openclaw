@@ -53,6 +53,7 @@ function renderCatalogList(props: ClawsCatalogViewProps) {
       <input
         type="search"
         data-claws-search
+        autofocus
         aria-label=${t("clawsCatalog.search")}
         placeholder=${t("clawsCatalog.searchPlaceholder")}
         .value=${props.query}

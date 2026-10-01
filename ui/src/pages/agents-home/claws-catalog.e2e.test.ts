@@ -80,7 +80,12 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
           valid: true,
           issues: [],
         },
-        "claws.catalog.search": { entries: starterClaws },
+        "claws.catalog.search": {
+          cases: [
+            { match: { query: "Workflow" }, response: { entries: [workflowOperator] } },
+            { response: { entries: starterClaws } },
+          ],
+        },
         "claws.catalog.detail": {
           detail: {
             ...workflowOperator,
@@ -226,6 +231,28 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
         await page.screenshot({ path: `${dir}/agents.png`, animations: "disabled" });
       }
 
+      const openCatalog = page.locator("[data-claws-open-catalog]");
+      expect(await openCatalog.getAttribute("aria-label")).toBe("Search Claws");
+      expect(await openCatalog.getAttribute("aria-haspopup")).toBe("dialog");
+      await openCatalog.focus();
+      await page.keyboard.press("Enter");
+      const catalog = page.locator(".claws-catalog");
+      const catalogSearch = catalog.getByRole("searchbox", { name: "Search Claws" });
+      await catalogSearch.waitFor();
+      await page.waitForFunction(() => document.activeElement?.hasAttribute("data-claws-search"));
+      await catalogSearch.fill("Workflow");
+      expect(
+        (await gateway.waitForRequest("claws.catalog.search", { match: { query: "Workflow" } }))
+          .params,
+      ).toEqual({ query: "Workflow" });
+      expect(await catalog.locator("[data-claws-entry]").count()).toBe(1);
+      if (capture) {
+        const dir = createControlUiE2eArtifactDir(`claws-catalog-${viewport.name}`);
+        await page.screenshot({ path: `${dir}/catalog.png`, animations: "disabled" });
+      }
+      await catalog.getByRole("button", { name: "Close" }).click();
+      await page.locator("openclaw-claws-catalog-dialog").waitFor({ state: "detached" });
+
       await cards.first().getByRole("button", { name: "Add" }).click();
       const dialog = page.locator(".claws-catalog");
       await dialog.getByText("workflow-tools").first().waitFor();
@@ -298,6 +325,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
       await page.goto(`${server.baseUrl}agents`);
       await page.locator(".agents-home__card").first().waitFor();
       expect(await page.locator("[data-claws-explore]").count()).toBe(0);
+      expect(await page.locator("[data-claws-open-catalog]").count()).toBe(0);
       expect(await page.locator("[data-claws-search]").count()).toBe(0);
       expect(await page.locator("[data-claws-entry]").count()).toBe(0);
       expect(await gateway.getRequests("claws.catalog.search")).toHaveLength(0);
