@@ -286,6 +286,7 @@ export function clawCronGatewayJobMatchesRef(
 export async function installClawCronJobs(
   plan: ClawAddPlan,
   options: ClawAddStateOptions & {
+    assertForwardCurrent?: () => void;
     gateway?: Pick<ClawCronGateway, "add" | "list" | "waitUntilAgentAvailable">;
     nowMs?: number;
   } = {},
@@ -302,6 +303,11 @@ export async function installClawCronJobs(
     );
   }
   const refs: PersistedClawCronRef[] = [];
+  const assertForwardCurrent = () => {
+    options.assertCurrent?.();
+    options.assertForwardCurrent?.();
+  };
+  const forwardStateOptions = { ...options, assertCurrent: assertForwardCurrent };
   let agentAvailable = false;
   for (const action of actions) {
     const details = action.details as (ClawCronJob & { agentId?: string }) | undefined;
@@ -320,7 +326,7 @@ export async function installClawCronJobs(
       message: details.message,
       ...(details.delivery ? { delivery: details.delivery } : {}),
     };
-    const pending = await persistClawCronPendingRefForAdd(plan, job, options);
+    const pending = await persistClawCronPendingRefForAdd(plan, job, forwardStateOptions);
     refs.push(pending);
     let result: { id: string } | undefined;
     if (pending.status === "complete" && pending.schedulerJobId) {
@@ -329,14 +335,14 @@ export async function installClawCronJobs(
       }
       if (!agentAvailable) {
         await options.gateway.waitUntilAgentAvailable?.(plan.agent.finalId);
-        options.assertCurrent?.();
+        assertForwardCurrent();
         agentAvailable = true;
       }
       const listedJob = schedulerJobRecordByDeclarationKey(
         await options.gateway.list(plan.agent.finalId),
         pending.declarationKey,
       );
-      options.assertCurrent?.();
+      assertForwardCurrent();
       if (listedJob) {
         if (!clawCronGatewayJobMatchesRef(plan.agent.finalId, pending, listedJob)) {
           throw new ClawCronInstallError(
@@ -350,7 +356,7 @@ export async function installClawCronJobs(
           refs[refs.length - 1] = await updateClawCronRefForAdd(
             pending,
             { status: "complete", schedulerJobId: result.id },
-            options,
+            forwardStateOptions,
           );
         }
         continue;
@@ -364,7 +370,7 @@ export async function installClawCronJobs(
     try {
       if (!agentAvailable) {
         await options.gateway.waitUntilAgentAvailable?.(plan.agent.finalId);
-        options.assertCurrent?.();
+        assertForwardCurrent();
         agentAvailable = true;
       }
       if (options.gateway.list) {
@@ -372,7 +378,7 @@ export async function installClawCronJobs(
           await options.gateway.list(plan.agent.finalId),
           pending.declarationKey,
         );
-        options.assertCurrent?.();
+        assertForwardCurrent();
         if (listedJob && !clawCronGatewayJobMatchesRef(plan.agent.finalId, pending, listedJob)) {
           throw new ClawCronInstallError(
             "cron_reconcile_conflict",
@@ -383,7 +389,7 @@ export async function installClawCronJobs(
         result = listedJob;
       }
       if (!result) {
-        options.assertCurrent?.();
+        assertForwardCurrent();
         result = clawCronSchedulerJobFromResult(
           await options.gateway.add(clawCronGatewayInput(plan.agent.finalId, pending)),
         );
@@ -413,7 +419,7 @@ export async function installClawCronJobs(
       refs[refs.length - 1] = await updateClawCronRefForAdd(
         pending,
         { status: "complete", schedulerJobId: result.id },
-        options,
+        forwardStateOptions,
       );
     } catch (error) {
       const message = coerceErrorMessage(error);

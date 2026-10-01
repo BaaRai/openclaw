@@ -119,6 +119,7 @@ export const clawsAddHandlers: GatewayRequestHandlers = {
             sourceMcpServers: listedMcp.mcpServers,
           };
         },
+        getRuntimeConfig: () => context.getRuntimeConfig(),
         assertCurrent,
         ...(signal ? { signal } : {}),
         ...(reloadPlugins ? { reloadPlugins } : {}),

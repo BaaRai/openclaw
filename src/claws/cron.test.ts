@@ -93,6 +93,34 @@ function listedCronJob(
 }
 
 describe("installClawCronJobs", () => {
+  it("stops scheduler activation after access drifts during agent readiness", async () => {
+    const current = await fixture();
+    let reviewed = true;
+    const add = vi.fn(async () => ({ id: "scheduler-123" }));
+
+    await expect(
+      installClawCronJobs(current.plan, {
+        env: current.env,
+        assertForwardCurrent: () => {
+          if (!reviewed) {
+            throw new Error("reviewed access changed");
+          }
+        },
+        gateway: {
+          add,
+          waitUntilAgentAvailable: async () => {
+            reviewed = false;
+          },
+        },
+      }),
+    ).rejects.toThrow("reviewed access changed");
+
+    expect(add).not.toHaveBeenCalled();
+    expect(readClawCronRefs(current.plan.agent.finalId, { env: current.env })).toMatchObject([
+      { status: "pending", error: "reviewed access changed" },
+    ]);
+  });
+
   it("pins declarations and execution to the final agent id", async () => {
     const current = await fixture();
     const calls: string[] = [];
