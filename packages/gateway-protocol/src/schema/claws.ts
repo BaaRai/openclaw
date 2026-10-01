@@ -5,6 +5,7 @@ import { PluginDeclaredSurfaceSchema, PluginOperatorGrantsSchema } from "./plugi
 import { NonEmptyString } from "./primitives.js";
 
 const OfficialClawName = Type.String({ pattern: "^@openclaw/[a-z0-9][a-z0-9._-]*$" });
+const ClawPluginIntegrity = Type.String({ pattern: "^sha256-[A-Za-z0-9+/]{43}=$" });
 const ClawCatalogCoordinateSchema = closedObject({
   packageName: OfficialClawName,
   version: NonEmptyString,
@@ -117,6 +118,7 @@ export const ClawPluginReviewSchema = closedObject({
   ref: NonEmptyString,
   version: NonEmptyString,
   ownerAction: Type.Union([Type.Literal("install"), Type.Literal("reuse")]),
+  integrity: ClawPluginIntegrity,
   declaredCapabilities: PluginDeclaredSurfaceSchema,
   capabilityGrants: PluginOperatorGrantsSchema,
   reviewToken: NonEmptyString,

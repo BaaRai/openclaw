@@ -48,6 +48,7 @@ const updatePluginReview = {
   ref: "@openclaw/workflow-tools",
   version: "1.3.0",
   ownerAction: "install" as const,
+  integrity: `sha256-${"A".repeat(43)}=`,
   declaredCapabilities: {
     channels: [],
     providers: [],
@@ -489,6 +490,7 @@ describe("Agent Claw lifecycle", () => {
     );
     panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.click();
     await vi.waitFor(() => expect(panel.textContent).toContain("workflow.start"));
+    expect(panel.textContent).toContain(updatePluginReview.integrity);
     expect(request).toHaveBeenCalledWith("claws.catalog.search", {
       query: "@openclaw/workflow-operator",
       limit: 100,

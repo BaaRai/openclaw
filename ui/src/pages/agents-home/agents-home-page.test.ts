@@ -28,6 +28,7 @@ import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { AgentsHomePage } from "./agents-home-page.ts";
 import type { ClawCatalogEntry } from "./claws-catalog-client.ts";
 import { ClawsExplore } from "./claws-explore.ts";
+import { pluginAcknowledgements, type ClawPluginReview } from "./claws-plugin-review.ts";
 
 const elementName = `test-agents-home-${crypto.randomUUID()}`;
 customElements.define(elementName, class extends AgentsHomePage {});
@@ -58,12 +59,13 @@ const workflowOperator = {
   updatedAtMs: 1_000,
 } as const;
 
-const workflowPluginReview = {
+const workflowPluginReview: ClawPluginReview = {
   actionId: "plugin:@openclaw/workflow-tools",
   pluginId: "workflow-tools",
   ref: "@openclaw/workflow-tools",
   version: "1.2.0",
   ownerAction: "install",
+  integrity: `sha256-${"A".repeat(43)}=`,
   declaredCapabilities: {
     channels: [],
     providers: [],
@@ -83,7 +85,7 @@ const workflowPluginReview = {
     },
   },
   reviewToken: "review-workflow-tools",
-} as const;
+};
 
 const reviewedAccess = {
   coverage: "configuration-only",
@@ -513,6 +515,7 @@ describe("AgentsHomePage", () => {
     expect(page.textContent).toContain("create workspace");
     expect(page.textContent).toContain("install package");
     expect(page.textContent).toContain("workflow.start");
+    expect(page.textContent).toContain(workflowPluginReview.integrity);
     expect(page.textContent).toContain("Conversation access");
     expect(page.textContent).toContain("Allowed");
     expect(page.textContent).toContain("Configured access");
@@ -547,6 +550,18 @@ describe("AgentsHomePage", () => {
     );
     expect(agentSelection.state.selectedId).toBe("workflow-operator");
     expect(gateway.setSessionKey).toHaveBeenCalledWith("agent:workflow-operator:team-room");
+  });
+
+  it("does not acknowledge a plugin review without artifact integrity", () => {
+    expect(
+      pluginAcknowledgements([{ ...workflowPluginReview, integrity: "" }], new Set()),
+    ).toBeNull();
+    expect(
+      pluginAcknowledgements(
+        [{ ...workflowPluginReview, ownerAction: "reuse", integrity: "" }],
+        new Set(),
+      ),
+    ).toBeNull();
   });
 
   it("requires explicit acknowledgment of plugin risk before applying the reviewed grant", async () => {

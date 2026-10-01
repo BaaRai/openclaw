@@ -73,6 +73,7 @@ const enAgentsHome = {
     title: "Plugin capability review",
     install: "Will install",
     reuse: "Already installed",
+    integrity: "Artifact SHA-256",
     declared: "Declared capabilities",
     noneDeclared: "No named capabilities declared.",
     grants: "Effective access",

@@ -104,6 +104,59 @@ describe("Claws Gateway contract", () => {
     expect(validateClawLifecyclePlanResult({ ...plan, answers: { token: "secret" } })).toBe(false);
   });
 
+  it("requires exact plugin artifact integrity in an install review", () => {
+    const pluginReview = {
+      actionId: "plugin:@openclaw/lobster",
+      pluginId: "lobster",
+      ref: "@openclaw/lobster",
+      version: "2026.9.7",
+      ownerAction: "install",
+      integrity: `sha256-${"A".repeat(43)}=`,
+      declaredCapabilities: {
+        channels: [],
+        providers: [],
+        tools: ["lobster"],
+        contracts: [],
+        hooks: [],
+        mcpServers: [],
+        cliCommands: [],
+        cliBackends: [],
+        skills: [],
+        dangerousConfigFlags: [],
+      },
+      capabilityGrants: {
+        hooks: {
+          allowPromptInjection: { effective: false },
+          allowConversationAccess: { effective: false },
+        },
+      },
+      reviewToken: "sha256:reviewed-surface",
+    };
+    const plan = {
+      schemaVersion: "openclaw.clawsGatewayPlan.v1",
+      operation: "add",
+      planIntegrity: "sha256:reviewed-plan",
+      target: { agentId: "workflow-operator" },
+      actions: [],
+      capabilities: [],
+      pluginReviews: [pluginReview],
+      blockers: [],
+      riskAcknowledgementRequired: false,
+    };
+
+    expect(validateClawLifecyclePlanResult(plan)).toBe(true);
+    const { integrity: _integrity, ...withoutIntegrity } = pluginReview;
+    expect(validateClawLifecyclePlanResult({ ...plan, pluginReviews: [withoutIntegrity] })).toBe(
+      false,
+    );
+    expect(
+      validateClawLifecyclePlanResult({
+        ...plan,
+        pluginReviews: [{ ...pluginReview, integrity: "sha256-not-a-digest" }],
+      }),
+    ).toBe(false);
+  });
+
   it("admits bounded access and schedule disclosures without cron prompts", () => {
     const plan = {
       schemaVersion: "openclaw.clawsGatewayPlan.v1",
