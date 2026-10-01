@@ -207,7 +207,7 @@ export async function buildClawUpdatePlan(params: {
     let adoptedSettingsUnsupported = false;
     if (record.install.agentOrigin === "adopted") {
       try {
-        desiredAgentDigest = digest(
+        desiredAgentDigest = digestClawOwnedAgentConfig(
           normalizeWorkspaceConfig(
             resolveMigrationAgentSettings(params.config, targetPlan.agent.config),
             record.install.workspace,

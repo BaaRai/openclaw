@@ -1,8 +1,4 @@
 import { asOptionalRecord as record } from "@openclaw/normalization-core/record-coerce";
-import {
-  DEFAULT_SUBAGENT_ARCHIVE_AFTER_MINUTES,
-  DEFAULT_SUBAGENT_MAX_CONCURRENT,
-} from "../config/agent-limits.js";
 import { resolveAgentModelFallbackValues } from "../config/model-input.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -129,30 +125,6 @@ function unsupportedFields(value: unknown, fields: readonly string[], prefix: st
     .map((field) => `${prefix}.${field}`);
 }
 
-function unsupportedSubagentDefaultFields(value: unknown): string[] {
-  const source = record(value);
-  if (!source) {
-    return [];
-  }
-  return Object.keys(source)
-    .filter((field) => {
-      if (field === "allowAgents" || field === "delegationMode") {
-        return false;
-      }
-      if (field === "maxConcurrent" && source.maxConcurrent === DEFAULT_SUBAGENT_MAX_CONCURRENT) {
-        return false;
-      }
-      if (
-        field === "archiveAfterMinutes" &&
-        source.archiveAfterMinutes === DEFAULT_SUBAGENT_ARCHIVE_AFTER_MINUTES
-      ) {
-        return false;
-      }
-      return true;
-    })
-    .map((field) => `agents.defaults.subagents.${field}`);
-}
-
 function inheritPortableSettings<T extends object>(
   settings: T | undefined,
   defaults: Partial<T> | undefined,
@@ -166,7 +138,6 @@ function inheritPortableSettings<T extends object>(
   }
   return inherited;
 }
-
 export function resolveMigrationAgentSettings(
   config: OpenClawConfig,
   agent: AgentConfig,
@@ -201,7 +172,6 @@ export function resolveMigrationAgentSettings(
     return [`agents.defaults.${key}`];
   });
   unsupportedDefaults.push(
-    ...unsupportedSubagentDefaultFields(defaults.subagents),
     ...unsupportedFields(
       defaults.heartbeat,
       ["agentId", "every", "activeHours", "lightContext", "isolatedSession", "timeoutSeconds"],

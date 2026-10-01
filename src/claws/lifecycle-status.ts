@@ -19,7 +19,6 @@ import {
   readClawCronRefs,
   type PersistedClawCronRef,
 } from "./cron.js";
-import { digestClawValue } from "./digest.js";
 import type { ClawInventory } from "./inventory-read.kernel.js";
 import {
   ClawRemoveError,
@@ -309,12 +308,13 @@ export async function readClawStatus(
       agentState: !agent
         ? "missing"
         : install.agentOrigin === "adopted"
-          ? comparableAgent && digestClawValue(comparableAgent) === install.agentConfigDigest
+          ? comparableAgent &&
+            matchesClawAgentConfigDigest(comparableAgent, install.agentConfigDigest)
             ? "present"
             : "modified"
           : matchesClawAgentConfigDigest(agent, install.agentConfigDigest)
-          ? "present"
-          : "modified",
+            ? "present"
+            : "modified",
       bootstrapState: bootstrap.state,
       bootstrap,
       workspaceFiles: await Promise.all(workspaceFiles.map(inspectClawWorkspaceFile)),
