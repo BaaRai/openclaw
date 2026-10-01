@@ -501,6 +501,7 @@ export async function applyClawRemovePlan(
       stateDatabase: options,
       onModified: () =>
         new ClawRemoveError("agent_modified", "Agent config changed during remove."),
+      assertForwardCurrent: options.assertForwardCurrent,
       quiesceMonitors: (operationId) => monitorGateway.quiesce(agentId, operationId, monitors),
       drainMonitors: async (operationId) => await monitorGateway.drain(agentId, operationId),
     },
@@ -517,7 +518,6 @@ export async function applyClawRemovePlan(
       if (mcpRemoval.error) {
         return partial("mcp_cleanup_failed", mcpRemoval.error);
       }
-      const cronJobs = result.cronJobs;
       for (const cron of record.cronJobs) {
         if (cron.status !== "removed" && (!cron.schedulerJobId || cron.status !== "complete")) {
           throw new ClawRemoveError(
@@ -558,14 +558,14 @@ export async function applyClawRemovePlan(
             markClawCronRefRemoved(agentId, cron.manifestId, options);
           }
           deleteClawCronRef(agentId, cron.manifestId, options);
-          cronJobs.push({
+          result.cronJobs.push({
             manifestId: cron.manifestId,
             schedulerJobId: cron.schedulerJobId,
             action: "removed",
           });
         } catch (error) {
           const message = coerceErrorMessage(error);
-          cronJobs.push({
+          result.cronJobs.push({
             manifestId: cron.manifestId,
             schedulerJobId: cron.schedulerJobId,
             action: "error",

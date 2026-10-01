@@ -678,6 +678,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/security/audit-plugins-trust.test.ts",
   "src/security/audit-rosterless.test.ts",
   "src/claws/lifecycle-state.test.ts",
+  "src/claws/lifecycle-state-cancellation.test.ts",
   "src/claws/update-plan.test.ts",
   "src/claws/packages.test.ts",
   "src/commands/doctor/auth-alias-migration.test.ts",
