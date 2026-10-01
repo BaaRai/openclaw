@@ -48,7 +48,7 @@ type PackageInstallerDeps = NonNullable<
 export type ClawPackageUpdateExecution = {
   appliedIds: string[];
   rollback: () => Promise<void>;
-  commit?: () => Promise<void>;
+  commit?: (assertCurrent?: () => void) => Promise<void>;
 };
 
 export class ClawPackageUpdateError extends Error {
@@ -505,7 +505,7 @@ export async function applyClawPackageUpdate(
   return {
     appliedIds,
     rollback,
-    commit: async () => {
+    commit: async (assertSettlementCurrent) => {
       for (const { transaction, ref, workspace } of skillTransactions) {
         const acquired = acquirePackageLease(
           { kind: "skill", source: "clawhub", ref, workspace },
@@ -518,7 +518,8 @@ export async function applyClawPackageUpdate(
         try {
           const assertCommitCurrent = () => {
             lease.assertCurrent();
-            assertForwardCurrent();
+            options.assertCurrent?.();
+            return (assertSettlementCurrent ?? options.assertForwardCurrent)?.();
           };
           await transaction.commit(assertCommitCurrent);
           assertCommitCurrent();

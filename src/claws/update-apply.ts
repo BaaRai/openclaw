@@ -737,7 +737,7 @@ export async function applyClawUpdatePlan(
     throw new ClawUpdateMutationError("provenance_update_failed", coerceErrorMessage(error));
   }
   try {
-    await packageExecution.commit?.();
+    await packageExecution.commit?.(() => assertForwardCurrent(postCommitPhase));
   } catch (error) {
     throw await partialMutation(
       `Claw update committed, but skill backup cleanup failed: ${coerceErrorMessage(error)}`,
