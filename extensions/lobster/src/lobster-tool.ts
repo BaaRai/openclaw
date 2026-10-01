@@ -1,6 +1,9 @@
 import { optionalPositiveIntegerSchema } from "openclaw/plugin-sdk/channel-actions";
 import { readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import {
@@ -9,7 +12,15 @@ import {
   type LobsterRunner,
   type LobsterRunnerParams,
 } from "./lobster-runner.js";
-type LobsterToolOptions = { runner?: LobsterRunner };
+type LobsterToolOptions = {
+  runner?: LobsterRunner;
+  context?: OpenClawPluginToolContext;
+};
+
+const APPROVAL_TIMEOUT_MS = 120_000;
+const MAX_APPROVAL_CHECKPOINTS = 8;
+
+type OperatorApprovalDecision = { decision: "allow-once" | "allow-always" | "deny" | null };
 
 export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolOptions) {
   const runner = options?.runner ?? createEmbeddedLobsterRunner();
@@ -17,14 +28,12 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
     name: "lobster",
     label: "Lobster Workflow",
     description:
-      "Run Lobster workflows with resumable approvals and structured input. For needs_input, ask the user the returned prompt, then resume with their answer as responseJson matching responseSchema. For approvals, resume with approve. Use cancel: true to cancel a checkpoint.",
+      "Run Lobster workflows with operator-reviewed approvals and structured input. For needs_input, ask the user the returned prompt, then resume with their answer as responseJson matching responseSchema. Approval checkpoints are handled by the operator, not by a resume tool call. Use cancel: true to cancel an input checkpoint.",
     parameters: Type.Object({
       action: Type.Enum(["run", "resume"], { type: "string" }),
       pipeline: Type.Optional(Type.String()),
       argsJson: Type.Optional(Type.String()),
       token: Type.Optional(Type.String()),
-      approvalId: Type.Optional(Type.String()),
-      approve: Type.Optional(Type.Boolean()),
       responseJson: Type.Optional(
         Type.String({
           description: "User's answer as JSON for an input checkpoint. Use instead of approve.",
@@ -48,6 +57,9 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
       if (action !== "run" && action !== "resume") {
         throw new Error(`Unknown action: ${action}`);
       }
+      if (params.approve !== undefined || params.approvalId !== undefined) {
+        throw new Error("Lobster approval decisions are operator-only");
+      }
 
       const cwd = resolveLobsterCwd(params.cwd);
       const timeoutMs = readPositiveIntegerParam(params, "timeoutMs") ?? 20_000;
@@ -62,8 +74,6 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
         ...(typeof params.pipeline === "string" ? { pipeline: params.pipeline } : {}),
         ...(typeof params.argsJson === "string" ? { argsJson: params.argsJson } : {}),
         ...(typeof params.token === "string" ? { token: params.token } : {}),
-        ...(typeof params.approvalId === "string" ? { approvalId: params.approvalId } : {}),
-        ...(typeof params.approve === "boolean" ? { approve: params.approve } : {}),
         ...(typeof params.responseJson === "string" ? { responseJson: params.responseJson } : {}),
         ...(typeof params.cancel === "boolean" ? { cancel: params.cancel } : {}),
         cwd,
@@ -71,7 +81,81 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
         maxStdoutBytes,
       };
 
-      const envelope = await runner.run(runnerParams);
+      let envelope = await runner.run(runnerParams);
+      let approvalCount = 0;
+      while (envelope.ok && envelope.status === "needs_approval") {
+        if (++approvalCount > MAX_APPROVAL_CHECKPOINTS) {
+          throw new Error("Lobster workflow exceeded the approval checkpoint limit");
+        }
+        const checkpoint = envelope.requiresApproval;
+        const token = checkpoint?.resumeToken?.trim() ?? "";
+        const approvalId = checkpoint?.approvalId?.trim() ?? "";
+        if (!checkpoint || (!token && !approvalId)) {
+          throw new Error("Lobster approval checkpoint has no private continuation");
+        }
+        const resume: LobsterRunnerParams = {
+          action: "resume",
+          ...(token ? { token } : {}),
+          ...(approvalId ? { approvalId } : {}),
+          cwd,
+          timeoutMs,
+          maxStdoutBytes,
+        };
+        const assertInvocationCurrent = options?.context?.assertInvocationCurrent;
+        if (!assertInvocationCurrent) {
+          throw new Error("Lobster approval requires an active host invocation");
+        }
+        assertInvocationCurrent();
+        let decision: OperatorApprovalDecision;
+        try {
+          decision = await api.runtime.gateway.request<OperatorApprovalDecision>(
+            "plugin.approval.request",
+            {
+              pluginId: api.id,
+              title: "Lobster workflow approval",
+              description: checkpoint.prompt,
+              detail: JSON.stringify(checkpoint.items),
+              allowedDecisions: ["allow-once", "deny"],
+              toolName: "lobster",
+              toolCallId: _id,
+              ...(options?.context?.agentId ? { agentId: options.context.agentId } : {}),
+              ...(options?.context?.sessionKey ? { sessionKey: options.context.sessionKey } : {}),
+              ...(options?.context?.deliveryContext?.channel || options?.context?.messageChannel
+                ? {
+                    turnSourceChannel:
+                      options.context.deliveryContext?.channel ?? options.context.messageChannel,
+                  }
+                : {}),
+              ...(options?.context?.deliveryContext?.to
+                ? { turnSourceTo: options.context.deliveryContext.to }
+                : {}),
+              ...(options?.context?.deliveryContext?.accountId || options?.context?.agentAccountId
+                ? {
+                    turnSourceAccountId:
+                      options.context.deliveryContext?.accountId ?? options.context.agentAccountId,
+                  }
+                : {}),
+              ...(options?.context?.deliveryContext?.threadId !== undefined
+                ? { turnSourceThreadId: options.context.deliveryContext.threadId }
+                : {}),
+              timeoutMs: APPROVAL_TIMEOUT_MS,
+            },
+            { timeoutMs: APPROVAL_TIMEOUT_MS + 5_000 },
+          );
+        } catch {
+          await runner.run({ ...resume, approve: false }).catch(() => undefined);
+          throw new Error("Lobster approval route unavailable; workflow was not approved");
+        }
+        const approved = decision?.decision === "allow-once";
+        if (approved) {
+          assertInvocationCurrent();
+        }
+        envelope = await runner.run({
+          ...resume,
+          approve: approved,
+          ...(approved ? { assertInvocationCurrent } : {}),
+        });
+      }
       if (!envelope.ok) {
         throw new Error(envelope.error.message);
       }
