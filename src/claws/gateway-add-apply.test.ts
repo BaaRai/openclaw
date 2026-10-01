@@ -57,7 +57,7 @@ const plan = {
   planIntegrity: "sha256:canonical",
 } as unknown as ClawAddPlan;
 const reviewedDesired: NonNullable<ClawConfiguredAccess["desired"]> = {
-  tools: { allowed: ["read"], excluded: ["exec"] },
+  tools: { allowed: ["read"], excluded: ["exec"], explicitAllow: ["read"], explicitDeny: ["exec"] },
   sandbox: { mode: "all", scope: "session", workspaceAccess: "rw", backend: "docker" },
   filesystem: { workspaceOnly: true },
   heartbeat: { enabled: false, intervalMs: null },
