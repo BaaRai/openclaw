@@ -25,7 +25,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function callAddPlan(params: unknown, getRuntimeConfig: () => unknown) {
+function callAddPlan(params: Record<string, unknown>, getRuntimeConfig: () => unknown) {
   const replies: Parameters<RespondFn>[] = [];
   return {
     replies,
@@ -45,7 +45,7 @@ function callAddPlan(params: unknown, getRuntimeConfig: () => unknown) {
 }
 
 function callAddApply(
-  params: unknown,
+  params: Record<string, unknown>,
   getRuntimeConfig: () => unknown,
   options: { hasCurrentClientAuthority?: () => boolean; client?: unknown; cron?: unknown } = {},
 ) {

@@ -27,7 +27,7 @@ afterEach(() => {
 
 function callPlan(
   method: "claws.update.plan" | "claws.remove.plan",
-  params: unknown,
+  params: Record<string, unknown>,
   getRuntimeConfig: () => unknown,
 ) {
   const replies: Parameters<RespondFn>[] = [];
@@ -49,7 +49,7 @@ function callPlan(
 }
 
 function callUpdateApply(
-  params: unknown,
+  params: Record<string, unknown>,
   getRuntimeConfig: () => unknown,
   options: {
     hasCurrentClientAuthority?: () => boolean;
@@ -93,7 +93,7 @@ function callUpdateApply(
 }
 
 function callRemoveApply(
-  params: unknown,
+  params: Record<string, unknown>,
   getRuntimeConfig: () => unknown,
   options: {
     hasCurrentClientAuthority?: () => boolean;
@@ -307,10 +307,12 @@ describe("claws.update.apply Gateway method", () => {
   it("passes the live guard through both cron add and remove commit boundaries", async () => {
     let authorized = true;
     const cron = {
-      add: vi.fn(async () => ({ id: "job-1" })),
+      add: vi.fn(async (_job: unknown, _options: { commitGuard: () => void }) => ({ id: "job-1" })),
       readJob: vi.fn(async () => ({ id: "job-1" })),
       list: vi.fn(async () => []),
-      remove: vi.fn(async () => ({ removed: true })),
+      remove: vi.fn(async (_id: string, _options: { commitGuard: () => void }) => ({
+        removed: true,
+      })),
     };
     applyClawUpdateForGateway.mockImplementation(async (input) => {
       await input.cronGateway.add({

@@ -373,6 +373,7 @@ describe("Claw Gateway plan consent", () => {
       ref: "@openclaw/workflow-operator-plugin",
       version: "1.2.0",
       ownerAction: "install" as const,
+      integrity: `sha256-${Buffer.from("a".repeat(64), "hex").toString("base64")}`,
       declaredCapabilities: {
         channels: [],
         providers: [],
@@ -396,6 +397,7 @@ describe("Claw Gateway plan consent", () => {
     const reviewed = projectClawUpdatePlan(plan, root, {
       config: { agents: { list: [{ id: "workflow-operator" }] } },
       desiredAgent: { id: "workflow-operator" },
+      currentJobs: [],
       targetJobs: [],
       pluginReviews: [pluginReview],
     });
