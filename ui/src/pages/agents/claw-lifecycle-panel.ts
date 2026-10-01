@@ -38,7 +38,12 @@ registerAgentsHomeEnglish();
 
 const clawsLab = LAB_FEATURES.find((feature) => feature.id === "claws");
 
-type PendingRemove = { agentId: string; gatewayUrl: string; agentWasMissing: boolean };
+type PendingRemove = {
+  agentId: string;
+  gatewayUrl: string;
+  agentWasMissing: boolean;
+  agentRetainedByPlan: boolean;
+};
 
 export class AgentClawPanel extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true })
@@ -332,7 +337,7 @@ export class AgentClawPanel extends OpenClawLightDomElement {
         const agentRemoved = Boolean(
           agents && !agents.agents.some((agent) => agent.id === pending.agentId),
         );
-        if (!pending.agentWasMissing && !agentRemoved) {
+        if (!pending.agentWasMissing && !pending.agentRetainedByPlan && !agentRemoved) {
           return;
         }
         this.setPendingRemove(null);
@@ -383,6 +388,13 @@ export class AgentClawPanel extends OpenClawLightDomElement {
       agentId,
       gatewayUrl: context.gateway.connection.gatewayUrl,
       agentWasMissing: this.record?.agentState === "missing",
+      agentRetainedByPlan: plan.actions.some(
+        (action) =>
+          action.kind === "agent" &&
+          action.id === agentId &&
+          action.action === "retain" &&
+          !action.blocked,
+      ),
     });
     this.removing = true;
     this.planError = null;
