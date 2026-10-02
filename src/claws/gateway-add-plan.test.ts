@@ -48,6 +48,37 @@ describe("Gateway Claw Add plan", () => {
     expect(JSON.stringify(projected)).not.toContain("sourcePath");
   });
 
+  it("returns a blocked preview when the requested agent ID already exists", async () => {
+    const fixture = path.resolve("src/claws/fixtures/workspace-agent.claw.json");
+    const source = await readClawManifestFile(fixture);
+    expect(source.ok).toBe(true);
+    if (!source.ok) {
+      return;
+    }
+    const config = { agents: { list: [{ id: "claw-gateway-add-fixture" }] } };
+    const plan = await buildGatewayClawAddPlan(source, {
+      config,
+      agentId: "claw-gateway-add-fixture",
+      sourceMcpServers: {},
+    });
+    expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "agent_id_collision" }));
+
+    const projected = projectGatewayClawAddPlan(
+      plan,
+      source.source.packageRoot,
+      { riskAcknowledgementRequired: false },
+      config,
+    );
+    expect(projected).toMatchObject({
+      target: { agentId: "claw-gateway-add-fixture" },
+      blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "agent_id_collision" }),
+        expect.objectContaining({ code: "configured_access_unavailable" }),
+      ]),
+    });
+    expect(projected.configuredAccess).toBeUndefined();
+  });
+
   it("preflights plugin grants with the config that Add will install under", async () => {
     const source = await readClawManifestFile(
       path.resolve("src/claws/fixtures/incident-response.claw.json"),
