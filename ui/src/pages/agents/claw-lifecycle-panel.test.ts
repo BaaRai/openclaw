@@ -55,6 +55,49 @@ describe("Agent Claw lifecycle", () => {
     resolveRefresh?.({ records: [installed] });
   });
 
+  it("does not let a pre-update status response replace the installed update", async () => {
+    const { panel, request } = mount({ clawsEnabled: true });
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+
+    const originalRequest = request.getMockImplementation();
+    if (!originalRequest) {
+      throw new Error("Missing Gateway request mock");
+    }
+    let resolveOldStatus: ((value: unknown) => void) | undefined;
+    request.mockImplementation((...args) => {
+      if (args[0] === "claws.status" && !resolveOldStatus) {
+        return new Promise((resolve) => {
+          resolveOldStatus = resolve;
+        });
+      }
+      return originalRequest(...args);
+    });
+
+    const refresh = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Refresh status",
+    );
+    refresh?.click();
+    await vi.waitFor(() => expect(resolveOldStatus).toBeDefined());
+
+    panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.click();
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.disabled).toBe(
+        false,
+      ),
+    );
+    panel.querySelector<HTMLButtonElement>("[data-claw-update-confirm]")?.click();
+    await vi.waitFor(() => expect(panel.textContent).toContain("Claw updated"));
+    panel.querySelector<HTMLButtonElement>(".claw-lifecycle-dialog__footer button")?.click();
+
+    resolveOldStatus?.({ records: [installed] });
+    await vi.waitFor(() => expect(panel.textContent).toContain("Version 1.3.0"));
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+  });
+
   it("allows read-only operators to preview Update without applying it", async () => {
     const { panel, request } = mount({ clawsEnabled: true, scopes: ["operator.read"] });
     await vi.waitFor(() =>
