@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawLifecyclePlanResult } from "../../packages/gateway-protocol/src/schema/claws.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { recordDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { PluginInstallRuntimeBatch } from "../plugins/install-runtime-batch.js";
 import { getPluginCache } from "../plugins/plugin-cache.js";
 import {
@@ -13,6 +14,7 @@ import {
 import { createInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import * as leaseAcquisition from "../state/openclaw-state-lease-acquisition.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import type { ClawHubClawTrust } from "./clawhub-source.js";
 import { applyClawAddForGateway } from "./gateway-add-apply.js";
@@ -126,6 +128,81 @@ async function fixture() {
 }
 
 describe("Gateway Claw Add plugin handoff", () => {
+  it("uses migration policy committed while runtime activation waited for the plugin lease", async () => {
+    const { env } = await fixture();
+    await withEnvAsync(env, async () => {
+      let pluginLeaseAcquisitions = 0;
+      let migrationCommitted = false;
+      const acquire = leaseAcquisition.acquireOpenClawStateLease;
+      const acquireSpy = vi
+        .spyOn(leaseAcquisition, "acquireOpenClawStateLease")
+        .mockImplementation(async (params) => {
+          if (params.label.includes("plugin lifecycle lease")) {
+            pluginLeaseAcquisitions += 1;
+            if (pluginLeaseAcquisitions === 2) {
+              await recordDeferredPluginMigrations({
+                env,
+                pending: [
+                  {
+                    pluginId: "legacy-fixture",
+                    reason: "Legacy config awaits plugin migration",
+                    command: "openclaw doctor --fix",
+                    configPaths: [["legacyFixture"]],
+                    validationExcludedPaths: [["legacyFixture"]],
+                  },
+                ],
+              });
+              await fs.writeFile(
+                env.OPENCLAW_CONFIG_PATH,
+                JSON.stringify({ ...config, legacyFixture: { value: "retained" } }),
+              );
+              migrationCommitted = true;
+            }
+          }
+          return await acquire(params);
+        });
+      const continueAdd = vi.fn(async () => ({
+        agent: { finalId: "workflow-operator" },
+        status: "complete" as const,
+      }));
+      mocks.stage.mockImplementation(
+        async (_plan: ClawAddPlan, options: { runtimeBatch: PluginInstallRuntimeBatch }) => {
+          options.runtimeBatch.retain("fixture");
+          return {
+            kind: "ready",
+            continue: continueAdd,
+            failBeforeContinue: async (_error: unknown, code: string) => ({
+              agent: { finalId: "workflow-operator" },
+              status: "partial" as const,
+              error: { code, message: "Runtime activation failed" },
+            }),
+          };
+        },
+      );
+      const reloadPlugins = vi.fn(async (_targets, options) =>
+        withPluginLifecycleLease({ env }, async () => {
+          options?.commitGuard?.();
+          return { operationId: "reload", generation: 3, pluginIds: ["fixture"] };
+        }),
+      );
+      try {
+        const result = await applyClawAddForGateway({
+          source: { packageName: "@openclaw/workflow-operator", version: "1.0.0" },
+          planIntegrity: projection.planIntegrity,
+          getPlanningContext: async () => ({ config, sourceMcpServers: {} }),
+          policyConfig: { configPath: env.OPENCLAW_CONFIG_PATH, env },
+          assertCurrent: () => {},
+          reloadPlugins,
+        });
+        expect(migrationCommitted).toBe(true);
+        expect(result).toMatchObject({ status: "complete" });
+        expect(continueAdd).toHaveBeenCalledOnce();
+      } finally {
+        acquireSpy.mockRestore();
+      }
+    });
+  });
+
   it("reproduces the real runtime batch refusal while any plugin lease is held", async () => {
     const { env } = await fixture();
     await withEnvAsync(env, async () => {
@@ -218,7 +295,7 @@ describe("Gateway Claw Add plugin handoff", () => {
         );
         const reloadPlugins = vi.fn(async (_targets, reloadOptions) => {
           events.push("reload");
-          expect(hasPluginLifecycleLease()).toBe(false);
+          expect(hasPluginLifecycleLease()).toBe(true);
           if (outcome === "policy-drift-at-commit") {
             await fs.writeFile(
               env.OPENCLAW_CONFIG_PATH,

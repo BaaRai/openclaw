@@ -2,14 +2,10 @@ import type {
   ClawPluginAcknowledgement,
   ClawSkillAcknowledgement,
 } from "../../packages/gateway-protocol/src/schema/claws.js";
-import {
-  readCurrentConfigForPolicyCheckWithMigrations,
-  withCurrentConfigPolicyReader,
-} from "../config/io.runtime.js";
+import { withCurrentConfigPolicyReader } from "../config/io.runtime.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ClawHubFetchOptions } from "../infra/clawhub-client.js";
-import { readDeferredPluginMigrationsAsync } from "../infra/deferred-plugin-migrations.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   PluginInstallRuntimeBatch,
@@ -286,36 +282,44 @@ export async function applyClawUpdateForGateway(
 
                     const batch = new PluginInstallRuntimeBatch(
                       persistedPlan.stateOptions,
-                      async (targets) => {
-                        const deferredPluginMigrations = await readDeferredPluginMigrationsAsync({
-                          env: input.policyConfig.env,
-                          path: pluginLease.databasePath,
-                        });
-                        const assertReloadPolicy = () => {
-                          assertCurrent();
-                          const config = readCurrentConfigForPolicyCheckWithMigrations({
-                            ...input.policyConfig,
-                            deferredPluginMigrations,
-                          });
-                          assertClawsLabsEnabled(config);
-                          assertClawPluginRequirementsEnabled(
-                            stage?.requiredPluginIds ?? [],
-                            config,
-                          );
-                          if (!reviewedDesiredAgent) {
-                            throw new ClawUpdateMutationError(
-                              "reviewed_access_changed",
-                              "The effective Claw access changed since review. Preview it again.",
-                            );
-                          }
-                          updateOptions.assertReviewedConfig?.(config, reviewedDesiredAgent);
-                          assertCurrent();
-                        };
-                        assertReloadPolicy();
-                        return await input.reloadPlugins!(targets, {
-                          commitGuard: assertReloadPolicy,
-                        });
-                      },
+                      (targets) =>
+                        withPluginLifecycleLease(
+                          {
+                            env: input.policyConfig.env,
+                            signal: input.signal,
+                            assertCurrent,
+                          },
+                          (reloadLease) =>
+                            withCurrentConfigPolicyReader(
+                              { ...input.policyConfig, lease: reloadLease },
+                              async (getReloadConfig) => {
+                                const assertReloadPolicy = () => {
+                                  assertCurrent();
+                                  const config = getReloadConfig();
+                                  assertClawsLabsEnabled(config);
+                                  assertClawPluginRequirementsEnabled(
+                                    stage?.requiredPluginIds ?? [],
+                                    config,
+                                  );
+                                  if (!reviewedDesiredAgent) {
+                                    throw new ClawUpdateMutationError(
+                                      "reviewed_access_changed",
+                                      "The effective Claw access changed since review. Preview it again.",
+                                    );
+                                  }
+                                  updateOptions.assertReviewedConfig?.(
+                                    config,
+                                    reviewedDesiredAgent,
+                                  );
+                                  assertCurrent();
+                                };
+                                assertReloadPolicy();
+                                return await input.reloadPlugins!(targets, {
+                                  commitGuard: assertReloadPolicy,
+                                });
+                              },
+                            ),
+                        ),
                     );
                     let stage:
                       | Awaited<ReturnType<typeof stageClawUpdateHostRequirements>>

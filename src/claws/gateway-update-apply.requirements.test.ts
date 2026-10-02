@@ -3,11 +3,16 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { recordDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { commitPluginInstallRecordsWithConfig } from "../plugins/install-record-commit.js";
 import { PluginInstallRuntimeBatch } from "../plugins/install-runtime-batch.js";
 import { getPluginCache } from "../plugins/plugin-cache.js";
-import { hasPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import {
+  hasPluginLifecycleLease,
+  withPluginLifecycleLease,
+} from "../plugins/plugin-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import * as leaseAcquisition from "../state/openclaw-state-lease-acquisition.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { applyClawUpdateForGateway } from "./gateway-update-apply.js";
 import { runClawPluginBatch } from "./plugin-runtime.js";
@@ -77,6 +82,93 @@ vi.mock("./update-apply.js", async (importOriginal) => ({
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(closeOpenClawStateDatabaseForTest);
 beforeEach(() => vi.resetAllMocks());
+
+it("uses migration policy committed before the Update runtime activation lease", async () => {
+  const root = dirs.make("claw-gateway-update-migration-");
+  const env = {
+    OPENCLAW_STATE_DIR: root,
+    OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
+  };
+  const config: OpenClawConfig = { gateway: { controlUi: { experimental: { claws: true } } } };
+  await fs.writeFile(env.OPENCLAW_CONFIG_PATH, JSON.stringify(config));
+
+  await withEnvAsync(env, async () => {
+    await commitPluginInstallRecordsWithConfig({
+      previousInstallRecords: {},
+      nextInstallRecords: {
+        fixture: { source: "clawhub", clawhubPackage: "fixture", version: "1" },
+      },
+      nextConfig: config,
+      writeOptions: { afterWrite: { mode: "none", reason: "Update migration fixture" } },
+    });
+    let pluginLeaseAcquisitions = 0;
+    let migrationCommitted = false;
+    const acquire = leaseAcquisition.acquireOpenClawStateLease;
+    const acquireSpy = vi
+      .spyOn(leaseAcquisition, "acquireOpenClawStateLease")
+      .mockImplementation(async (params) => {
+        if (params.label.includes("plugin lifecycle lease")) {
+          pluginLeaseAcquisitions += 1;
+          if (pluginLeaseAcquisitions === 2) {
+            await recordDeferredPluginMigrations({
+              env,
+              pending: [
+                {
+                  pluginId: "legacy-fixture",
+                  reason: "Legacy config awaits plugin migration",
+                  command: "openclaw doctor --fix",
+                  configPaths: [["legacyFixture"]],
+                  validationExcludedPaths: [["legacyFixture"]],
+                },
+              ],
+            });
+            await fs.writeFile(
+              env.OPENCLAW_CONFIG_PATH,
+              JSON.stringify({ ...config, legacyFixture: { value: "retained" } }),
+            );
+            migrationCommitted = true;
+          }
+        }
+        return await acquire(params);
+      });
+    const result = { agentId: "worker", status: "complete" as const };
+    const continueMutation = vi.fn(async () => result);
+    mocks.stage.mockImplementation(async (_plan, _source, options) => {
+      options.assertReviewedConfig(config, { id: "worker" });
+      options.runtimeBatch.retain("fixture");
+      return {
+        needsRuntimeHandoff: true,
+        requiredPluginIds: ["fixture"],
+        continue: continueMutation,
+        failRuntime: async () => {
+          throw new Error("Update runtime activation failed");
+        },
+      };
+    });
+    const reloadPlugins = vi.fn(async (_targets, options) =>
+      withPluginLifecycleLease({ env }, async () => {
+        options?.commitGuard?.();
+        return { operationId: "reload", generation: 5, pluginIds: ["fixture"] };
+      }),
+    );
+    try {
+      const outcome = await applyClawUpdateForGateway({
+        agentId: "worker",
+        source: { packageName: "@openclaw/worker", version: "2.0.0" },
+        planIntegrity: "sha256:reviewed",
+        getRuntimeConfig: () => config,
+        policyConfig: { configPath: env.OPENCLAW_CONFIG_PATH, env },
+        assertCurrent: () => {},
+        reloadPlugins,
+      });
+      expect(migrationCommitted).toBe(true);
+      expect(outcome).toMatchObject({ status: "complete" });
+      expect(continueMutation).toHaveBeenCalledOnce();
+    } finally {
+      acquireSpy.mockRestore();
+    }
+  });
+});
 
 it.each([
   "complete",
@@ -177,7 +269,7 @@ it.each([
     });
     const reloadPlugins = vi.fn(
       async (targets: readonly { pluginId: string }[], options?: { commitGuard?: () => void }) => {
-        expect(hasPluginLifecycleLease()).toBe(false);
+        expect(hasPluginLifecycleLease()).toBe(true);
         expect(targets.map((target) => target.pluginId)).toEqual(["fixture"]);
         if (outcome === "labs-off-during-reload") {
           await fs.writeFile(

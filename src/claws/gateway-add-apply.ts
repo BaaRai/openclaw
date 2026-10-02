@@ -2,12 +2,8 @@ import type {
   ClawPluginAcknowledgement,
   ClawSkillAcknowledgement,
 } from "../../packages/gateway-protocol/src/schema/claws.js";
-import {
-  readCurrentConfigForPolicyCheckWithMigrations,
-  withCurrentConfigPolicyReader,
-} from "../config/io.runtime.js";
+import { withCurrentConfigPolicyReader } from "../config/io.runtime.js";
 import type { ClawHubFetchOptions } from "../infra/clawhub-client.js";
-import { readDeferredPluginMigrationsAsync } from "../infra/deferred-plugin-migrations.js";
 import {
   PluginInstallRuntimeBatch,
   type PluginInstallBatchReload,
@@ -312,31 +308,35 @@ export async function applyClawAddForGateway(
                       reloadPlugins && pluginIds.length > 0
                         ? new PluginInstallRuntimeBatch(
                             { env: input.policyConfig.env },
-                            async (targets) => {
-                              assertCurrent();
-                              const deferredPluginMigrations =
-                                await readDeferredPluginMigrationsAsync({
+                            (targets) =>
+                              withPluginLifecycleLease(
+                                {
                                   env: input.policyConfig.env,
-                                });
-                              const assertRuntimePolicyCurrent = () => {
-                                assertCurrent();
-                                const currentConfig = readCurrentConfigForPolicyCheckWithMigrations(
-                                  {
-                                    ...input.policyConfig,
-                                    deferredPluginMigrations,
-                                  },
-                                );
-                                assertCurrent();
-                                assertClawsLabsEnabled(currentConfig);
-                                assertClawPluginRequirementsEnabled(pluginIds, currentConfig);
-                                assertReviewedConfig(currentConfig);
-                                assertCurrent();
-                              };
-                              assertRuntimePolicyCurrent();
-                              return await reloadPlugins(targets, {
-                                commitGuard: assertRuntimePolicyCurrent,
-                              });
-                            },
+                                  signal: input.signal,
+                                  assertCurrent,
+                                },
+                                (reloadLease) =>
+                                  withCurrentConfigPolicyReader(
+                                    { ...input.policyConfig, lease: reloadLease },
+                                    async (getReloadConfig) => {
+                                      const assertRuntimePolicyCurrent = () => {
+                                        assertCurrent();
+                                        const currentConfig = getReloadConfig();
+                                        assertClawsLabsEnabled(currentConfig);
+                                        assertClawPluginRequirementsEnabled(
+                                          pluginIds,
+                                          currentConfig,
+                                        );
+                                        assertReviewedConfig(currentConfig);
+                                        assertCurrent();
+                                      };
+                                      assertRuntimePolicyCurrent();
+                                      return await reloadPlugins(targets, {
+                                        commitGuard: assertRuntimePolicyCurrent,
+                                      });
+                                    },
+                                  ),
+                              ),
                           )
                         : undefined;
                     const applyOptions = {
