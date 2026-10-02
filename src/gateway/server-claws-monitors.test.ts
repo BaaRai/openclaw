@@ -76,6 +76,36 @@ describe("Claw serving monitor cleanup", () => {
     expect(resolveRegisteredAgentIdForDir(agentDir)).toBe("worker");
   });
 
+  it("retains a workspace claimed by another agent after Claw config removal", async () => {
+    const current = await fixture(false);
+    const soulPath = path.join(current.workspaceDir, "SOUL.md");
+    const originalSoul = await fs.readFile(soulPath, "utf8");
+    const plan = await current.plan();
+
+    const result = await current.apply(plan, {
+      purgeSessions: async () => {
+        const config = current.getConfig();
+        expect(config.agents?.entries?.worker).toBeUndefined();
+        await current.writeConfig({
+          ...config,
+          agents: {
+            ...config.agents,
+            entries: {
+              ...config.agents?.entries,
+              survivor: { workspace: current.workspaceDir },
+            },
+          },
+        });
+        return false;
+      },
+    });
+    expect(result).toMatchObject({ status: "complete", agentRemoved: true });
+    expect(result.workspaceFiles).toContainEqual({ path: "SOUL.md", action: "retainedShared" });
+    expect(current.getConfig().agents?.entries?.survivor?.workspace).toBe(current.workspaceDir);
+    await expect(fs.stat(current.workspaceDir)).resolves.toBeDefined();
+    await expect(fs.readFile(soulPath, "utf8")).resolves.toBe(originalSoul);
+  });
+
   it("retires the deleted agent runtime after its config is removed", async () => {
     const current = await fixture(false);
     const agentDir = resolveAgentDir(current.getConfig(), "worker");
