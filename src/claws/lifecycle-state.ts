@@ -651,6 +651,7 @@ export async function applyClawRemovePlan(
       }
       const complete = releaseClawRemoveRows(
         agentId,
+        cleanupTargets.agentDir,
         workspaceFiles,
         cleanupErrors,
         configRemoval.assertCurrent,

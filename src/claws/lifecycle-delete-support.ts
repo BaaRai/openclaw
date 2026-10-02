@@ -12,6 +12,7 @@ import {
   resolveSurvivingDatabaseFilePaths,
 } from "../agents/agent-delete-databases.js";
 import { findOverlappingWorkspaceAgentIds } from "../agents/agent-delete-safety.js";
+import { unregisterResolvedAgentDir } from "../agents/agent-dir-registry.js";
 import { listAgentEntries, resolveAgentDir } from "../agents/agent-scope.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../agents/workspace-bootstrap-read.js";
 import {
@@ -516,6 +517,7 @@ export async function removeClawWorkspaceFile(
 
 export function releaseClawRemoveRows(
   agentId: string,
+  agentDir: string,
   files: RemovedWorkspaceFile[],
   cleanupErrors: string[],
   assertCurrent: (database: OpenClawStateDatabase) => void,
@@ -564,6 +566,7 @@ export function releaseClawRemoveRows(
     }, options);
     if (complete) {
       deleteCachedClawInstallSchemaVersion(agentId, options);
+      unregisterResolvedAgentDir({ agentId, agentDir, env: options.env });
     }
   } catch (error) {
     if (complete) {
