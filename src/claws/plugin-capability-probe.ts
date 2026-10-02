@@ -278,7 +278,7 @@ export async function preflightClawPluginPackage(
     const pluginsConfig = normalizePluginsConfig(options.config.plugins);
     const explicitlyDisabled =
       pluginsConfig.entries[normalizePluginId(probe.pluginId)]?.enabled === false;
-    if (result.action === "reuse" || explicitlyDisabled) {
+    if (result.action === "reuse" || explicitlyDisabled || !pluginsConfig.enabled) {
       const activation = resolveEffectiveEnableState({
         id: probe.pluginId,
         origin: "global",
@@ -290,8 +290,10 @@ export async function preflightClawPluginPackage(
           ok: false,
           code: "plugin_disabled",
           message:
-            result.action === "install" && explicitlyDisabled
-              ? `Plugin ${pkg.ref}@${pkg.version} was explicitly disabled or uninstalled. Install and enable it in Plugins before adding this Claw.`
+            result.action === "install"
+              ? explicitlyDisabled
+                ? `Plugin ${pkg.ref}@${pkg.version} was explicitly disabled or uninstalled. Install and enable it in Plugins before adding this Claw.`
+                : `Plugin ${pkg.ref}@${pkg.version} cannot be enabled because plugins are disabled. Enable plugins in Plugins before adding this Claw.`
               : `Plugin ${pkg.ref}@${pkg.version} is installed but disabled (${activation.reason ?? "host policy"}). Enable it in Plugins before continuing.`,
         };
       }
