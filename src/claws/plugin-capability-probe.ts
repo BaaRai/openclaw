@@ -253,6 +253,31 @@ export async function preflightClawPluginPackage(
       message: sourceHostConflict,
     };
   }
+  if (options.config) {
+    const pluginsConfig = normalizePluginsConfig(options.config.plugins);
+    const explicitlyDisabled =
+      pluginsConfig.entries[normalizePluginId(probe.pluginId)]?.enabled === false;
+    const activation = resolveEffectiveEnableState({
+      id: probe.pluginId,
+      origin: "global",
+      config: pluginsConfig,
+      rootConfig: options.config,
+    });
+    if (!activation.enabled) {
+      return {
+        ok: false,
+        code: "plugin_disabled",
+        message:
+          !result.ok || result.action === "install"
+            ? explicitlyDisabled
+              ? `Plugin ${pkg.ref}@${pkg.version} was explicitly disabled or uninstalled. Install and enable it in Plugins before adding this Claw.`
+              : !pluginsConfig.enabled
+                ? `Plugin ${pkg.ref}@${pkg.version} cannot be enabled because plugins are disabled. Enable plugins in Plugins before adding this Claw.`
+                : `Plugin ${pkg.ref}@${pkg.version} is blocked by host policy (${activation.reason ?? "unknown"}). Change its policy in Plugins before adding this Claw.`
+            : `Plugin ${pkg.ref}@${pkg.version} is installed but disabled (${activation.reason ?? "host policy"}). Enable it in Plugins before continuing.`,
+      };
+    }
+  }
   if (!result.ok) {
     return {
       ok: false,
@@ -273,31 +298,6 @@ export async function preflightClawPluginPackage(
       code: "plugin_integrity_conflict",
       message: `Plugin ${pkg.ref}@${pkg.version} is installed as ${result.installedId} with integrity ${result.installedIntegrity ?? "unknown"}, expected ${probe.pluginId} with ${integrity}.`,
     };
-  }
-  if (options.config) {
-    const pluginsConfig = normalizePluginsConfig(options.config.plugins);
-    const explicitlyDisabled =
-      pluginsConfig.entries[normalizePluginId(probe.pluginId)]?.enabled === false;
-    const activation = resolveEffectiveEnableState({
-      id: probe.pluginId,
-      origin: "global",
-      config: pluginsConfig,
-      rootConfig: options.config,
-    });
-    if (!activation.enabled) {
-      return {
-        ok: false,
-        code: "plugin_disabled",
-        message:
-          result.action === "install"
-            ? explicitlyDisabled
-              ? `Plugin ${pkg.ref}@${pkg.version} was explicitly disabled or uninstalled. Install and enable it in Plugins before adding this Claw.`
-              : !pluginsConfig.enabled
-                ? `Plugin ${pkg.ref}@${pkg.version} cannot be enabled because plugins are disabled. Enable plugins in Plugins before adding this Claw.`
-                : `Plugin ${pkg.ref}@${pkg.version} is blocked by host policy (${activation.reason ?? "unknown"}). Change its policy in Plugins before adding this Claw.`
-            : `Plugin ${pkg.ref}@${pkg.version} is installed but disabled (${activation.reason ?? "host policy"}). Enable it in Plugins before continuing.`,
-      };
-    }
   }
   return {
     ok: true,
