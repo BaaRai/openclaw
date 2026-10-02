@@ -630,6 +630,33 @@ describe("claws cli", () => {
     expect(mocks.applyClawAddPlan).not.toHaveBeenCalled();
   });
 
+  it("stops Add effects when Labs turns off after apply begins", async () => {
+    const manifestPath = await writeManifest();
+    await runCli(["claws", "add", manifestPath, "--dry-run", "--json"]);
+    const plan = JSON.parse(mocks.logs[0] ?? "{}");
+    mocks.logs.length = 0;
+    const commitEffect = vi.fn();
+    mocks.applyClawAddPlan.mockImplementationOnce(async (_plan, options) => {
+      await Promise.resolve();
+      mocks.readCurrentConfigForPolicyCheck.mockReturnValue({});
+      options.assertForwardCurrent?.();
+      commitEffect();
+    });
+
+    await runCli([
+      "claws",
+      "add",
+      manifestPath,
+      "--yes",
+      "--plan-integrity",
+      plan.planIntegrity,
+      "--json",
+    ]);
+
+    expect(commitEffect).not.toHaveBeenCalled();
+    expect(JSON.parse(mocks.logs[0] ?? "{}").error.code).toBe("claws_labs_disabled");
+  });
+
   it("discloses a warned skill and binds local Add consent to its exact reviewed identity", async () => {
     const { root, workspace } = await cliTestHelpers.writePackageFixture(tempDirs);
     const warning = "This community skill requires review before installation.";

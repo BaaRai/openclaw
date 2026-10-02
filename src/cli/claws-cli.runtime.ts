@@ -496,6 +496,7 @@ export async function runClawsAddCommand(
         return await applyClawAddPlan(plan, {
           config,
           assertCurrent: () => lease.assertOwned(),
+          assertForwardCurrent: assertCurrentLab,
           pluginConsent: resolveClawPluginInstallConsent(runtime),
           ...(skillConsent ? { skillConsent } : {}),
           reloadPlugins: await resolvePluginBatchReload(),
