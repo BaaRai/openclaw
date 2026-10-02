@@ -25,8 +25,9 @@ function parseClawHubAudit(warning: string): ClawHubAudit | null {
   const release = content[0];
   const outcome = content[1]?.match(/^Outcome: (.+)$/u)?.[1];
   const overviewHeading = content[2];
-  const details = content.at(-1)?.match(/^Details: (.+)$/u)?.[1];
-  const overview = content.slice(3, -1).join(" ");
+  const wrappedDetails = content.at(-2) === "Details:";
+  const details = wrappedDetails ? content.at(-1) : content.at(-1)?.match(/^Details: (.+)$/u)?.[1];
+  const overview = content.slice(3, wrappedDetails ? -2 : -1).join(" ");
   if (!release || !outcome || overviewHeading !== "Overview:" || !overview || !details) {
     return null;
   }

@@ -207,6 +207,7 @@ export function createPage(
     missingPluginReview?: boolean;
     missingDisclosure?: boolean;
     malformedDisclosure?: boolean;
+    catalogPluginCount?: number;
     rosterErrorAfterAdd?: boolean;
     statusErrorAfterAdd?: boolean;
     catalogSearch?: (query: string) => Promise<{ entries: ClawCatalogEntry[] }>;
@@ -317,7 +318,7 @@ export function createPage(
           agentName: "Workflow Operator",
           workspaceFiles: 3,
           skills: 1,
-          plugins: 1,
+          plugins: options.catalogPluginCount ?? 1,
           mcpServers: 0,
           scheduledJobs: 0,
         },

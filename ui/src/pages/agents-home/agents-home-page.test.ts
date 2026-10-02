@@ -200,6 +200,19 @@ describe("AgentsHomePage", () => {
     expect(gateway.setSessionKey).toHaveBeenCalledWith("agent:workflow-operator:team-room");
   });
 
+  it("counts a reviewed profile plugin omitted from the catalog manifest summary", async () => {
+    const { page } = createPage({ clawsEnabled: true, catalogPluginCount: 0 });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() =>
+      expect(page.querySelector(".claws-catalog__resource-counts")).not.toBeNull(),
+    );
+
+    expect(page.querySelector(".claws-catalog__resource-counts")?.textContent).toContain(
+      "1 plugins",
+    );
+  });
+
   it("does not acknowledge a plugin review without artifact integrity", () => {
     expect(
       pluginAcknowledgements([{ ...workflowPluginReview, integrity: "" }], new Set()),
@@ -265,10 +278,33 @@ describe("AgentsHomePage", () => {
     expect(request.mock.calls.some(([method]) => method === "claws.add.apply")).toBe(false);
   });
 
-  it("does not link to a non-HTTP audit destination", async () => {
+  it("renders a ClawHub audit whose Details URL wraps onto the next bordered line", async () => {
+    const wrappedAuditWarning = auditWarning.replace(
+      `│ Details: ${auditUrl} │`,
+      `│ Details: │\n│ ${auditUrl} │`,
+    );
     const { page } = createPage({
       clawsEnabled: true,
-      pluginRiskWarning: auditWarning.replace(auditUrl, "javascript:alert(1)"),
+      pluginRiskWarning: wrappedAuditWarning,
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector(".claws-trust-warning")).not.toBeNull());
+
+    const warning = page.querySelector<HTMLElement>(".claws-trust-warning");
+    expect(warning?.textContent).toContain("Outcome: Review");
+    expect(warning?.textContent).not.toMatch(/[╭╮│╰╯]/u);
+    expect(warning?.querySelector<HTMLAnchorElement>("a")?.href).toBe(auditUrl);
+  });
+
+  it("does not link to a non-HTTP audit destination", async () => {
+    const wrappedAuditWarning = auditWarning.replace(
+      `│ Details: ${auditUrl} │`,
+      "│ Details: │\n│ javascript:alert(1) │",
+    );
+    const { page } = createPage({
+      clawsEnabled: true,
+      pluginRiskWarning: wrappedAuditWarning,
     });
     await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
     page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();

@@ -107,11 +107,14 @@ function renderCatalogList(props: ClawsCatalogViewProps) {
   `;
 }
 
-function renderResourceCounts(detail: ClawCatalogDetail) {
+function renderResourceCounts(detail: ClawCatalogDetail, plan: ClawAddPlan) {
+  const plugins = plan.actions.filter(
+    (action) => action.kind === "package" && action.id.startsWith("plugin:"),
+  ).length;
   const rows = [
     ["files", detail.workspaceFiles],
     ["skills", detail.skills],
-    ["plugins", detail.plugins],
+    ["plugins", plugins],
     ["mcpServers", detail.mcpServers],
     ["schedules", detail.scheduledJobs],
   ] as const;
@@ -181,7 +184,7 @@ function renderReview(props: ClawsCatalogViewProps) {
           ? html`
               <section class="claws-catalog__section">
                 <h4>${t("clawsCatalog.contents")}</h4>
-                ${renderResourceCounts(detail)}
+                ${renderResourceCounts(detail, plan)}
               </section>
               <section class="claws-catalog__section">
                 <h4>${t("clawsCatalog.changes")}</h4>
