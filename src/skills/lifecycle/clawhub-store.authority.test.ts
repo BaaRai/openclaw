@@ -1,13 +1,14 @@
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { recordClawHubSkillInstall } from "./clawhub-store.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function observePublication(filePath: string, isCurrent: () => boolean): boolean[] {
   const currentAtPublication: boolean[] = [];
@@ -36,18 +37,14 @@ async function withTrackingPaths<T>(
     lockPath: string;
   }) => Promise<T>,
 ): Promise<T> {
-  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawhub-store-authority-"));
+  const workspaceDir = tempDirs.make("clawhub-store-authority-");
   const skillDir = path.join(workspaceDir, "skills", "canary");
-  try {
-    return await run({
-      workspaceDir,
-      skillDir,
-      originPath: path.join(skillDir, ".clawhub", "origin.json"),
-      lockPath: path.join(workspaceDir, ".clawhub", "lock.json"),
-    });
-  } finally {
-    await fs.rm(workspaceDir, { recursive: true, force: true });
-  }
+  return await run({
+    workspaceDir,
+    skillDir,
+    originPath: path.join(skillDir, ".clawhub", "origin.json"),
+    lockPath: path.join(workspaceDir, ".clawhub", "lock.json"),
+  });
 }
 
 const origin = {
