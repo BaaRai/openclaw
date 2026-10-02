@@ -15,9 +15,9 @@ import {
   type PersistedClawPackageRef,
 } from "./provenance.js";
 import { readClawRemoveFactsInDatabase } from "./remove-facts.kernel.js";
-import {
-  type ClawRemoveStateCommand,
-  type ClawRemoveStateWorkerOperations,
+import type {
+  ClawRemoveStateCommand,
+  ClawRemoveStateWorkerOperations,
 } from "./remove-state-worker-contract.js";
 
 function assertInstall(
@@ -120,55 +120,55 @@ export function executeClawRemoveStateCommand(
   return runOpenClawStateWriteTransaction(
     () => {
       requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
-      const result = (() => {
-        switch (command.type) {
-          case "claws.remove.packageRefStatus": {
-            const input = command.input;
-            assertPackageRemovalOwner(input, database);
-            assertPackageLease(input, database);
-            const actualRefs = matchingArtifactRefs(input.expectedRef, database);
-            const expectedRefs = input.expectedArtifactRefs.toSorted((left, right) =>
-              `${left.agentId}:${left.version}:${left.integrity}`.localeCompare(
-                `${right.agentId}:${right.version}:${right.integrity}`,
-              ),
-            );
-            if (!isDeepStrictEqual(actualRefs, expectedRefs)) {
-              throw new Error("Claw package ownership changed before cleanup claim.");
-            }
-            const currentRef = actualRefs.find(
-              (ref) =>
-                ref.agentId === input.expectedRef.agentId &&
-                ref.version === input.expectedRef.version &&
-                ref.integrity === input.expectedRef.integrity,
-            );
-            if (!currentRef || !isDeepStrictEqual(currentRef, input.expectedRef)) {
-              throw new Error("Claw package reference changed before cleanup claim.");
-            }
-            return updateClawPackageRefStatus(input.expectedRef, input.status, { database });
+      let result: PersistedClawPackageRef | undefined;
+      switch (command.type) {
+        case "claws.remove.packageRefStatus": {
+          const input = command.input;
+          assertPackageRemovalOwner(input, database);
+          assertPackageLease(input, database);
+          const actualRefs = matchingArtifactRefs(input.expectedRef, database);
+          const expectedRefs = input.expectedArtifactRefs.toSorted((left, right) =>
+            `${left.agentId}:${left.version}:${left.integrity}`.localeCompare(
+              `${right.agentId}:${right.version}:${right.integrity}`,
+            ),
+          );
+          if (!isDeepStrictEqual(actualRefs, expectedRefs)) {
+            throw new Error("Claw package ownership changed before cleanup claim.");
           }
-          case "claws.monitors.assertNoAgentLeases":
-            assertMonitorJournal(command.input, database);
-            assertNoOpenClawAgentDatabaseLeases(command.input.agentId, { database });
-            assertMonitorJournal(command.input, database);
-            return;
-          case "claws.monitors.quiesce": {
-            assertMonitorJournal(command.input, database);
-            assertInstall(command.input, database);
-            const facts = readClawRemoveFactsInDatabase(database.db, command.input.agentId, []);
-            if (
-              !isDeepStrictEqual(facts.attachedJobs, command.input.expectedAttachedJobs) ||
-              !isDeepStrictEqual(facts.cronRefs, command.input.expectedCronRefs)
-            ) {
-              throw new Error("Attached scheduled work changed before monitor cancellation.");
-            }
-            return;
+          const currentRef = actualRefs.find(
+            (ref) =>
+              ref.agentId === input.expectedRef.agentId &&
+              ref.version === input.expectedRef.version &&
+              ref.integrity === input.expectedRef.integrity,
+          );
+          if (!currentRef || !isDeepStrictEqual(currentRef, input.expectedRef)) {
+            throw new Error("Claw package reference changed before cleanup claim.");
           }
-          case "claws.monitors.prepareDatabaseClose":
-            assertMonitorJournal(command.input, database);
-            assertInstall(command.input, database);
-            return;
+          result = updateClawPackageRefStatus(input.expectedRef, input.status, { database });
+          break;
         }
-      })();
+        case "claws.monitors.assertNoAgentLeases":
+          assertMonitorJournal(command.input, database);
+          assertNoOpenClawAgentDatabaseLeases(command.input.agentId, { database });
+          assertMonitorJournal(command.input, database);
+          break;
+        case "claws.monitors.quiesce": {
+          assertMonitorJournal(command.input, database);
+          assertInstall(command.input, database);
+          const facts = readClawRemoveFactsInDatabase(database.db, command.input.agentId, []);
+          if (
+            !isDeepStrictEqual(facts.attachedJobs, command.input.expectedAttachedJobs) ||
+            !isDeepStrictEqual(facts.cronRefs, command.input.expectedCronRefs)
+          ) {
+            throw new Error("Attached scheduled work changed before monitor cancellation.");
+          }
+          break;
+        }
+        case "claws.monitors.prepareDatabaseClose":
+          assertMonitorJournal(command.input, database);
+          assertInstall(command.input, database);
+          break;
+      }
       requestSqliteWorkerOperationAdmission({
         stage: "commit",
         facts:
