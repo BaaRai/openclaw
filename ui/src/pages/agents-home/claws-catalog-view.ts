@@ -194,7 +194,11 @@ function renderReview(props: ClawsCatalogViewProps) {
                   ${plan.actions.map(
                     (action) => html`<li>
                       <strong>${action.action} ${action.kind}</strong>
-                      <span>${action.id}${action.reason ? ` · ${action.reason}` : ""}</span>
+                      <span
+                        >${action.kind === "workspace" ? (plan.target.workspace ?? action.id) : action.id}${
+                          action.reason ? ` · ${action.reason}` : ""
+                        }</span
+                      >
                       ${renderClawActionEffect(action.effect)}
                     </li>`,
                   )}

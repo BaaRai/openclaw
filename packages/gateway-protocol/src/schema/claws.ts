@@ -348,6 +348,7 @@ export const ClawLifecyclePlanResultSchema = closedObject({
   planIntegrity: NonEmptyString,
   target: closedObject({
     agentId: Type.Optional(NonEmptyString),
+    workspace: Type.Optional(NonEmptyString),
     name: Type.Optional(NonEmptyString),
     currentVersion: Type.Optional(NonEmptyString),
     targetVersion: Type.Optional(NonEmptyString),

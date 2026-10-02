@@ -116,6 +116,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
           planIntegrity: "sha256:reviewed-plan",
           target: {
             agentId: "workflow-operator",
+            workspace: "/tmp/workspace-workflow-operator-2",
             name: "Workflow Operator",
             targetVersion: "1.2.0",
           },
@@ -126,6 +127,12 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
               action: "create",
               blocked: false,
               details: ["Creates a dedicated workspace"],
+            },
+            {
+              kind: "workspace",
+              id: "workflow-operator",
+              action: "create",
+              blocked: false,
             },
             {
               kind: "workspaceFile",
@@ -280,6 +287,15 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
       await dialog.getByText("Configured access", { exact: true }).waitFor();
       await dialog.getByText("workflow.start", { exact: true }).waitFor();
       await dialog.getByText("workspace/SOUL.md", { exact: true }).waitFor();
+      const reviewedWorkspace = dialog.getByText("/tmp/workspace-workflow-operator-2", {
+        exact: true,
+      });
+      await reviewedWorkspace.waitFor();
+      if (capture) {
+        await reviewedWorkspace.scrollIntoViewIfNeeded();
+        const dir = createControlUiE2eArtifactDir(`claws-workspace-review-${viewport.name}`);
+        await page.screenshot({ path: `${dir}/workspace-review.png`, animations: "disabled" });
+      }
       expect(await dialog.locator(".claws-catalog__resource-counts").textContent()).toContain(
         "1 plugins",
       );

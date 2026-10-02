@@ -365,6 +365,34 @@ describe("Gateway Claw Add application", () => {
     expect(mocks.apply).not.toHaveBeenCalled();
   });
 
+  it("rejects a sibling workspace that changed after review before persisting", async () => {
+    const reviewedWorkspace = "/tmp/state/workspace-workflow-operator-2";
+    const currentWorkspace = "/tmp/state/workspace-workflow-operator-3";
+    mocks.build.mockResolvedValue({
+      ...plan,
+      agent: {
+        ...plan.agent,
+        workspace: currentWorkspace,
+        config: { ...plan.agent.config, workspace: currentWorkspace },
+      },
+    });
+    mocks.project.mockImplementation((current: ClawAddPlan) => ({
+      ...projected,
+      target: { ...projected.target, workspace: current.agent.workspace },
+      planIntegrity:
+        current.agent.workspace === reviewedWorkspace
+          ? projected.planIntegrity
+          : "sha256:workspace-changed",
+    }));
+
+    await expect(applyClawAddForGateway(applyInput())).rejects.toBeInstanceOf(
+      ClawGatewayPlanChangedError,
+    );
+    expect(mocks.lease).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.apply).not.toHaveBeenCalled();
+  });
+
   it("stops when the final persisted artifact produces different reviewed facts", async () => {
     mocks.project
       .mockReturnValueOnce(projected)

@@ -248,6 +248,7 @@ export function projectClawAddPlan(
       operation: "add",
       target: {
         agentId: plan.agent.finalId,
+        workspace: plan.agent.workspace,
         name: plan.claw.name,
         targetVersion: plan.claw.version,
       },
