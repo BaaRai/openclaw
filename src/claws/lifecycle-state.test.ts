@@ -21,6 +21,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { applyClawAddPlan } from "./add.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
   clawCronGatewayInput,
@@ -113,6 +114,47 @@ function seedAttachedCronJob(
 }
 
 describe("Claw status and remove", () => {
+  it.each(["direct", "worker"] as const)(
+    "readds a Claw after completed removal using %s state writes",
+    async (stateMode) => {
+      const current = await addFixture();
+      const removePlan = await buildClawRemovePlan("worker", {
+        env: current.env,
+        config: current.getConfig(),
+      });
+      const removed = await applyClawRemovePlan(removePlan, {
+        ...removeOptions(current, removePlan),
+        trashPath: async (pathname) => {
+          await rm(pathname, { recursive: true, force: true });
+          return true;
+        },
+      });
+      expect(removed).toMatchObject({ status: "complete", agentRemoved: true });
+      const deletion = readAgentDeletionJournal("worker", { env: current.env });
+      expect(deletion).toMatchObject({ cleanupCompleted: true });
+      expect(loadConfig().agents?.entries?.worker).toBeUndefined();
+
+      const readded = await applyClawAddPlan(current.plan, {
+        env: current.env,
+        ...(stateMode === "worker" ? { stateMode } : {}),
+        consentPlanIntegrity: current.plan.planIntegrity,
+        commitConfig: async (transform) => {
+          expect(readAgentDeletionJournal("worker", { env: current.env })?.operationId).toBe(
+            deletion?.operationId,
+          );
+          await state.writeConfig(transform(loadConfig()));
+        },
+      });
+
+      expect(readded).toMatchObject({ status: "complete", configCommitted: true });
+      const persistedConfig = JSON.parse(
+        await readFile(state.configPath, "utf8"),
+      ) as OpenClawConfig;
+      expect(persistedConfig.agents?.entries?.worker).toBeDefined();
+      expect(readAgentDeletionJournal("worker", { env: current.env })).toBeUndefined();
+    },
+  );
+
   it("removes an orphan with only MCP provenance through the CLI read path", async () => {
     const server = { command: "docs-mcp" };
     const config = { mcp: { servers: { docs: server } } };
