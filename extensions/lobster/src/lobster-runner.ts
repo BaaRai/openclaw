@@ -83,6 +83,7 @@ type EmbeddedToolEnvelope = {
 };
 
 type EmbeddedToolRuntime = {
+  createToolContext?: (ctx: EmbeddedToolContext) => EmbeddedToolContext;
   runToolRequest: (params: {
     pipeline?: string;
     filePath?: string;
@@ -293,7 +294,16 @@ export function createEmbeddedLobsterRunner(options?: {
             }
           }
           if (params.approve === true) {
-            params.assertInvocationCurrent?.();
+            const assertInvocationCurrent = params.assertInvocationCurrent;
+            if (!assertInvocationCurrent) {
+              throw new Error("Lobster approval requires host invocation authority");
+            }
+            assertInvocationCurrent();
+            if (
+              runtime.createToolContext?.(ctx)?.assertInvocationCurrent !== assertInvocationCurrent
+            ) {
+              throw new Error("Lobster runtime does not preserve host invocation authority");
+            }
           }
           envelope = await runtime.resumeToolRequest({
             ...(token ? { token } : {}),

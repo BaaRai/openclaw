@@ -26,6 +26,7 @@ function createRunner() {
   const runtime = {
     runToolRequest: vi.fn<Runtime["runToolRequest"]>(),
     resumeToolRequest: vi.fn<Runtime["resumeToolRequest"]>(),
+    createToolContext: vi.fn<NonNullable<Runtime["createToolContext"]>>((ctx) => ctx),
   };
   const loadRuntime = vi.fn().mockResolvedValue(runtime);
   return { runtime, loadRuntime, runner: createEmbeddedLobsterRunner({ loadRuntime }) };
@@ -63,6 +64,7 @@ describe("resolveLobsterCwd", () => {
 describe("createEmbeddedLobsterRunner", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("bounds the model-visible result for an embedded workflow request", async () => {
@@ -179,15 +181,87 @@ describe("createEmbeddedLobsterRunner", () => {
   it("forwards approvalId through resume when token is absent", async () => {
     const { runtime, runner } = createRunner();
     runtime.resumeToolRequest.mockResolvedValue(success);
+    const assertInvocationCurrent = vi.fn();
 
     await runner.run(
-      runParams({ action: "resume", pipeline: undefined, approvalId: "dbc98d05", approve: true }),
+      runParams({
+        action: "resume",
+        pipeline: undefined,
+        approvalId: "dbc98d05",
+        approve: true,
+        assertInvocationCurrent,
+      }),
     );
 
     expect(runtime.resumeToolRequest).toHaveBeenCalledExactlyOnceWith({
       approvalId: "dbc98d05",
       approved: true,
       ctx: toolContext(),
+    });
+  });
+
+  it("refuses approved resumes when the embedded runtime drops host authority", async () => {
+    const { runtime, runner } = createRunner();
+    runtime.createToolContext.mockImplementation(() => ({}));
+    runtime.resumeToolRequest.mockResolvedValue(success);
+    const assertInvocationCurrent = vi.fn();
+
+    await expect(
+      runner.run(
+        runParams({
+          action: "resume",
+          pipeline: undefined,
+          token: "private-resume-token",
+          approve: true,
+          assertInvocationCurrent,
+        }),
+      ),
+    ).rejects.toThrow("Lobster runtime does not preserve host invocation authority");
+
+    expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not commit an approved effect when the published runtime loses host authority", async () => {
+    const cwd = tempDirs.make("openclaw-lobster-authority-");
+    vi.stubEnv("LOBSTER_STATE_DIR", cwd);
+    const runner = createEmbeddedLobsterRunner();
+    const checkpoint = await runner.run(
+      runParams({ pipeline: "approve --prompt Write? | state.set committed", cwd }),
+    );
+    if (!checkpoint.ok || checkpoint.status !== "needs_approval") {
+      throw new Error("Lobster did not create an approval checkpoint");
+    }
+    const token = checkpoint.requiresApproval?.resumeToken;
+    if (!token) {
+      throw new Error("Lobster approval checkpoint is missing a resume token");
+    }
+
+    let current = true;
+    let checks = 0;
+    await expect(
+      runner.run(
+        runParams({
+          action: "resume",
+          pipeline: undefined,
+          token,
+          approve: true,
+          cwd,
+          assertInvocationCurrent: () => {
+            checks++;
+            if (!current) {
+              throw new Error("host invocation retired");
+            }
+            queueMicrotask(() => {
+              current = false;
+            });
+          },
+        }),
+      ),
+    ).rejects.toThrow(/host invocation retired|does not preserve host invocation authority/);
+
+    expect(checks).toBeGreaterThanOrEqual(1);
+    await expect(fs.stat(path.join(cwd, "committed.json"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 
