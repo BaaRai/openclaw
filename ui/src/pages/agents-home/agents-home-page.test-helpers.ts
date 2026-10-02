@@ -540,6 +540,10 @@ export function createPage(
     setPhase: (phase: ApplicationGatewaySnapshot["phase"]) => {
       source.publish({ ...source.gateway.snapshot, phase });
     },
+    switchGateway: (gatewayUrl: string) => {
+      source.gateway.connection.gatewayUrl = gatewayUrl;
+      source.publish({ ...source.gateway.snapshot, client: createTestGatewayClient(request) });
+    },
     setClawsEnabled: (enabled: boolean) => {
       clawsEnabled = enabled;
       runtimeConfig.state.configSnapshot.sourceConfig.gateway.controlUi.experimental.claws =

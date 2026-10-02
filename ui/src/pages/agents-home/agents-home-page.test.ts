@@ -560,6 +560,39 @@ describe("AgentsHomePage", () => {
     expect(page.querySelector("openclaw-claws-catalog-dialog")).toBeNull();
   });
 
+  it("does not open setup chat on another Gateway with the same Claw and agent", async () => {
+    const { page, navigate, request, switchGateway } = createPage({
+      clawsEnabled: true,
+      applyResult: {
+        agentId: "workflow-operator",
+        status: "complete",
+        readiness: { ready: false, requirements: [{ kind: "oauth", owner: "workflows" }] },
+      },
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.disabled).toBe(
+        false,
+      ),
+    );
+
+    request.mockClear();
+    switchGateway("ws://second-gateway.example.test");
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.disabled).toBe(
+        false,
+      ),
+    );
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("claws.status", {}));
+    page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.click();
+    await vi.waitFor(() => expect(page.textContent).toContain("Refresh Agents and try again"));
+    expect(request).not.toHaveBeenCalledWith("claws.status", { target: "workflow-operator" });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("does not open setup chat if the installed agent is missing", async () => {
     const { page, navigate } = createPage({
       clawsEnabled: true,

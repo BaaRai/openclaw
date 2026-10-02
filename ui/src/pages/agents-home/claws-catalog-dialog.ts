@@ -63,6 +63,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
   private searchRevision = 0;
   private reviewRevision = 0;
   private setupChatRevision = 0;
+  private applyResultGatewayUrl: string | null = null;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingApply: {
     agentId: string;
@@ -79,6 +80,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         this.detail = null;
         this.plan = null;
         this.applyResult = null;
+        this.applyResultGatewayUrl = null;
       }
     },
     invalidateRequests: (change) => {
@@ -220,6 +222,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
   private select(entry: ClawCatalogEntry) {
     this.selected = entry;
     this.applyResult = null;
+    this.applyResultGatewayUrl = null;
     this.setupChatError = null;
     void this.loadReview();
   }
@@ -243,6 +246,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
     this.plan = null;
     this.reviewError = null;
     this.applyResult = null;
+    this.applyResultGatewayUrl = null;
     this.setupChatError = null;
     this.reviewLoading = false;
   }
@@ -272,6 +276,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
 
   private async openSetupChat() {
     const result = this.applyResult;
+    const resultGatewayUrl = this.applyResultGatewayUrl;
     const source = this.source();
     const scope = this.gateway.capture();
     const context = this.context;
@@ -281,9 +286,14 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       result.readiness.ready ||
       !source ||
       !scope ||
+      !resultGatewayUrl ||
       this.applying ||
       this.statusChecking
     ) {
+      return;
+    }
+    if (context.gateway.connection.gatewayUrl !== resultGatewayUrl) {
+      this.setupChatError = t("clawsCatalog.setupChatUnavailable");
       return;
     }
     const revision = this.setupChatRevision;
@@ -295,7 +305,9 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         !this.gateway.isCurrent(scope) ||
         revision !== this.setupChatRevision ||
         this.context !== context ||
-        this.applyResult !== result
+        this.applyResult !== result ||
+        this.applyResultGatewayUrl !== resultGatewayUrl ||
+        context.gateway.connection.gatewayUrl !== resultGatewayUrl
       ) {
         return;
       }
@@ -308,7 +320,9 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         !this.gateway.isCurrent(scope) ||
         revision !== this.setupChatRevision ||
         this.context !== context ||
-        this.applyResult !== result
+        this.applyResult !== result ||
+        this.applyResultGatewayUrl !== resultGatewayUrl ||
+        context.gateway.connection.gatewayUrl !== resultGatewayUrl
       ) {
         return;
       }
@@ -361,6 +375,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         status: record.status,
         readiness: this.plan?.readiness ?? { ready: false, requirements: [] },
       };
+      this.applyResultGatewayUrl = pending.gatewayUrl;
       this.applyUnknown = false;
       this.pendingApply = null;
       await context.agents.refreshList();
@@ -403,12 +418,13 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
     }
     const revision = this.reviewRevision;
     const context = this.context;
-    this.pendingApply = {
+    const pending = {
       agentId: plan.target.agentId ?? "",
       packageName: source.packageName,
       version: source.version,
       gatewayUrl: context.gateway.connection.gatewayUrl,
     };
+    this.pendingApply = pending;
     this.applying = true;
     this.reviewError = null;
     this.setupChatError = null;
@@ -431,6 +447,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       this.pendingApply = null;
       this.applyUnknown = false;
       this.applyResult = result;
+      this.applyResultGatewayUrl = pending.gatewayUrl;
       // The Add result is known even when refreshing the roster fails.
       const roster = await context.agents.refreshList().catch(() => undefined);
       if (
