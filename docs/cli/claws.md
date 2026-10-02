@@ -671,10 +671,13 @@ export retains it as an explicit sidecar so the package remains importable. It
 is a portable Claw package, not a whole-instance backup: unrelated agents,
 credentials, sessions, and unowned local state are excluded.
 
-For an installed official `@openclaw` artifact, export verifies the cached source
-against its recorded archive digest before carrying over its actual `license`
-metadata and root `LICENSE` notice. It does not invent a license for older
-packages without one. A changed source fails before creating the export target.
+For an installed official `@openclaw` artifact, export verifies the retained
+original archive against its recorded digest and the cached source against that
+archive before carrying over its actual `license` metadata and root `LICENSE`
+notice. It does not invent a license for older packages without one. A missing
+archive is accepted only when rebuilding the cached source exactly reproduces
+the recorded artifact; a changed archive or source fails before creating the
+export target.
 
 ## Command reference
 

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { basename, dirname, relative, resolve, sep } from "node:path";
-import { tempWorkspace } from "@openclaw/fs-safe/temp";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stringify as stringifyYaml } from "yaml";
@@ -9,17 +8,17 @@ import { listAgentEntries, resolveAgentWorkspaceDir } from "../agents/agent-scop
 import { prepareLocalAgentAvatarFile } from "../agents/identity-avatar-file.js";
 import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../agents/workspace-bootstrap-read.js";
 import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
+import { resolveStateDir } from "../config/paths.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { FsSafeError, root as fsSafeRoot } from "../infra/fs-safe.js";
-import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { isAvatarDataUrl, isAvatarHttpUrl } from "../shared/avatar-policy.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
+import { withVerifiedCachedClawHubSource } from "./clawhub-source-artifact.js";
 import { digestClawBytes } from "./digest.js";
 import { readClawStatus } from "./lifecycle-state.js";
 import type { PackageRemovalDeps } from "./package-remove.js";
-import { buildClawProject, extractBuiltClawArtifact } from "./project-build.js";
 import { readClawManifestFile } from "./reader.js";
 import { isPortableClawAvatar } from "./schema-portability.js";
 import { parseClawManifest, parseClawOpenClawProfile } from "./schema.js";
@@ -235,6 +234,7 @@ type ExportSourceLicense = { metadata?: string; notice?: Buffer };
 
 async function readVerifiedOfficialArtifactLicense(
   source: ClawSourceIdentity,
+  env: NodeJS.ProcessEnv | undefined,
 ): Promise<ExportSourceLicense | undefined> {
   if (
     source.kind !== "package" ||
@@ -244,38 +244,30 @@ async function readVerifiedOfficialArtifactLicense(
     return undefined;
   }
   try {
-    await using temporary = await tempWorkspace({
-      rootDir: resolvePreferredOpenClawTmpDir(),
-      prefix: "openclaw-claw-export-source-",
+    return await withVerifiedCachedClawHubSource({
+      recorded: source,
+      stateDir: resolveStateDir(env),
+      run: async (packageRoot) => {
+        const verifiedRoot = await fsSafeRoot(packageRoot);
+        const packageJson = JSON.parse(
+          (
+            await verifiedRoot.readBytes("package.json", { maxBytes: MAX_EXPORT_FILE_BYTES })
+          ).toString("utf8"),
+        ) as unknown;
+        const metadata =
+          isRecord(packageJson) && typeof packageJson.license === "string"
+            ? packageJson.license
+            : undefined;
+        const notice = (await verifiedRoot.exists("LICENSE"))
+          ? await verifiedRoot.readBytes("LICENSE", { maxBytes: MAX_EXPORT_FILE_BYTES })
+          : undefined;
+        return { ...(metadata ? { metadata } : {}), ...(notice ? { notice } : {}) };
+      },
     });
-    const rebuilt = await buildClawProject(source.packageRoot, temporary.path("source.tgz"));
-    if (
-      rebuilt.integrity !== source.integrity ||
-      rebuilt.byteLength !== source.byteLength ||
-      rebuilt.claw.name !== source.name ||
-      rebuilt.claw.version !== source.version
-    ) {
-      throw new Error("Rebuilt Claw archive differs from the recorded artifact.");
-    }
-    await using extracted = await extractBuiltClawArtifact(rebuilt.artifact);
-    const verifiedRoot = await fsSafeRoot(extracted.packageRoot);
-    const packageJson = JSON.parse(
-      (await verifiedRoot.readBytes("package.json", { maxBytes: MAX_EXPORT_FILE_BYTES })).toString(
-        "utf8",
-      ),
-    ) as unknown;
-    const metadata =
-      isRecord(packageJson) && typeof packageJson.license === "string"
-        ? packageJson.license
-        : undefined;
-    const notice = (await verifiedRoot.exists("LICENSE"))
-      ? await verifiedRoot.readBytes("LICENSE", { maxBytes: MAX_EXPORT_FILE_BYTES })
-      : undefined;
-    return { ...(metadata ? { metadata } : {}), ...(notice ? { notice } : {}) };
   } catch (error) {
     throw new ClawExportError(
       "source_artifact_unverifiable",
-      `Cannot preserve the installed Claw's license because its local source does not reproduce the recorded artifact: ${coerceErrorMessage(error)}`,
+      `Cannot preserve the installed Claw's license because its retained archive or cached source could not be verified: ${coerceErrorMessage(error)}`,
     );
   }
 }
@@ -447,7 +439,7 @@ export async function exportClawAgent(
   const authorBootstrap = options.bootstrapPath
     ? await readAuthorBootstrap(options.bootstrapPath)
     : undefined;
-  const sourceLicense = await readVerifiedOfficialArtifactLicense(record.install.claw);
+  const sourceLicense = await readVerifiedOfficialArtifactLicense(record.install.claw, options.env);
 
   const workspace = await fsSafeRoot(record.install.workspace, {
     hardlinks: "reject",
