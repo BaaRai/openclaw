@@ -137,7 +137,13 @@ describe("AgentsHomePage", () => {
       return result!;
     });
     panel.onRemovePendingChange?.("orphan-worker", true);
-    await page.updateComplete;
+    await vi.waitFor(() =>
+      expect(
+        page.querySelector<HTMLButtonElement>(
+          '[data-claw-unrepresented="orphan-worker"] [data-claw-inspect]',
+        )?.disabled,
+      ).toBe(true),
+    );
     page.querySelector<HTMLButtonElement>("[data-claws-open-catalog]")?.click();
     await vi.waitFor(() =>
       expect(
@@ -147,7 +153,6 @@ describe("AgentsHomePage", () => {
     page
       .querySelector<HTMLAnchorElement>("openclaw-claws-catalog-dialog [data-claws-entry] a")
       ?.click();
-    await page.updateComplete;
 
     expect(navigate).not.toHaveBeenCalled();
     expect(page.querySelector("openclaw-claws-catalog-dialog")).not.toBeNull();
