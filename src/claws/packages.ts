@@ -1,5 +1,6 @@
 import { coerceErrorMessage, stableStringify } from "@openclaw/normalization-core";
 import { createPluginInstallLogger } from "../cli/plugins-command-helpers.js";
+import { readConfigFileSnapshotForWrite } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeClawHubSha256Integrity } from "../infra/clawhub-integrity.js";
 import type { PackageDirInstallTransaction } from "../infra/install-package-dir.js";
@@ -482,12 +483,13 @@ async function installClawPackagesUnlocked(
           ? { ...options.env, OPENCLAW_CLAWHUB_URL: options.clawHubBaseUrl }
           : options.env,
         beforePersistentApply: assertForwardCurrent,
-        onBeforePluginArtifactCommit: (artifact, config) => {
+        onBeforePluginArtifactCommit: async (artifact) => {
+          const { snapshot } = await readConfigFileSnapshotForWrite();
           const current = inspectClawPluginCapabilities(
             artifact.stagedArtifactDir,
             artifact.pluginId,
             options.env,
-            config,
+            snapshot.sourceConfig,
             artifact.currentArtifactDir,
           );
           if (
