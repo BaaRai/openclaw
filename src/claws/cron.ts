@@ -4,9 +4,10 @@ import type { Selectable } from "kysely";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { cronJobDefinitionFromReadView } from "../cron/job-read-view.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
+import { toPublicCronJob } from "../cron/public-job.js";
 import { createTrustedCronScheduledToolPolicy } from "../cron/scheduled-tool-policy.js";
 import { applyDefaultCronToolsAllow } from "../cron/tools-allow.js";
-import type { CronJob } from "../cron/types.js";
+import type { CronJob, CronStoredJob } from "../cron/types.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../infra/sqlite-number.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
@@ -250,7 +251,10 @@ export function clawCronGatewayJobMatchesRef(
   ) {
     return false;
   }
-  const comparableLive = { ...live, payload: { ...live.payload } } as CronJob;
+  const comparableLive = toPublicCronJob({
+    ...live,
+    payload: { ...live.payload },
+  } as CronStoredJob);
   applyDefaultCronToolsAllow(expected);
   applyDefaultCronToolsAllow(comparableLive);
   const expectedWithPolicy = {

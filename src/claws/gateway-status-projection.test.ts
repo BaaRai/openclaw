@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
-import type { CronJob } from "../cron/types.js";
+import type { CronJob, CronStoredJob } from "../cron/types.js";
 import { clawCronGatewayInput, type PersistedClawCronRef } from "./cron.js";
 import { projectClawsStatus } from "./gateway-status-projection.js";
 import type { ClawPackageStatus, ClawStatusRecord } from "./lifecycle-status.js";
@@ -110,6 +110,14 @@ describe("Gateway Claw status projection", () => {
     const record = statusRecord({ cronJobs: [cron] });
 
     expect(projectClawsStatus([record], [live]).summary.healthy).toBe(1);
+    const persistedLive = {
+      ...live,
+      createdActor: { type: "human", source: "profile", id: "profile-ada" },
+    } satisfies CronStoredJob;
+    expect(projectClawsStatus([record], [persistedLive]).summary).toMatchObject({
+      healthy: 1,
+      attention: 0,
+    });
     expect(projectClawsStatus([record], []).records[0]?.resources).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "cron-job", state: "missing" })]),
     );
