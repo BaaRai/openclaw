@@ -113,8 +113,10 @@ function seedAttachedCronJob(
 }
 
 describe("Claw status and remove", () => {
-  it("plans an orphan with only MCP provenance through the CLI read path", async () => {
+  it("removes an orphan with only MCP provenance through the CLI read path", async () => {
     const server = { command: "docs-mcp" };
+    const config = { mcp: { servers: { docs: server } } };
+    await state.writeConfig(config);
     upsertClawMcpServerRef(
       {
         schemaVersion: CLAW_MCP_REF_SCHEMA_VERSION,
@@ -133,13 +135,28 @@ describe("Claw status and remove", () => {
 
     const plan = await buildClawRemovePlan("orphan-mcp", {
       env: state.env,
-      config: { mcp: { servers: { docs: server } } },
+      config,
       sourceMcpServers: { docs: server },
       exactAgentId: true,
     });
 
-    expect(plan.blockers).not.toContainEqual(expect.objectContaining({ code: "claw_not_found" }));
+    expect(plan.blockers).toEqual([]);
     expect(plan.actions).toContainEqual(expect.objectContaining({ kind: "mcpServer", id: "docs" }));
+
+    const result = await applyClawRemovePlan(plan, {
+      env: state.env,
+      config,
+      sourceMcpServers: { docs: server },
+      exactAgentId: true,
+      monitorGateway: quiescentClawMonitorGateway,
+      consentPlanIntegrity: plan.planIntegrity,
+      purgeSessions: async () => false,
+      trashPath: async () => true,
+    });
+    expect(result.status).toBe("complete");
+    expect(result.mcpServers).toContainEqual({ name: "docs", action: "removed" });
+    expect(loadConfig().mcp?.servers?.docs).toBeUndefined();
+    expect(readClawMcpServerRefs("orphan-mcp", { env: state.env })).toEqual([]);
   });
 
   it("plans an orphan with only cron provenance through the CLI read path", async () => {

@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => {
     stateTableGet: vi.fn(),
     openExistingOpenClawStateDatabaseReadOnly: vi.fn(),
     applyClawAddPlan: vi.fn(),
+    readClawInventory: vi.fn(),
     readClawStatus: vi.fn(),
     buildClawRemovePlan: vi.fn(),
     applyClawRemovePlan: vi.fn(),
@@ -102,6 +103,13 @@ vi.mock("../state/openclaw-state-lease.js", async () => ({
 vi.mock("../claws/add.js", async () => ({
   ...(await vi.importActual<typeof import("../claws/add.js")>("../claws/add.js")),
   applyClawAddPlan: mocks.applyClawAddPlan,
+}));
+
+vi.mock("../claws/inventory-read.js", async () => ({
+  ...(await vi.importActual<typeof import("../claws/inventory-read.js")>(
+    "../claws/inventory-read.js",
+  )),
+  readClawInventory: mocks.readClawInventory,
 }));
 
 vi.mock("../claws/lifecycle-state.js", async () => ({
@@ -244,6 +252,14 @@ describe("claws cli", () => {
       installRecord: { agentId: plan.agent.finalId },
     }));
     mocks.readClawStatus.mockReset();
+    mocks.readClawInventory.mockReset();
+    mocks.readClawInventory.mockResolvedValue({
+      installs: [],
+      packages: [],
+      workspaceFiles: [],
+      mcpServers: [],
+      cronJobs: [],
+    });
     mocks.readClawStatus.mockResolvedValue({
       schemaVersion: "openclaw.clawStatus.v1",
       records: [],
@@ -767,6 +783,14 @@ describe("claws cli", () => {
   });
 
   it("reports installed Claw status by agent id", async () => {
+    const inventory = {
+      installs: [],
+      packages: [],
+      workspaceFiles: [],
+      mcpServers: [{ agentId: "demo-agent", name: "docs" }],
+      cronJobs: [],
+    };
+    mocks.readClawInventory.mockResolvedValue(inventory);
     mocks.readClawStatus.mockResolvedValue({
       schemaVersion: "openclaw.clawStatus.v1",
       target: "demo-agent",
@@ -783,7 +807,10 @@ describe("claws cli", () => {
 
     await runCli(["claws", "status", "demo-agent", "--json"]);
 
-    expect(mocks.readClawStatus).toHaveBeenCalledWith("demo-agent");
+    expect(mocks.readClawStatus).toHaveBeenCalledWith("demo-agent", {
+      inventory,
+      readOnly: true,
+    });
     expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
       schemaVersion: "openclaw.clawStatus.v1",
       summary: { claws: 1 },
