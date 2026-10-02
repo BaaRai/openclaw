@@ -2,10 +2,12 @@ import type {
   ClawPluginAcknowledgement,
   ClawSkillAcknowledgement,
 } from "../../packages/gateway-protocol/src/schema/claws.js";
+import { withCurrentConfigPolicyReader } from "../config/io.runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ClawHubFetchOptions } from "../infra/clawhub-client.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
+import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import { withResolvedClawHubSource, type ClawHubCoordinate } from "./clawhub-source.js";
 import type { ClawCronGateway } from "./cron.js";
@@ -22,6 +24,7 @@ import {
 import { bindClawLifecycleTrust, plansMatchAcrossSourceRoots } from "./gateway-plan-projection.js";
 import { bindClawPluginInstallConsent } from "./gateway-plugin-consent.js";
 import { bindClawSkillWarningConsent } from "./gateway-skill-consent.js";
+import { assertClawsLabsEnabled } from "./labs-gate.js";
 import { applyClawUpdatePlan, ClawUpdateMutationError } from "./update-apply.js";
 
 const log = createSubsystemLogger("claws/gateway-update");
@@ -35,6 +38,7 @@ export async function applyClawUpdateForGateway(
     acknowledgeCapabilities?: readonly ClawPluginAcknowledgement[];
     acknowledgeSkillWarnings?: readonly ClawSkillAcknowledgement[];
     getRuntimeConfig: () => OpenClawConfig;
+    policyConfig: { configPath: string; env: NodeJS.ProcessEnv };
     assertCurrent: () => void;
     signal?: AbortSignal;
     stateDir?: string;
@@ -93,143 +97,168 @@ export async function applyClawUpdateForGateway(
               input.assertCurrent();
               lease.assertOwned();
             };
-            const planCurrent = async (verifiedSource: typeof source) => {
-              assertCurrent();
-              const config = input.getRuntimeConfig();
-              const prepared = await prepareGatewayClawUpdatePlanning({
-                agentId: input.agentId,
-                source: input.source,
-                config,
-                assertCurrent,
-              });
-              const built = await buildGatewayClawUpdatePlan({
-                agentId: input.agentId,
-                source: verifiedSource,
-                config,
-                prepared,
-              });
-              assertCurrent();
-              return {
-                ...built,
-                config,
-                projection: bindClawLifecycleTrust(built.projection, trust),
-              };
-            };
-            const current = await planCurrent(source);
-            if (
-              current.projection.planIntegrity !== input.planIntegrity ||
-              current.projection.blockers.length > 0 ||
-              current.plan.blockers.length > 0 ||
-              current.plan.actions.some((action) => action.blocked)
-            ) {
-              throw new ClawGatewayPlanChangedError();
-            }
-            const pluginConsent = bindClawPluginInstallConsent(
-              current.projection.pluginReviews,
-              input.acknowledgeCapabilities,
-              assertCurrent,
-            );
-            const skillConsent = bindClawSkillWarningConsent(
-              current.projection.skillReviews,
-              input.acknowledgeSkillWarnings,
-              assertCurrent,
-            );
-            if (
-              current.projection.pluginReviews.some((review) => review.ownerAction === "install") &&
-              !input.reloadPlugins
-            ) {
-              throw new Error("Gateway plugin activation is unavailable for this Claw update.");
-            }
-            if (
-              current.plan.actions.some(
-                (action) => action.kind === "cronJob" && action.action !== "unchanged",
-              ) &&
-              !input.cronGateway
-            ) {
-              throw new Error("Gateway schedule updates are unavailable for this Claw.");
-            }
-            assertCurrent();
-            mayHaveChanged = true;
-            const persisted = await persistSource();
-            const persistedPlan = await planCurrent(persisted);
-            const reviewedAccess = persistedPlan.projection.configuredAccess;
-            if (
-              persistedPlan.projection.planIntegrity !== input.planIntegrity ||
-              persistedPlan.projection.blockers.length > 0 ||
-              !reviewedAccess?.desired ||
-              persistedPlan.plan.blockers.length > 0 ||
-              persistedPlan.plan.actions.some((action) => action.blocked) ||
-              !plansMatchAcrossSourceRoots({
-                preview: current.plan,
-                previewRoot: source.source.packageRoot,
-                persisted: persistedPlan.plan,
-                persistedRoot: persisted.source.packageRoot,
-              })
-            ) {
-              throw new ClawGatewayPlanChangedError();
-            }
-            const reviewedAccessDigest = digestClawValue(reviewedAccess);
-            const reviewedDesiredDigest = digestClawValue(reviewedAccess.desired);
-            assertCurrent();
-            const result = await applyClawUpdatePlan(
-              persistedPlan.plan,
+            return await withPluginLifecycleLease(
               {
-                targetManifest: persisted.manifest,
-                targetClawMarkdownBody: persisted.clawMarkdownBody,
-                targetOpenClawProfile: persisted.openClawProfile,
-                targetSource: persisted.source,
-                targetDiagnostics: persisted.diagnostics,
-              },
-              {
-                ...persistedPlan.stateOptions,
-                stateMode: "worker",
+                env: input.policyConfig.env,
+                signal: input.signal,
                 assertCurrent,
-                getCurrentConfig: input.getRuntimeConfig,
-                assertReviewedConfig: (config, desiredAgent, phase) => {
-                  let actualAccessMatchesReview: boolean;
-                  try {
-                    const actualAccess = projectClawConfiguredAccess({
-                      config,
-                      agentId: persistedPlan.plan.agentId,
-                      desiredAgent,
-                      operation: "update",
-                    });
-                    actualAccessMatchesReview =
-                      phase === "after-agent-commit"
-                        ? digestClawValue(actualAccess.current) === reviewedDesiredDigest &&
-                          digestClawValue(actualAccess.desired) === reviewedDesiredDigest
-                        : digestClawValue(actualAccess) === reviewedAccessDigest;
-                  } catch {
-                    throw new ClawUpdateMutationError(
-                      "reviewed_access_changed",
-                      "The effective Claw access changed since review. Preview it again.",
-                    );
-                  }
-                  if (!actualAccessMatchesReview) {
-                    throw new ClawUpdateMutationError(
-                      "reviewed_access_changed",
-                      "The effective Claw access changed since review. Preview it again.",
-                    );
-                  }
-                },
-                config: persistedPlan.config,
-                ...(clawHubBaseUrl ? { clawHubBaseUrl } : {}),
-                sourceMcpServers: persistedPlan.sourceMcpServers,
-                packagePreflight: persistedPlan.packagePreflight,
-                planPackageDeps: persistedPlan.packageDeps,
-                consentPlanIntegrity: persistedPlan.plan.planIntegrity,
-                ...(pluginConsent ? { pluginConsent } : {}),
-                ...(skillConsent ? { skillConsent } : {}),
-                ...(input.reloadPlugins ? { reloadPlugins: input.reloadPlugins } : {}),
-                ...(input.cronGateway ? { cronGateway: input.cronGateway } : {}),
               },
+              (pluginLease) =>
+                withCurrentConfigPolicyReader(
+                  { ...input.policyConfig, lease: pluginLease },
+                  async (getCurrentConfig) => {
+                    const getCurrentClawsConfig = () => {
+                      const config = getCurrentConfig();
+                      assertClawsLabsEnabled(config);
+                      return config;
+                    };
+                    const planCurrent = async (verifiedSource: typeof source) => {
+                      assertCurrent();
+                      const config = getCurrentClawsConfig();
+                      const prepared = await prepareGatewayClawUpdatePlanning({
+                        agentId: input.agentId,
+                        source: input.source,
+                        config,
+                        assertCurrent,
+                      });
+                      const built = await buildGatewayClawUpdatePlan({
+                        agentId: input.agentId,
+                        source: verifiedSource,
+                        config,
+                        prepared,
+                      });
+                      assertCurrent();
+                      return {
+                        ...built,
+                        config,
+                        projection: bindClawLifecycleTrust(built.projection, trust),
+                      };
+                    };
+                    const current = await planCurrent(source);
+                    if (
+                      current.projection.planIntegrity !== input.planIntegrity ||
+                      current.projection.blockers.length > 0 ||
+                      current.plan.blockers.length > 0 ||
+                      current.plan.actions.some((action) => action.blocked)
+                    ) {
+                      throw new ClawGatewayPlanChangedError();
+                    }
+                    const pluginConsent = bindClawPluginInstallConsent(
+                      current.projection.pluginReviews,
+                      input.acknowledgeCapabilities,
+                      assertCurrent,
+                    );
+                    const skillConsent = bindClawSkillWarningConsent(
+                      current.projection.skillReviews,
+                      input.acknowledgeSkillWarnings,
+                      assertCurrent,
+                    );
+                    if (
+                      current.projection.pluginReviews.some(
+                        (review) => review.ownerAction === "install",
+                      ) &&
+                      !input.reloadPlugins
+                    ) {
+                      throw new Error(
+                        "Gateway plugin activation is unavailable for this Claw update.",
+                      );
+                    }
+                    if (
+                      current.plan.actions.some(
+                        (action) => action.kind === "cronJob" && action.action !== "unchanged",
+                      ) &&
+                      !input.cronGateway
+                    ) {
+                      throw new Error("Gateway schedule updates are unavailable for this Claw.");
+                    }
+                    assertCurrent();
+                    mayHaveChanged = true;
+                    const persisted = await persistSource();
+                    const persistedPlan = await planCurrent(persisted);
+                    const reviewedAccess = persistedPlan.projection.configuredAccess;
+                    if (
+                      persistedPlan.projection.planIntegrity !== input.planIntegrity ||
+                      persistedPlan.projection.blockers.length > 0 ||
+                      !reviewedAccess?.desired ||
+                      persistedPlan.plan.blockers.length > 0 ||
+                      persistedPlan.plan.actions.some((action) => action.blocked) ||
+                      !plansMatchAcrossSourceRoots({
+                        preview: current.plan,
+                        previewRoot: source.source.packageRoot,
+                        persisted: persistedPlan.plan,
+                        persistedRoot: persisted.source.packageRoot,
+                      })
+                    ) {
+                      throw new ClawGatewayPlanChangedError();
+                    }
+                    const reviewedAccessDigest = digestClawValue(reviewedAccess);
+                    const reviewedDesiredDigest = digestClawValue(reviewedAccess.desired);
+                    assertCurrent();
+                    const result = await applyClawUpdatePlan(
+                      persistedPlan.plan,
+                      {
+                        targetManifest: persisted.manifest,
+                        targetClawMarkdownBody: persisted.clawMarkdownBody,
+                        targetOpenClawProfile: persisted.openClawProfile,
+                        targetSource: persisted.source,
+                        targetDiagnostics: persisted.diagnostics,
+                      },
+                      {
+                        ...persistedPlan.stateOptions,
+                        stateMode: "worker",
+                        assertCurrent,
+                        getCurrentConfig: getCurrentClawsConfig,
+                        assertReviewedConfig: (config, desiredAgent, phase) => {
+                          let actualAccessMatchesReview: boolean;
+                          try {
+                            const actualAccess = projectClawConfiguredAccess({
+                              config,
+                              agentId: persistedPlan.plan.agentId,
+                              desiredAgent,
+                              operation: "update",
+                            });
+                            actualAccessMatchesReview =
+                              phase === "after-agent-commit"
+                                ? digestClawValue(actualAccess.current) === reviewedDesiredDigest &&
+                                  digestClawValue(actualAccess.desired) === reviewedDesiredDigest
+                                : digestClawValue(actualAccess) === reviewedAccessDigest;
+                          } catch {
+                            throw new ClawUpdateMutationError(
+                              "reviewed_access_changed",
+                              "The effective Claw access changed since review. Preview it again.",
+                            );
+                          }
+                          if (!actualAccessMatchesReview) {
+                            throw new ClawUpdateMutationError(
+                              "reviewed_access_changed",
+                              "The effective Claw access changed since review. Preview it again.",
+                            );
+                          }
+                        },
+                        config: persistedPlan.config,
+                        ...(clawHubBaseUrl ? { clawHubBaseUrl } : {}),
+                        sourceMcpServers: persistedPlan.sourceMcpServers,
+                        packagePreflight: persistedPlan.packagePreflight,
+                        planPackageDeps: persistedPlan.packageDeps,
+                        consentPlanIntegrity: persistedPlan.plan.planIntegrity,
+                        ...(pluginConsent ? { pluginConsent } : {}),
+                        ...(skillConsent ? { skillConsent } : {}),
+                        ...(input.reloadPlugins ? { reloadPlugins: input.reloadPlugins } : {}),
+                        ...(input.cronGateway ? { cronGateway: input.cronGateway } : {}),
+                      },
+                    );
+                    settledResult = {
+                      agentId: result.agentId,
+                      status: result.status,
+                      readiness: persistedPlan.projection.readiness ?? {
+                        ready: false,
+                        requirements: [],
+                      },
+                    };
+                    return settledResult;
+                  },
+                ),
             );
-            settledResult = {
-              agentId: result.agentId,
-              status: result.status,
-              readiness: persistedPlan.projection.readiness ?? { ready: false, requirements: [] },
-            };
-            return settledResult;
           },
         );
       },
