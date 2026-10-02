@@ -42,6 +42,9 @@ export async function runClawsMcpRecoverCommand(
         runtime.log(
           `Live MCP config: ${plan.liveConfig.state}${plan.liveConfig.digest ? ` (${plan.liveConfig.digest})` : ""}`,
         );
+        if (plan.blocker) {
+          runtime.log(`Recovery blocked: ${plan.blocker.message}`);
+        }
         runtime.log("Live MCP config will be retained unchanged.");
         runtime.log(`Plan integrity: ${plan.planIntegrity}`);
       }

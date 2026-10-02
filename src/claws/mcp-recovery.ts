@@ -1,5 +1,10 @@
+import { resolve } from "node:path";
+import { stableStringify } from "@openclaw/normalization-core";
 import { withClawMcpLifecycleLease } from "../agents/mcp-lifecycle-lease.js";
+import { readSourceConfigSnapshot } from "../config/io.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
+import type { ConfigFileSnapshot } from "../config/types.openclaw.js";
+import { withConfigSourceLocks } from "../config/write-lock.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -25,7 +30,8 @@ export type ClawMcpRecoveryPlan = {
   planIntegrity: string;
   agentId: string;
   name: string;
-  action: "complete" | "release";
+  action: "complete" | "release" | "blocked";
+  blocker?: { code: "mcp_config_modified"; message: string };
   ref: RecoveryRefIdentity;
   otherRefs: RecoveryRefIdentity[];
   stateDatabasePath: string;
@@ -80,6 +86,14 @@ function validateTarget(agentId: string, name: string): void {
   }
 }
 
+function configSourcePaths(snapshot: Pick<ConfigFileSnapshot, "path" | "includedPaths">): string[] {
+  return [
+    ...new Set(
+      [snapshot.path, ...(snapshot.includedPaths ?? [])].map((pathname) => resolve(pathname)),
+    ),
+  ].toSorted();
+}
+
 async function readRecoverySnapshot(
   agentId: string,
   name: string,
@@ -113,7 +127,14 @@ async function readRecoverySnapshot(
   const server = listed.mcpServers[name];
   const digest = server ? digestClawMcpServer(server) : undefined;
   const state = !digest ? "missing" : digest === ref.configDigest ? "exact" : "modified";
-  const action = state === "exact" ? "complete" : "release";
+  const action = state === "exact" ? "complete" : state === "missing" ? "release" : "blocked";
+  const blocker =
+    state === "modified"
+      ? {
+          code: "mcp_config_modified" as const,
+          message: `Live MCP server ${JSON.stringify(name)} differs from its pending Claw reference; its previous ownership may still apply. No reference was released.`,
+        }
+      : undefined;
   const identity: Omit<ClawMcpRecoveryPlan, "planIntegrity"> = {
     schemaVersion: CLAW_MCP_RECOVERY_PLAN_SCHEMA_VERSION,
     stability: CLAW_OUTPUT_STABILITY,
@@ -122,6 +143,7 @@ async function readRecoverySnapshot(
     agentId,
     name,
     action,
+    ...(blocker ? { blocker } : {}),
     ref: refIdentity(ref),
     otherRefs: expectedRefs.filter((candidate) => candidate.agentId !== agentId).map(refIdentity),
     stateDatabasePath: context.admission.databasePath,
@@ -134,7 +156,9 @@ async function readRecoverySnapshot(
     effect:
       action === "complete"
         ? "Mark this pending Claw MCP reference complete; retain live MCP config unchanged."
-        : "Release this pending Claw MCP reference; retain live MCP config unchanged.",
+        : action === "release"
+          ? "Release this pending Claw MCP reference; retain live MCP config unchanged."
+          : "No ownership mutation; inspect the live server and previous Claw ownership before retrying.",
   };
   return {
     plan: { ...identity, planIntegrity: digestClawValue(identity) },
@@ -175,42 +199,76 @@ export async function applyClawMcpRecovery(
     },
     async (agentLease) =>
       await withClawMcpLifecycleLease(name, stateOptions, async (assertMcpOwned, mcpLease) => {
-        const assertCurrent = () => {
+        const assertLeases = () => {
           agentLease.assertOwned();
           assertMcpOwned();
-          options.assertCurrent?.();
         };
-        assertCurrent();
-        const { plan, expectedRefs } = await readRecoverySnapshot(agentId, name, {
-          ...options,
-          ...stateOptions,
-        });
-        assertCurrent();
-        if (plan.planIntegrity !== consentPlanIntegrity) {
-          throw new ClawMcpRecoveryError(
-            "plan_integrity_mismatch",
-            "MCP ownership or live config changed; run mcp-recover --dry-run again.",
-          );
-        }
-        const claimed = await recoverClawMcpPendingRef(agentId, name, plan.action, expectedRefs, {
-          ...stateOptions,
-          agentLease,
-          mcpLease,
-          nowMs: options.nowMs,
-          assertCurrent,
-        });
-        assertCurrent();
-        return {
-          schemaVersion: CLAW_MCP_RECOVERY_RESULT_SCHEMA_VERSION,
-          stability: CLAW_OUTPUT_STABILITY,
-          status: "complete",
-          planIntegrity: plan.planIntegrity,
-          agentId,
-          name,
-          action: plan.action,
-          liveConfigRetained: true,
-          updatedAtMs: claimed.updatedAtMs,
-        };
+        assertLeases();
+        const observedSources = configSourcePaths(await readSourceConfigSnapshot());
+        assertLeases();
+        return await withConfigSourceLocks(
+          observedSources,
+          async (assertSourcesOwned) => {
+            const assertCurrent = () => {
+              assertLeases();
+              assertSourcesOwned();
+              options.assertCurrent?.();
+            };
+            assertCurrent();
+            const lockedSources = configSourcePaths(await readSourceConfigSnapshot());
+            assertCurrent();
+            if (stableStringify(lockedSources) !== stableStringify(observedSources)) {
+              throw new ClawMcpRecoveryError(
+                "config_source_changed",
+                "MCP config sources changed while acquiring recovery ownership; preview again.",
+              );
+            }
+            const { plan, expectedRefs } = await readRecoverySnapshot(agentId, name, {
+              ...options,
+              ...stateOptions,
+            });
+            assertCurrent();
+            if (plan.planIntegrity !== consentPlanIntegrity) {
+              throw new ClawMcpRecoveryError(
+                "plan_integrity_mismatch",
+                "MCP ownership or live config changed; run mcp-recover --dry-run again.",
+              );
+            }
+            if (plan.action === "blocked") {
+              throw new ClawMcpRecoveryError(
+                "mcp_config_modified",
+                plan.blocker?.message ?? "Live MCP config changed; no ownership was released.",
+              );
+            }
+            const claimed = await recoverClawMcpPendingRef(
+              agentId,
+              name,
+              plan.action,
+              expectedRefs,
+              {
+                ...stateOptions,
+                agentLease,
+                mcpLease,
+                nowMs: options.nowMs,
+                assertCurrent,
+              },
+            );
+            assertCurrent();
+            return {
+              schemaVersion: CLAW_MCP_RECOVERY_RESULT_SCHEMA_VERSION,
+              stability: CLAW_OUTPUT_STABILITY,
+              status: "complete",
+              planIntegrity: plan.planIntegrity,
+              agentId,
+              name,
+              action: plan.action,
+              liveConfigRetained: true,
+              updatedAtMs: claimed.updatedAtMs,
+            };
+          },
+          undefined,
+          assertLeases,
+        );
       }),
   );
 }

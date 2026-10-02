@@ -430,16 +430,17 @@ openclaw claws mcp-recover worker docs \
 ```
 
 The preview chooses `complete` only when the live source MCP config digest
-exactly matches the pending ref. Otherwise it chooses `release`, which removes
-only this Claw's pending ownership ref. **Both actions retain live MCP config
-unchanged**, including a modified server that `release` leaves configured.
-Review the preview's recorded and live digests before applying; a changed ref,
-other Claw reference, or live config requires a fresh preview. If you intend to
-remove a retained server, inspect and change it through the ordinary MCP
-configuration lifecycle. When an interrupted Update was removing a server,
-`complete` restores its previous ownership; retry Update separately if removal
-is still intended. This operator command remains available when the Claws Labs
-toggle is off.
+exactly matches the pending ref. It chooses `release` only when the live server
+is missing; that removes only this Claw's pending ownership ref. A present but
+different server yields a blocked preview and keeps the reference: an
+interrupted Update may have staged a new digest before replacing a still-owned
+server. **Both successful actions retain live MCP config unchanged.** Review
+the preview's recorded and live digests before applying; a changed ref, other
+Claw reference, or live config requires a fresh preview. If you intend to remove
+a retained server, inspect and change it through the ordinary MCP configuration
+lifecycle. When an interrupted Update was removing a server, `complete` restores
+its previous ownership; retry Update separately if removal is still intended.
+This operator command remains available when the Claws Labs toggle is off.
 
 Claw provenance distinguishes two relationships:
 

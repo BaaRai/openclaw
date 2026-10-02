@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { quiescentClawMonitorGateway } from "../claws/lifecycle-remove.test-support.js";
 import { buildClawRemovePlan } from "../claws/lifecycle-state.js";
 import { readClawStatus } from "../claws/lifecycle-status.js";
+import { applyClawMcpRecovery } from "../claws/mcp-recovery.js";
 import {
   digestClawMcpServer,
   readClawMcpServerRefs,
@@ -12,6 +13,9 @@ import {
 } from "../claws/mcp.js";
 import { persistClawInstallRecord } from "../claws/provenance.js";
 import { makeProvenancePlan } from "../claws/provenance.test-helpers.js";
+import { listConfiguredMcpServers } from "../config/mcp-config.js";
+import { captureConfigWriteLockGuard, withConfigWriteLock } from "../config/write-lock.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import {
   createOpenClawTestState,
@@ -206,21 +210,37 @@ describe("claws mcp-recover CLI", () => {
     );
   });
 
-  it("releases a changed pending ref without altering live MCP config", async () => {
+  it("blocks recovery when an interrupted Update left the old managed server live", async () => {
     const expected = { command: "next-mcp" };
     const live = { command: "current-mcp" };
-    await state.writeConfig({ mcp: { servers: { docs: live } } });
+    const config = { mcp: { servers: { docs: live } } };
+    await state.writeConfig(config);
     const sourceBytes = await readFile(state.configPath, "utf8");
-    upsertClawMcpServerRef(pendingRef("docs", expected), { env: state.env });
+    const { plan: addPlan } = await makeProvenancePlan(
+      state.root,
+      { schemaVersion: 1, agent: { id: "worker" }, mcpServers: { docs: live }, cronJobs: [] },
+      { workspace: state.workspaceDir },
+    );
+    persistClawInstallRecord(addPlan, { env: state.env, status: "complete" });
+    const previous = { ...pendingRef("docs", live), status: "complete" as const };
+    upsertClawMcpServerRef(previous, { env: state.env });
+    const pending = {
+      ...previous,
+      configDigest: digestClawMcpServer(expected),
+      status: "pending" as const,
+      updatedAtMs: 2,
+    };
+    upsertClawMcpServerRef(pending, { env: state.env });
 
     await invokeCli(["claws", "mcp-recover", "worker", "docs", "--dry-run"]);
-    expect(output.lines).toContain("Recovery action: release");
+    expect(output.lines).toContain("Recovery action: blocked");
     expect(output.lines).toContain("Live MCP config will be retained unchanged.");
     expect(await readFile(state.configPath, "utf8")).toBe(sourceBytes);
 
     const preview = await runCli(["claws", "mcp-recover", "worker", "docs", "--dry-run", "--json"]);
     expect(preview).toMatchObject({
-      action: "release",
+      action: "blocked",
+      blocker: { code: "mcp_config_modified" },
       liveConfig: { state: "modified", retained: true },
     });
     const result = await runCli([
@@ -234,12 +254,62 @@ describe("claws mcp-recover CLI", () => {
       "--json",
     ]);
     expect(result).toMatchObject({
-      status: "complete",
-      action: "release",
-      liveConfigRetained: true,
+      status: "failed",
+      error: { code: "mcp_config_modified" },
     });
-    expect(readClawMcpServerRefs("worker", { env: state.env })).toEqual([]);
+    expect(readClawMcpServerRefs("worker", { env: state.env })).toEqual([pending]);
     expect(await readFile(state.configPath, "utf8")).toBe(sourceBytes);
+    const remove = await buildClawRemovePlan("worker", {
+      env: state.env,
+      config,
+      sourceMcpServers: config.mcp.servers,
+      monitorGateway: quiescentClawMonitorGateway,
+    });
+    expect(remove.blockers).toContainEqual(
+      expect.objectContaining({ code: "mcp_cleanup_uncertain" }),
+    );
+  });
+
+  it("holds the source config owner through the MCP recovery commit", async () => {
+    const server = { command: "fixture-mcp" };
+    await state.writeConfig({ mcp: { servers: { docs: server } } });
+    upsertClawMcpServerRef(pendingRef("docs", server), { env: state.env });
+    const preview = await runCli(["claws", "mcp-recover", "worker", "docs", "--dry-run", "--json"]);
+    let admittedChecks = 0;
+    const snapshotRead = createDeferredCore();
+    const resumeRecovery = createDeferredCore();
+    const assertSourceOwned = () => {
+      const guard = captureConfigWriteLockGuard(state.configPath);
+      expect(guard).toBeDefined();
+      guard?.();
+      admittedChecks += 1;
+    };
+    const recovery = applyClawMcpRecovery("worker", "docs", String(preview.planIntegrity), {
+      env: state.env,
+      listMcpServers: async () => {
+        assertSourceOwned();
+        const listed = await listConfiguredMcpServers();
+        snapshotRead.resolve();
+        await resumeRecovery.promise;
+        return listed;
+      },
+      assertCurrent: assertSourceOwned,
+    });
+    await Promise.race([
+      snapshotRead.promise,
+      recovery.then(() => {
+        throw new Error("MCP recovery skipped the source config snapshot.");
+      }),
+    ]);
+    const competingWriter = withConfigWriteLock(state.configPath, async () => {
+      expect(readClawMcpServerRefs("worker", { env: state.env })).toEqual([
+        expect.objectContaining({ status: "complete" }),
+      ]);
+    });
+    resumeRecovery.resolve();
+    const [result] = await Promise.all([recovery, competingWriter]);
+    expect(result.action).toBe("complete");
+    expect(admittedChecks).toBeGreaterThan(2);
   });
 
   it("rejects stale consent when live config or ownership changes after preview", async () => {
