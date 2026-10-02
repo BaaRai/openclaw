@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { coerceErrorMessage } from "@openclaw/normalization-core";
 import { setConfiguredMcpServer } from "../agents/mcp-config-mutation.js";
 import { withClawMcpLifecycleLease } from "../agents/mcp-lifecycle-lease.js";
