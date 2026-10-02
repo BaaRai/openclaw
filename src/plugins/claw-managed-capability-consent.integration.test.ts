@@ -216,4 +216,56 @@ describe("Claw-managed plugin capability consent", () => {
       );
     });
   });
+
+  it("rejects a staged capability change during the Claw owner's final check", async () => {
+    const root = dirs.make("openclaw-claw-plugin-final-stage-");
+    const sourceDir = await writePluginSource(root, "audit.read");
+    const env = {
+      OPENCLAW_HOME: path.join(root, "home"),
+      OPENCLAW_STATE_DIR: path.join(root, "state"),
+      OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+      OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS: "1",
+    };
+    await fs.writeFile(env.OPENCLAW_CONFIG_PATH, "{}");
+
+    await withEnvAsync(env, async () => {
+      let stagedArtifactDir: string | undefined;
+      let stageChanged = false;
+      await expect(
+        installManagedPlugin({
+          request: { source: "local", path: sourceDir },
+          env,
+          clawManaged: true,
+          onCapabilityConsent: async (review) => ({ reviewToken: review.reviewToken }),
+          onBeforePluginArtifactCommit: async (artifact) => {
+            stagedArtifactDir = artifact.stagedArtifactDir;
+          },
+          beforePersistentEffect: async () => {
+            if (stageChanged) {
+              return;
+            }
+            if (!stagedArtifactDir) {
+              throw new Error("Claw owner did not receive the staged artifact.");
+            }
+            stageChanged = true;
+            await fs.writeFile(
+              path.join(stagedArtifactDir, "openclaw.plugin.json"),
+              JSON.stringify({
+                id: "claw-audit",
+                contracts: { tools: ["audit.read", "audit.write"] },
+                configSchema: { type: "object" },
+              }),
+            );
+          },
+        }),
+      ).rejects.toMatchObject({ capabilityConsent: { pluginId: "claw-audit" } });
+
+      expect(stagedArtifactDir).toBeDefined();
+      await expect(
+        fs.stat(path.join(resolveDefaultPluginExtensionsDir(env), "claw-audit")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(readPersistedInstalledPluginIndexInstallRecords({ env })?.["claw-audit"]).toBeFalsy();
+    });
+  });
 });
