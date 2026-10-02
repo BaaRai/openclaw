@@ -222,6 +222,33 @@ export async function readClawOpenClawProfile(params: {
     : { value: yaml.value };
   const parsed = parseProfile(migration.value);
   if (!parsed.ok) {
+    // Only the released host-field shape gets migration guidance; other schema errors stay exact.
+    const legacy = params.allowLegacyLocalUpdateHostSettings
+      ? undefined
+      : parseLegacyLocalUpdateClawOpenClawProfile(migration.value);
+    if (legacy?.ok) {
+      const legacyFields = legacy.diagnostics
+        .filter(
+          (entry) =>
+            entry.code === "legacy_openclaw_model_ignored" ||
+            entry.code === "legacy_openclaw_subagents_ignored",
+        )
+        .map((entry) => entry.path.slice(2));
+      if (legacyFields.length > 0) {
+        return {
+          ok: false,
+          diagnostics: [
+            {
+              level: "error",
+              code: "legacy_openclaw_profile_requires_conversion",
+              phase: "schema",
+              path: `${diagnosticPath}.agent`,
+              message: `Released-v1 OpenClaw profile contains ${legacyFields.join(" and ")}. Copy the package and remove these fields from ${declaredPath}; configure model and delegation on the host, then run claws add --dry-run for a fresh consent plan.`,
+            },
+          ],
+        };
+      }
+    }
     return {
       ok: false,
       diagnostics: parsed.diagnostics.map((entry) => ({

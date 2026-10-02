@@ -203,7 +203,9 @@ describe("recorded local Claw Update with a released v1 profile", () => {
     expect(mocks.buildClawUpdatePlan).not.toHaveBeenCalled();
     expect(parsedOutput()).toMatchObject({
       valid: false,
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]),
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: "legacy_openclaw_profile_requires_conversion" }),
+      ]),
     });
   });
 
@@ -215,21 +217,27 @@ describe("recorded local Claw Update with a released v1 profile", () => {
     expect(mocks.buildClawUpdatePlan).not.toHaveBeenCalled();
     expect(parsedOutput()).toMatchObject({
       valid: false,
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]),
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: "legacy_openclaw_profile_requires_conversion" }),
+      ]),
     });
 
     logs.length = 0;
     await runClawsAddCommand(root, { dryRun: true, json: true }, runtime);
     expect(parsedOutput()).toMatchObject({
       valid: false,
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]),
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: "legacy_openclaw_profile_requires_conversion" }),
+      ]),
     });
 
     logs.length = 0;
     await runClawsInspectCommand(root, { json: true }, runtime);
     expect(parsedOutput()).toMatchObject({
       valid: false,
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: "invalid_manifest" })]),
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: "legacy_openclaw_profile_requires_conversion" }),
+      ]),
     });
   });
 });

@@ -270,7 +270,22 @@ describe("OpenClaw profile reader", () => {
     );
     await writeFile(profilePath, raw);
 
-    expect(await readClawManifestFile(path)).toMatchObject({ ok: false });
+    const fresh = await readClawManifestFile(path);
+    expect(fresh.ok).toBe(false);
+    if (fresh.ok) {
+      throw new Error("expected fresh legacy source to be rejected");
+    }
+    const conversion = fresh.diagnostics.find(
+      (entry) => entry.code === "legacy_openclaw_profile_requires_conversion",
+    );
+    expect(conversion).toMatchObject({
+      level: "error",
+      phase: "schema",
+      path: "$.profiles.openclaw.agent",
+    });
+    expect(conversion?.message).toContain("agent.model and agent.subagents");
+    expect(conversion?.message).toContain("profiles/openclaw.yml");
+    expect(conversion?.message).toContain("claws add --dry-run");
     const authorized = await readClawManifestFile(path, {
       authorizeLegacyLocalUpdateHostSettings: ({ manifest, source }) =>
         manifest.agent.id === "triage" && source.kind === "development",

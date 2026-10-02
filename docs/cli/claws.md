@@ -320,6 +320,29 @@ authors must not select secret-bearing files. Build refuses to overwrite an
 existing artifact, reports its SHA-256 integrity, and re-opens it through the
 canonical Claw reader before success.
 
+### Convert a released local profile
+
+OpenClaw v2026.9.7 accepted `agent.model` and `agent.subagents` in
+`profiles/openclaw.yml`. Fresh Add, Inspect, Validate, and Build now reject
+those fields. Keep the original package, copy it, and remove both fields from
+the copied profile:
+
+```bash
+cp -R ./incident-triage-v1 ./incident-triage-portable
+# Remove agent.model and agent.subagents from the copied profiles/openclaw.yml.
+openclaw claws inspect ./incident-triage-portable
+openclaw claws add ./incident-triage-portable --dry-run --json
+```
+
+For a project-style package, run `claws validate` on the copy before Add.
+Review the new plan and use its exact `planIntegrity` for Add consent; an old
+or incomplete Add consent does not authorize the converted source. Configure
+the resulting agent's model in [OpenClaw config](/gateway/configuration), and
+wire named delegation there or with [`agents team create`](/cli/agents#agents-team-create).
+An already installed local v1 package can instead use default Update from its
+recorded source as described below; that compatibility read does not rewrite
+the package or its earlier consent record.
+
 ## Inspect and preview
 
 Validate the source without planning local changes. For OpenClaw profile
@@ -432,11 +455,12 @@ with their existing content digests and are not rewritten. `BOOTSTRAP.md`,
 credentials, sessions, transcripts, databases, and every other workspace entry
 remain local and outside Claw ownership.
 
-Inherited model, subagent allowlist/delegation, heartbeat schedule, sandbox
-mode/scope/workspace access, and human-delay defaults are copied into the
-generated profile. Host ownership pointers such as `heartbeat.agentId` remain in
-OpenClaw config. Other inherited agent defaults that Claw v1 cannot carry,
-including provider params, skills, model policy/catalog, or unsupported
+Inherited heartbeat schedule, sandbox mode/scope/workspace access, and
+human-delay defaults are copied into the generated profile. Model and
+subagent allowlist/delegation settings remain in OpenClaw config, not the
+generated package. Host ownership pointers such as `heartbeat.agentId` also
+remain in OpenClaw config. Other inherited agent defaults that Claw v1 cannot
+carry, including provider params, skills, model policy/catalog, or unsupported
 heartbeat/sandbox fields and custom compaction settings, block migration with
 their setting paths in the diagnostic. An empty compaction placeholder or the
 effective `safeguard` default materialized by OpenClaw has no effect beyond the
