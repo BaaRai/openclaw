@@ -112,7 +112,7 @@ function matchingArtifactRefs(expected: PersistedClawPackageRef, database: OpenC
     );
 }
 
-/** Finite journal and provenance transitions under the live deletion lease. */
+/** Verify Claw package and monitor state within the worker's write transaction. */
 export function executeClawRemoveStateCommand(
   command: ClawRemoveStateCommand,
   database: OpenClawStateDatabase,
