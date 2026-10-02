@@ -554,7 +554,7 @@ export function ensureSkillsWatcher(params: {
   };
   const now = Date.now();
   if (params.config?.skills?.load?.watch === false) {
-    disposeWorkspaceWatchState(watcherKey);
+    void disposeWorkspaceWatchState(watcherKey);
     evictWorkspaceWatchStates(now, disposeWorkspaceWatchState);
     return;
   }
@@ -638,7 +638,7 @@ export function ensureSkillsWatcher(params: {
     const nextTargetKeys = new Set(watchTargets.map((target) => target.path));
     for (const watchTarget of previousTargets) {
       if (!nextTargetKeys.has(watchTarget.path)) {
-        unsubscribeOwnedWorkspaceFromPath(watcherKey, watchTarget);
+        void unsubscribeOwnedWorkspaceFromPath(watcherKey, watchTarget);
       }
     }
     // A replacement notification can synchronously dispose or re-ensure this owner.
