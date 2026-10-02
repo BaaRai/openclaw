@@ -1,48 +1,27 @@
 import { isDeepStrictEqual } from "node:util";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
-import {
-  beginAgentDeletionJournal,
-  completeAgentDeletionJournalInDatabase,
-  readAgentDeletionJournalInDatabase,
-  removeAgentDeletionJournal,
-} from "../state/agent-deletion-journal.js";
+import { readAgentDeletionJournalInDatabase } from "../state/agent-deletion-journal.js";
 import { clawPackageLifecycleLeaseKey } from "../state/claw-package-lifecycle-lease.js";
 import { assertNoOpenClawAgentDatabaseLeases } from "../state/openclaw-agent-db-lease.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
-import { verifyOpenClawStateLeaseOwnership } from "../state/openclaw-state-lease-storage.js";
 import { readOpenClawStateLeaseExpiry } from "../state/openclaw-state-lease-store.js";
-import { releaseClawRemoveRows } from "./lifecycle-delete-support.js";
 import { digestClawRemovalInstall } from "./package-remove-plan.js";
 import {
   readClawInstallRecordFromDatabase,
   readClawPackageRefsInDatabase,
   updateClawPackageRefStatus,
+  type PersistedClawInstall,
   type PersistedClawPackageRef,
 } from "./provenance.js";
 import { readClawRemoveFactsInDatabase } from "./remove-facts.kernel.js";
 import {
   type ClawRemoveStateCommand,
-  type ClawRemoveStateGuard,
   type ClawRemoveStateWorkerOperations,
 } from "./remove-state-worker-contract.js";
 
-function assertLease(
-  input: Pick<ClawRemoveStateGuard, "agentId" | "lease">,
-  database: OpenClawStateDatabase,
-) {
-  if (
-    input.lease.scope !== "core:agent-deletion" ||
-    input.lease.key !== input.agentId ||
-    input.lease.leaseLabel !== "agent deletion"
-  ) {
-    throw new Error("Claw removal requires its exact agent deletion lease.");
-  }
-  verifyOpenClawStateLeaseOwnership({ ...input.lease, transaction: database.db });
-}
-
 function assertInstall(
-  input: Pick<ClawRemoveStateGuard, "agentId" | "expectedInstall">,
+  input: { agentId: string; expectedInstall: PersistedClawInstall | null },
   database: OpenClawStateDatabase,
 ) {
   if (
@@ -53,15 +32,6 @@ function assertInstall(
   ) {
     throw new Error(`Claw removal no longer owns agent ${input.agentId}.`);
   }
-}
-
-function assertGuard(input: ClawRemoveStateGuard, database: OpenClawStateDatabase) {
-  assertLease(input, database);
-  const journal = readAgentDeletionJournalInDatabase(database, input.agentId);
-  if (journal?.operationId !== input.operationId || journal.cleanupCompleted) {
-    throw new Error(`Agent ${input.agentId} deletion no longer owns cleanup.`);
-  }
-  assertInstall(input, database);
 }
 
 function assertMonitorJournal(
@@ -152,66 +122,6 @@ export function executeClawRemoveStateCommand(
       requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
       const result = (() => {
         switch (command.type) {
-          case "claws.remove.claim": {
-            const input = command.input;
-            assertLease(input, database);
-            assertInstall(input, database);
-            const previous = readAgentDeletionJournalInDatabase(database, input.agentId);
-            const journal = beginAgentDeletionJournal(
-              {
-                agentId: input.agentId,
-                operationId: input.operationId,
-                workspaceDir: input.workspaceDir,
-                agentDir: input.agentDir,
-                sessionsDir: input.sessionsDir,
-                deleteFiles: previous?.deleteFiles ?? false,
-              },
-              { database },
-            );
-            assertGuard(input, database);
-            return { existingJournal: Boolean(previous), journal };
-          }
-          case "claws.remove.assert":
-            assertGuard(command.input, database);
-            return;
-          case "claws.remove.rollback": {
-            assertGuard(command.input, database);
-            if (
-              !removeAgentDeletionJournal(command.input.agentId, command.input.operationId, {
-                database,
-              })
-            ) {
-              throw new Error(
-                `Failed to roll back deletion journal for agent ${command.input.agentId}.`,
-              );
-            }
-            return;
-          }
-          case "claws.remove.releaseRows": {
-            assertGuard(command.input, database);
-            const cleanupErrors = [...command.input.cleanupErrors];
-            const complete = releaseClawRemoveRows(
-              command.input.agentId,
-              command.input.files,
-              cleanupErrors,
-              (current) => assertGuard(command.input, current),
-              (current) => {
-                if (
-                  !completeAgentDeletionJournalInDatabase(
-                    current,
-                    command.input.agentId,
-                    command.input.operationId,
-                  )
-                ) {
-                  throw new Error(
-                    `Failed to complete deletion journal for agent ${command.input.agentId}.`,
-                  );
-                }
-              },
-              { database },
-            );
-            return { complete, cleanupErrors };
-          }
           case "claws.remove.packageRefStatus": {
             const input = command.input;
             assertPackageRemovalOwner(input, database);
@@ -289,8 +199,6 @@ export function executeClawRemoveStateCommand(
       } else if (command.type === "claws.remove.packageRefStatus") {
         assertPackageRemovalOwner(command.input, database);
         assertPackageLease(command.input, database);
-      } else {
-        assertLease(command.input, database);
       }
       return result;
     },
