@@ -34,6 +34,7 @@ import { resolveSkillCollectionReviewMonitorSpecs } from "../../cron/skill-colle
 import { cronStoreKey } from "../../cron/store/key.js";
 import { hasActiveCronRunReceiptsForAgent } from "../../cron/store/run-receipt-drain.js";
 import type { CronJob, CronJobCreate } from "../../cron/types.js";
+import { closeSkillsWatchersForAgent } from "../../skills/runtime/refresh.js";
 import {
   invalidateRegisteredAgentDatabasesMemo,
   prepareOpenClawAgentDatabaseRegistrySnapshotRead,
@@ -407,6 +408,10 @@ export const clawsMonitorHandlers = {
           },
           resolveAgentDeleteRuntimeDirs(input.agentId, journal.agentDir, registry.result.entries),
         );
+        await closeSkillsWatchersForAgent({
+          workspaceDir: journal.workspaceDir,
+          agentId: input.agentId,
+        });
         await assertCurrent();
       }
       if (input.phase === "quiesce") {

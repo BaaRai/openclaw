@@ -1,7 +1,7 @@
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import {
   markGatewayRestartDraining,
@@ -71,6 +71,49 @@ it("retires remote subscriptions during Gateway drain and reacquires after runti
   expect(getSkillsSnapshotVersion(gateway)).toBe(restartedVersion);
   subscriptions[1]!.emit("change");
   expect(getSkillsSnapshotVersion(gateway)).toBeGreaterThan(restartedVersion);
+});
+
+it("joins a removed agent's remote skills subscription before drainage completes", async () => {
+  const { params, access } = await remoteFixture();
+  const closeStarted = createDeferred();
+  const releaseClose = createDeferred();
+  access.watchSkills.mockImplementation(async (_request, _emit, signal) => {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          closeStarted.resolve();
+          resolve();
+        },
+        { once: true },
+      );
+    });
+    await releaseClose.promise;
+  });
+  refresh.ensureSkillsWatcher({ ...params, agentId: "worker" });
+  await waitForSkillsWatcherTurn();
+  await observer.readyAll();
+
+  const drain = refresh.closeSkillsWatchersForAgent({
+    workspaceDir: params.workspaceDir,
+    agentId: "worker",
+  });
+  try {
+    await awaitGateBeforeSettlement(
+      closeStarted.promise,
+      drain,
+      "Claw drainage completed before remote watcher cancellation began",
+    );
+    let drained = false;
+    void drain.then(() => {
+      drained = true;
+    });
+    await waitForSkillsWatcherTurn();
+    expect(drained).toBe(false);
+  } finally {
+    releaseClose.resolve();
+  }
+  await drain;
 });
 afterEach(() => vi.unstubAllEnvs());
 

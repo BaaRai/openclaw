@@ -44,7 +44,6 @@ import {
   pathWatchers,
   publishRecoveredCoverage,
   publishSkillsWatchChanges,
-  unsubscribeWorkspaceFromPath,
   workspaceWatchLastEnsuredAt,
   workspaceWatchOwners,
   workspaceWatchTargetCache,
@@ -54,6 +53,11 @@ import {
   type SkillsWatchChange,
   type SkillsWatchOwner,
 } from "./refresh-watch-registry.js";
+import {
+  closeSkillsWatchersForAgent as closeAgentSkillsWatchers,
+  disposeWorkspaceWatchState,
+  unsubscribeOwnedWorkspaceFromPath,
+} from "./refresh-watch-retirement.js";
 import {
   compareSkillsWatchTargets,
   resolveSkillsWatchTargets,
@@ -516,22 +520,6 @@ function subscribeWorkspaceToPath(workspaceDir: string, target: WatchTarget): vo
   pathWatchers.set(target.path, state);
 }
 
-function disposeWorkspaceWatchState(
-  watcherKey: string,
-  watchTargets: readonly WatchTarget[] = workspaceWatchTargets.get(watcherKey) ?? [],
-): void {
-  disposeRemoteSkillsWatcher(watcherKey);
-  for (const watchTarget of watchTargets) {
-    unsubscribeWorkspaceFromPath(watcherKey, watchTarget);
-  }
-  workspaceWatchTargets.delete(watcherKey);
-  workspaceWatchOwners.delete(watcherKey);
-  workspaceWatchTargetCache.delete(watcherKey);
-  workspaceWatchLastEnsuredAt.delete(watcherKey);
-  // Reacquisition invalidates after an unwatched interval. Disposal itself does
-  // not change skills, including for other subscriptions sharing this workspace.
-}
-
 export function ensureSkillsWatcher(params: {
   workspaceDir: string;
   executionWorkspaceDir?: string;
@@ -552,6 +540,7 @@ export function ensureSkillsWatcher(params: {
   }
   const owner: SkillsWatchOwner = {
     workspaceDir,
+    agentId: params.agentId,
     sourceScope,
     sharedScanPending: workspaceWatchOwners.get(watcherKey)?.sharedScanPending ?? false,
     unavailable: workspaceWatchOwners.get(watcherKey)?.unavailable ?? false,
@@ -591,6 +580,7 @@ export function ensureSkillsWatcher(params: {
     ensureRemoteSkillsWatcher({
       watcherKey,
       workspaceDir,
+      agentId: params.agentId,
       executionWorkspaceDir: workspaceExecutionWorkspaceDir,
       access,
       sourcePlan: workspacePlan,
@@ -648,7 +638,7 @@ export function ensureSkillsWatcher(params: {
     const nextTargetKeys = new Set(watchTargets.map((target) => target.path));
     for (const watchTarget of previousTargets) {
       if (!nextTargetKeys.has(watchTarget.path)) {
-        unsubscribeWorkspaceFromPath(watcherKey, watchTarget);
+        unsubscribeOwnedWorkspaceFromPath(watcherKey, watchTarget);
       }
     }
     // A replacement notification can synchronously dispose or re-ensure this owner.
@@ -703,6 +693,13 @@ export function ensureSkillsWatcher(params: {
     reconcileTargets(false);
   };
   reconcileTargets(true);
+}
+
+export async function closeSkillsWatchersForAgent(params: {
+  workspaceDir: string;
+  agentId: string;
+}): Promise<void> {
+  await closeAgentSkillsWatchers(params);
 }
 
 /** Finish discovery deferred during an outage before a worker advertises coverage. */

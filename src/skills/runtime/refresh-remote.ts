@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import { isPathInside } from "../../infra/path-guards.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import type { WorkspaceSkillSourcePlan } from "../loading/workspace-skill-sources.js";
@@ -9,17 +10,20 @@ const log = createSubsystemLogger("gateway/skills");
 const runInSkillsWatcherContext = AsyncLocalStorage.snapshot();
 type RemoteSkillsWatch = {
   access: AgentWorkspaceAccess;
+  workspaceDir: string;
+  agentId?: string;
   signature: string;
   controller: AbortController;
   unavailable: boolean;
 };
 const remoteWatchers = new Map<string, RemoteSkillsWatch>();
 // Retired transports may still be draining; shutdown must await them too.
-const remoteWatchTasks = new Set<Promise<void>>();
+const remoteWatchTasks = new Map<Promise<void>, { workspaceDir: string; agentId?: string }>();
 
 export function ensureRemoteSkillsWatcher(params: {
   watcherKey: string;
   workspaceDir: string;
+  agentId?: string;
   executionWorkspaceDir?: string;
   access: AgentWorkspaceAccess;
   sourcePlan: WorkspaceSkillSourcePlan;
@@ -44,6 +48,8 @@ export function ensureRemoteSkillsWatcher(params: {
   disposeRemoteSkillsWatcher(watcherKey);
   const state: RemoteSkillsWatch = {
     access,
+    workspaceDir,
+    agentId: params.agentId,
     signature,
     controller: new AbortController(),
     unavailable: !access.watchSkills,
@@ -95,8 +101,26 @@ export function ensureRemoteSkillsWatcher(params: {
       }
     }
   });
-  remoteWatchTasks.add(task);
+  remoteWatchTasks.set(task, { workspaceDir, agentId: params.agentId });
   void task.finally(() => remoteWatchTasks.delete(task));
+}
+
+export async function closeRemoteSkillsWatchersForAgent(params: {
+  workspaceDir: string;
+  agentId: string;
+}): Promise<void> {
+  const matches = (owner: { workspaceDir: string; agentId?: string }) =>
+    owner.agentId === params.agentId &&
+    isPathInside(owner.workspaceDir, params.workspaceDir) &&
+    isPathInside(params.workspaceDir, owner.workspaceDir);
+  for (const [watcherKey, state] of remoteWatchers) {
+    if (matches(state)) {
+      disposeRemoteSkillsWatcher(watcherKey);
+    }
+  }
+  await Promise.all(
+    [...remoteWatchTasks].filter(([, owner]) => matches(owner)).map(([task]) => task),
+  );
 }
 
 export function disposeRemoteSkillsWatcher(watcherKey: string): void {
@@ -109,5 +133,5 @@ export async function closeRemoteSkillsWatchers(): Promise<void> {
   for (const key of remoteWatchers.keys()) {
     disposeRemoteSkillsWatcher(key);
   }
-  await Promise.all(remoteWatchTasks);
+  await Promise.all(remoteWatchTasks.keys());
 }
