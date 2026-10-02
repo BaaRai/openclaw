@@ -176,6 +176,12 @@ describe.each(["HTTP", "WebSocket"] as const)(
           expect(await response.json()).toMatchObject(expectedOutcome);
         } else {
           const client = createOperatorWsClient({ scopes: ["operator.write"] });
+          client.connect.device = {
+            id: "standalone-reviewer",
+            publicKey: "test",
+            signature: "test",
+            signedAt: 1,
+          };
           if (testCase.system) {
             client.internal = { operatorRoleActor: { kind: "system" } };
           } else {
@@ -206,6 +212,16 @@ describe.each(["HTTP", "WebSocket"] as const)(
         } else {
           expect(runtime.beforeHook).toHaveBeenCalledOnce();
           expect(runtime.execute).toHaveBeenCalledOnce();
+          if (transport === "WebSocket") {
+            expect(runtime.createTools).toHaveBeenCalledWith(
+              expect.objectContaining({ approvalReviewerDeviceIds: ["standalone-reviewer"] }),
+            );
+            expect(runtime.beforeHook).toHaveBeenCalledWith(
+              expect.objectContaining({
+                ctx: expect.objectContaining({ approvalReviewerDeviceId: "standalone-reviewer" }),
+              }),
+            );
+          }
         }
       });
     });

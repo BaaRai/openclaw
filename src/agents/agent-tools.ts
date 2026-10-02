@@ -361,6 +361,9 @@ export function createOpenClawCodingToolsInternal(
     agentChannel: resolveGatewayMessageChannel(options?.messageChannel ?? options?.messageProvider),
     agentTo: options?.messageTo,
     agentThreadId: options?.messageThreadId,
+    approvalReviewerDeviceIds: options?.approvalReviewerDeviceId
+      ? [options.approvalReviewerDeviceId]
+      : undefined,
     workspaceDir: workspaceRoot,
     fsPolicy,
     requesterSenderId: options?.senderId,

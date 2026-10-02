@@ -198,6 +198,7 @@ type InvokeGatewayToolParams = {
   /** Host-minted authority from the calling connection; never derived from wire params. */
   operatorRoleActor?: NonNullable<GatewayClient["internal"]>["operatorRoleActor"];
   operatorScopes?: readonly string[];
+  approvalReviewerDeviceId?: string;
   senderIsOwner?: boolean;
   clientCaps?: string[];
   conversationReadOrigin?: ConversationReadInvocationOrigin;
@@ -370,6 +371,7 @@ async function invokeGatewayToolWithSignal(
       accountId: params.accountId,
       agentTo: params.agentTo,
       agentThreadId: params.agentThreadId,
+      approvalReviewerDeviceId: params.approvalReviewerDeviceId,
       senderIsOwner: params.senderIsOwner,
       clientCaps: params.clientCaps,
       conversationReadOrigin,
@@ -418,6 +420,7 @@ async function invokeGatewayToolWithSignal(
         agentId,
         config: params.cfg,
         sessionKey,
+        approvalReviewerDeviceId: params.approvalReviewerDeviceId,
         workspaceDir,
         loopDetection: resolveToolLoopDetectionConfig({ cfg: params.cfg, agentId }),
       },

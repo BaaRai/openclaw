@@ -148,6 +148,9 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
               toolCallId: _id,
               ...(options?.context?.agentId ? { agentId: options.context.agentId } : {}),
               ...(options?.context?.sessionKey ? { sessionKey: options.context.sessionKey } : {}),
+              ...(options?.context?.approvalReviewerDeviceIds?.length
+                ? { approvalReviewerDeviceIds: [...options.context.approvalReviewerDeviceIds] }
+                : {}),
               ...(options?.context?.deliveryContext?.channel || options?.context?.messageChannel
                 ? {
                     turnSourceChannel:

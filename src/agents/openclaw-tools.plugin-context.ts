@@ -36,6 +36,7 @@ export type OpenClawPluginToolOptions = {
   /** Current routable conversation target when no explicit agent target is available. */
   currentChannelId?: string;
   agentThreadId?: string | number;
+  approvalReviewerDeviceIds?: readonly string[];
   nativeChannelId?: string;
   /** Opaque host-issued capability for current-turn channel message actions. */
   messageActionTurnCapability?: string;
@@ -119,6 +120,9 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentId: sessionAgentId,
       sessionKey,
       sessionId: options?.sessionId,
+      approvalReviewerDeviceIds: options?.approvalReviewerDeviceIds
+        ? [...options.approvalReviewerDeviceIds]
+        : undefined,
       toolBindings: options?.toolBindings,
       activeProjectKeys: options?.activeProjectKeys,
       conversationRecall: options?.conversationRecall,

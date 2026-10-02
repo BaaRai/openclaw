@@ -403,6 +403,7 @@ describe("lobster plugin tool", () => {
         context: fakeCtx({
           agentId: "main",
           sessionKey: "agent:main:main",
+          approvalReviewerDeviceIds: ["device-reviewer"],
           assertInvocationCurrent,
         }),
       },
@@ -427,6 +428,7 @@ describe("lobster plugin tool", () => {
         agentId: "main",
         sessionKey: "agent:main:main",
         toolCallId: "operator-gated",
+        approvalReviewerDeviceIds: ["device-reviewer"],
       }),
       expect.objectContaining({ scopes: ["operator.approvals"] }),
     );
