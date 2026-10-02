@@ -524,7 +524,7 @@ describe("AgentsHomePage", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("opens an installed Claw's home chat after Add when it needs setup", async () => {
+  it("keeps setup requirements visible after Add until setup chat is chosen", async () => {
     const { page, request, navigate, agentSelection, gateway } = createPage({
       clawsEnabled: true,
       applyResult: {
@@ -538,6 +538,19 @@ describe("AgentsHomePage", () => {
     page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
     await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
     page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
+    await vi.waitFor(() => expect(page.textContent).toContain("Needs setup"));
+    expect(page.textContent).toContain("oauth: workflows");
+    expect(page.querySelector("openclaw-claws-catalog-dialog")).not.toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.disabled).toBe(
+        false,
+      ),
+    );
+    expect(page.querySelector("[data-claws-open-setup]")?.textContent?.trim()).toBe(
+      "Continue setup in chat",
+    );
+    page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.click();
     await vi.waitFor(() =>
       expect(navigate).toHaveBeenCalledWith("chat", { pathname: "/chat/workflow-operator" }),
     );
@@ -545,6 +558,37 @@ describe("AgentsHomePage", () => {
     expect(agentSelection.state.selectedId).toBe("workflow-operator");
     expect(gateway.setSessionKey).toHaveBeenCalledWith("agent:workflow-operator:team-room");
     expect(page.querySelector("openclaw-claws-catalog-dialog")).toBeNull();
+  });
+
+  it("does not open setup chat if the installed agent is missing", async () => {
+    const { page, navigate } = createPage({
+      clawsEnabled: true,
+      applyResult: {
+        agentId: "workflow-operator",
+        status: "complete",
+        readiness: { ready: false, requirements: [{ kind: "oauth", owner: "workflows" }] },
+      },
+      statusRecord: {
+        agentId: "workflow-operator",
+        name: "@openclaw/workflow-operator",
+        version: "1.2.0",
+        status: "complete",
+        agentState: "missing",
+      },
+    });
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-entry] button")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-entry] button")?.click();
+    await vi.waitFor(() => expect(page.querySelector("[data-claws-confirm]")).not.toBeNull());
+    page.querySelector<HTMLElement>("[data-claws-confirm]")?.click();
+    await vi.waitFor(() =>
+      expect(page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.disabled).toBe(
+        false,
+      ),
+    );
+    page.querySelector<HTMLButtonElement>("[data-claws-open-setup]")?.click();
+    await vi.waitFor(() => expect(page.textContent).toContain("Refresh Agents and try again"));
+    expect(page.textContent).toContain("Needs setup");
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   const confirmedStatus = { agentId: "workflow-operator", version: "1.2.0", status: "complete" };

@@ -60,6 +60,9 @@ const enAgentsHome = {
     added: "Claw added",
     openFromAgents: "Open it from Agents when the refreshed roster is available.",
     setupAfterAdd: "The Claw was installed, but it needs setup before chat is ready.",
+    continueSetupInChat: "Continue setup in chat",
+    setupChatUnavailable:
+      "The installed agent is not available for setup yet. Refresh Agents and try again.",
     incomplete: "Installation incomplete",
     incompleteAfterAdd: "Check Claws status before using it or trying again.",
     outcomeUnknown: "Add outcome unknown",
@@ -206,6 +209,7 @@ const enAgentsHome = {
     versionChange: "{from} to {to}",
     upToDate: "This Claw is up to date.",
     updateLabsOff: "Turn Claws on in Labs to continue this update.",
+    updateAdminRequired: "An admin connection is required to update Claws.",
     updateChanges: "Update actions",
     updateCapabilities: "Capability changes",
     updateBlockers: "Cannot update this Claw yet",

@@ -55,12 +55,14 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
   @state() private applyResult: ClawAddApplyResult | null = null;
   @state() private applyUnknown = false;
   @state() private statusChecking = false;
+  @state() private setupChatError: string | null = null;
   @state() private riskAcknowledged = false;
   @state() private acceptedPluginRisks = new Set<string>();
   @state() private acceptedSkillWarnings = new Set<string>();
 
   private searchRevision = 0;
   private reviewRevision = 0;
+  private setupChatRevision = 0;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingApply: {
     agentId: string;
@@ -123,6 +125,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
   }
 
   override disconnectedCallback() {
+    this.setupChatRevision += 1;
     if (this.searchTimer) {
       clearTimeout(this.searchTimer);
       this.searchTimer = null;
@@ -217,7 +220,13 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
   private select(entry: ClawCatalogEntry) {
     this.selected = entry;
     this.applyResult = null;
+    this.setupChatError = null;
     void this.loadReview();
+  }
+
+  private close() {
+    this.setupChatRevision += 1;
+    this.onClose?.();
   }
 
   private back() {
@@ -225,7 +234,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       return;
     }
     if (this.initialEntry) {
-      this.onClose?.();
+      this.close();
       return;
     }
     this.reviewRevision += 1;
@@ -234,7 +243,92 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
     this.plan = null;
     this.reviewError = null;
     this.applyResult = null;
+    this.setupChatError = null;
     this.reviewLoading = false;
+  }
+
+  private openAgentChat(agentId: string, context: ApplicationContext) {
+    const mainKey =
+      resolveUiConfiguredMainKey({
+        agentsList: context.agents.state.agentsList,
+        hello: context.gateway.snapshot.hello,
+      }) ?? "main";
+    const sessionKey = buildAgentMainSessionKey({ agentId, mainKey });
+    const target = sessionNavigationTarget({
+      context,
+      face: "chat",
+      sessionKey,
+      agentId,
+    });
+    selectApplicationSession({
+      selection: context.agentSelection,
+      gateway: context.gateway,
+      sessionKey,
+      agentId,
+    });
+    this.close();
+    context.navigate("chat", target.options);
+  }
+
+  private async openSetupChat() {
+    const result = this.applyResult;
+    const source = this.source();
+    const scope = this.gateway.capture();
+    const context = this.context;
+    if (
+      !result ||
+      result.status !== "complete" ||
+      result.readiness.ready ||
+      !source ||
+      !scope ||
+      this.applying ||
+      this.statusChecking
+    ) {
+      return;
+    }
+    const revision = this.setupChatRevision;
+    this.statusChecking = true;
+    this.setupChatError = null;
+    try {
+      const roster = await context.agents.refreshList().catch(() => undefined);
+      if (
+        !this.gateway.isCurrent(scope) ||
+        revision !== this.setupChatRevision ||
+        this.context !== context ||
+        this.applyResult !== result
+      ) {
+        return;
+      }
+      if (!roster?.agents.some((agent) => agent.id === result.agentId)) {
+        this.setupChatError = t("clawsCatalog.setupChatUnavailable");
+        return;
+      }
+      const record = await readClawStatus(scope.client, result.agentId).catch(() => null);
+      if (
+        !this.gateway.isCurrent(scope) ||
+        revision !== this.setupChatRevision ||
+        this.context !== context ||
+        this.applyResult !== result
+      ) {
+        return;
+      }
+      if (
+        record?.name !== source.packageName ||
+        record.version !== source.version ||
+        record.sourceKind !== "package" ||
+        record.status !== "complete" ||
+        record.agentState !== "present"
+      ) {
+        this.setupChatError = t("clawsCatalog.setupChatUnavailable");
+        return;
+      }
+      this.statusChecking = false;
+      this.openAgentChat(result.agentId, context);
+    } finally {
+      if (this.gateway.isCurrent(scope) && revision === this.setupChatRevision) {
+        this.statusChecking = false;
+      }
+    }
   }
 
   private async reconcileApply() {
@@ -317,6 +411,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
     };
     this.applying = true;
     this.reviewError = null;
+    this.setupChatError = null;
     try {
       const result = await applyOfficialClawAdd(
         scope.client,
@@ -346,7 +441,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         return;
       }
       this.onAdded?.();
-      if (result.status === "complete") {
+      if (result.status === "complete" && result.readiness.ready) {
         if (!roster?.agents.some((agent) => agent.id === result.agentId)) {
           return;
         }
@@ -363,25 +458,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
         ) {
           return;
         }
-        const mainKey =
-          resolveUiConfiguredMainKey({
-            agentsList: context.agents.state.agentsList,
-            hello: context.gateway.snapshot.hello,
-          }) ?? "main";
-        const target = sessionNavigationTarget({
-          context,
-          face: "chat",
-          sessionKey: buildAgentMainSessionKey({ agentId: result.agentId, mainKey }),
-          agentId: result.agentId,
-        });
-        selectApplicationSession({
-          selection: context.agentSelection,
-          gateway: context.gateway,
-          sessionKey: buildAgentMainSessionKey({ agentId: result.agentId, mainKey }),
-          agentId: result.agentId,
-        });
-        this.onClose?.();
-        context.navigate("chat", target.options);
+        this.openAgentChat(result.agentId, context);
       }
     } catch (error) {
       if (this.gateway.isCurrent(scope) && revision === this.reviewRevision) {
@@ -422,6 +499,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       applyResult: this.applyResult,
       applyUnknown: this.applyUnknown,
       statusChecking: this.statusChecking,
+      setupChatError: this.setupChatError,
       riskAcknowledged: this.riskAcknowledged,
       acceptedPluginRisks: this.acceptedPluginRisks,
       acceptedSkillWarnings: this.acceptedSkillWarnings,
@@ -429,7 +507,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       onSearch: (query) => this.search(query),
       onSelect: (entry) => this.select(entry),
       onBack: () => this.back(),
-      onClose: () => this.onClose?.(),
+      onClose: () => this.close(),
       onRetryCatalog: () => void this.loadCatalog(),
       onRetryReview: () => void this.loadReview(),
       onRiskAcknowledged: (checked) => (this.riskAcknowledged = checked),
@@ -453,6 +531,7 @@ export class ClawsCatalogDialog extends OpenClawLightDomElement {
       },
       onConfirm: () => void this.add(),
       onCheckStatus: () => void this.reconcileApply(),
+      onOpenSetupChat: () => void this.openSetupChat(),
     });
   }
 }
