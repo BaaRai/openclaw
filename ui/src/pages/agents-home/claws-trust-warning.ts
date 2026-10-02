@@ -1,4 +1,5 @@
 import { html } from "lit";
+import { t } from "../../i18n/index.ts";
 import "../../styles/claws-trust-warning.css";
 
 type ClawHubAudit = {
@@ -47,12 +48,12 @@ export function renderClawTrustWarning(warning: string) {
   return html`<div class="callout warn claws-trust-warning" role="alert">
     ${
       audit
-        ? html`<strong class="claws-trust-warning__title">ClawHub Security Audit</strong>
+        ? html`<strong class="claws-trust-warning__title">${t("clawsTrustWarning.title")}</strong>
             <div class="claws-trust-warning__release">${audit.release}</div>
-            <div><strong>Outcome:</strong> ${audit.outcome}</div>
-            <div><strong>Overview:</strong> ${audit.overview}</div>
+            <div><strong>${t("clawsTrustWarning.outcome")}</strong> ${audit.outcome}</div>
+            <div><strong>${t("clawsTrustWarning.overview")}</strong> ${audit.overview}</div>
             <div>
-              <strong>Details:</strong>
+              <strong>${t("clawsTrustWarning.details")}</strong>
               ${
                 detailsUrl
                   ? html`<a href=${detailsUrl} target="_blank" rel="noopener noreferrer"

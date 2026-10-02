@@ -107,6 +107,12 @@ const enAgentsHome = {
     title: "Skill trust review",
     acknowledgeRisk: "I understand this skill trust warning.",
   },
+  clawsTrustWarning: {
+    title: "ClawHub Security Audit",
+    outcome: "Outcome:",
+    overview: "Overview:",
+    details: "Details:",
+  },
   clawsAccessReview: {
     title: "Configured access",
     coverage: "Configuration only. Live tools and runtime access may differ.",
