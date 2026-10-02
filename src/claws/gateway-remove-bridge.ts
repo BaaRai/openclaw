@@ -171,10 +171,14 @@ export function attachClawRemoveGatewayBridge(
         if (!bridge.allowedCronJobIds.has(request.schedulerJobId)) {
           throw new Error("Claw cron target changed.");
         }
-        await callbacks.cronGateway.remove(request.schedulerJobId, { commitGuard: assertCurrent });
+        await callbacks.cronGateway.remove(request.schedulerJobId, {
+          expectedConfigRevision: request.expectedConfigRevision,
+          commitGuard: assertCurrent,
+        });
         return null;
       }
     }
+    throw new Error("Unsupported Claw removal request.");
   };
   child.on("message", (message: unknown) => {
     if (!active) {

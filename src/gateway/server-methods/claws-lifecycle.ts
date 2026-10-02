@@ -200,9 +200,10 @@ export const clawsLifecycleHandlers: GatewayRequestHandlers = {
           remove: async (schedulerJobId, options) => {
             assertCurrent();
             return await context.cron.remove(schedulerJobId, {
+              expectedConfigRevision: options.expectedConfigRevision,
               commitGuard: () => {
                 assertCurrent();
-                options?.commitGuard?.();
+                options.commitGuard?.();
               },
             });
           },
@@ -307,9 +308,10 @@ export const clawsLifecycleHandlers: GatewayRequestHandlers = {
             remove: async (schedulerJobId, options) => {
               assertApplyCurrent();
               return await context.cron.remove(schedulerJobId, {
+                expectedConfigRevision: options.expectedConfigRevision,
                 commitGuard: () => {
                   assertApplyCurrent();
-                  options?.commitGuard?.();
+                  options.commitGuard?.();
                 },
               });
             },

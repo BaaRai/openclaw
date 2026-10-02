@@ -638,7 +638,15 @@ export async function runClawsRemoveCommand(
         ...(opts.exactAgentId ? { exactAgentId: true } : {}),
         cronGateway: gatewayBridge?.cronGateway ?? {
           get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
-          remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
+          remove: async (id, options) =>
+            await callGatewayFromCli(
+              "cron.remove",
+              {},
+              {
+                id,
+                expectedConfigRevision: options.expectedConfigRevision,
+              },
+            ),
         },
       });
     const result = await (gatewayBridge
