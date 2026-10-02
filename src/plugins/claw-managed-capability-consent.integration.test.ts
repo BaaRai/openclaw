@@ -68,7 +68,7 @@ async function findStagedPluginArtifactDir(env: NodeJS.ProcessEnv): Promise<stri
   if (stages.length !== 1) {
     throw new Error(`Expected one staged plugin artifact, found ${stages.length}.`);
   }
-  return path.join(extensionsDir, stages[0]);
+  return path.join(extensionsDir, stages[0]!);
 }
 
 describe("Claw-managed plugin capability consent", () => {
