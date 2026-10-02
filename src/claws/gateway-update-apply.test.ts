@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   persist: vi.fn(),
   owned: vi.fn(),
   configuredAccess: vi.fn(),
+  stage: vi.fn(),
 }));
 
 vi.mock("./clawhub-source.js", () => ({ withResolvedClawHubSource: mocks.resolve }));
@@ -50,6 +51,7 @@ vi.mock("./gateway-disclosure.js", () => ({ projectClawConfiguredAccess: mocks.c
 vi.mock("./update-apply.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-apply.js")>()),
   applyClawUpdatePlan: mocks.apply,
+  stageClawUpdateHostRequirements: mocks.stage,
 }));
 
 const coordinate = { packageName: "@openclaw/workflow-operator", version: "1.2.0" };
@@ -172,6 +174,10 @@ beforeEach(() => {
   mocks.plansMatch.mockReturnValue(true);
   mocks.configuredAccess.mockReturnValue(reviewedAccess);
   mocks.apply.mockResolvedValue({ agentId: "workflow-operator", status: "complete" });
+  mocks.stage.mockResolvedValue({
+    needsRuntimeHandoff: false,
+    continue: async () => ({ agentId: "workflow-operator", status: "complete" }),
+  });
 });
 
 describe("Gateway Claw Update application", () => {
@@ -513,7 +519,7 @@ describe("Gateway Claw Update application", () => {
 
     expect(await applyClawUpdateForGateway(input)).toMatchObject({ status: "complete" });
     expect(mocks.consent).toHaveBeenCalledWith([review], [acknowledgement], expect.any(Function));
-    expect(mocks.apply).toHaveBeenCalledWith(
+    expect(mocks.stage).toHaveBeenCalledWith(
       plan,
       expect.anything(),
       expect.objectContaining({ pluginConsent, reloadPlugins: input.reloadPlugins }),

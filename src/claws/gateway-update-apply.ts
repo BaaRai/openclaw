@@ -2,11 +2,19 @@ import type {
   ClawPluginAcknowledgement,
   ClawSkillAcknowledgement,
 } from "../../packages/gateway-protocol/src/schema/claws.js";
-import { withCurrentConfigPolicyReader } from "../config/io.runtime.js";
+import {
+  readCurrentConfigForPolicyCheckWithMigrations,
+  withCurrentConfigPolicyReader,
+} from "../config/io.runtime.js";
+import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ClawHubFetchOptions } from "../infra/clawhub-client.js";
+import { readDeferredPluginMigrationsAsync } from "../infra/deferred-plugin-migrations.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
+import {
+  PluginInstallRuntimeBatch,
+  type PluginInstallBatchReload,
+} from "../plugins/install-runtime-batch.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import { withResolvedClawHubSource, type ClawHubCoordinate } from "./clawhub-source.js";
@@ -25,7 +33,17 @@ import { bindClawLifecycleTrust, plansMatchAcrossSourceRoots } from "./gateway-p
 import { bindClawPluginInstallConsent } from "./gateway-plugin-consent.js";
 import { bindClawSkillWarningConsent } from "./gateway-skill-consent.js";
 import { assertClawsLabsEnabled } from "./labs-gate.js";
-import { applyClawUpdatePlan, ClawUpdateMutationError } from "./update-apply.js";
+import {
+  assertClawPluginInstallOwnersCurrent,
+  assertClawPluginRequirementsEnabled,
+  snapshotClawPluginInstallOwners,
+} from "./plugin-runtime.js";
+import {
+  applyClawUpdatePlan,
+  ClawUpdateMutationError,
+  stageClawUpdateHostRequirements,
+  type ClawUpdateApplyOptions,
+} from "./update-apply.js";
 
 const log = createSubsystemLogger("claws/gateway-update");
 
@@ -97,7 +115,13 @@ export async function applyClawUpdateForGateway(
               input.assertCurrent();
               lease.assertOwned();
             };
-            return await withPluginLifecycleLease(
+            let stagedHandoff:
+              | {
+                  batch: PluginInstallRuntimeBatch;
+                  stage: Awaited<ReturnType<typeof stageClawUpdateHostRequirements>> | undefined;
+                }
+              | undefined;
+            const firstPhase = await withPluginLifecycleLease(
               {
                 env: input.policyConfig.env,
                 signal: input.signal,
@@ -194,71 +218,243 @@ export async function applyClawUpdateForGateway(
                     const reviewedAccessDigest = digestClawValue(reviewedAccess);
                     const reviewedDesiredDigest = digestClawValue(reviewedAccess.desired);
                     assertCurrent();
-                    const result = await applyClawUpdatePlan(
-                      persistedPlan.plan,
-                      {
-                        targetManifest: persisted.manifest,
-                        targetClawMarkdownBody: persisted.clawMarkdownBody,
-                        targetOpenClawProfile: persisted.openClawProfile,
-                        targetSource: persisted.source,
-                        targetDiagnostics: persisted.diagnostics,
+                    const target = {
+                      targetManifest: persisted.manifest,
+                      targetClawMarkdownBody: persisted.clawMarkdownBody,
+                      targetOpenClawProfile: persisted.openClawProfile,
+                      targetSource: persisted.source,
+                      targetDiagnostics: persisted.diagnostics,
+                    };
+                    let reviewedDesiredAgent: AgentConfig | undefined;
+                    const updateOptions: ClawUpdateApplyOptions = {
+                      ...persistedPlan.stateOptions,
+                      stateMode: "worker",
+                      assertCurrent,
+                      getCurrentConfig: getCurrentClawsConfig,
+                      assertReviewedConfig: (config, desiredAgent, phase) => {
+                        reviewedDesiredAgent = desiredAgent;
+                        let actualAccessMatchesReview: boolean;
+                        try {
+                          const actualAccess = projectClawConfiguredAccess({
+                            config,
+                            agentId: persistedPlan.plan.agentId,
+                            desiredAgent,
+                            operation: "update",
+                          });
+                          actualAccessMatchesReview =
+                            phase === "after-agent-commit"
+                              ? digestClawValue(actualAccess.current) === reviewedDesiredDigest &&
+                                digestClawValue(actualAccess.desired) === reviewedDesiredDigest
+                              : digestClawValue(actualAccess) === reviewedAccessDigest;
+                        } catch {
+                          throw new ClawUpdateMutationError(
+                            "reviewed_access_changed",
+                            "The effective Claw access changed since review. Preview it again.",
+                          );
+                        }
+                        if (!actualAccessMatchesReview) {
+                          throw new ClawUpdateMutationError(
+                            "reviewed_access_changed",
+                            "The effective Claw access changed since review. Preview it again.",
+                          );
+                        }
                       },
-                      {
-                        ...persistedPlan.stateOptions,
-                        stateMode: "worker",
-                        assertCurrent,
-                        getCurrentConfig: getCurrentClawsConfig,
-                        assertReviewedConfig: (config, desiredAgent, phase) => {
-                          let actualAccessMatchesReview: boolean;
-                          try {
-                            const actualAccess = projectClawConfiguredAccess({
-                              config,
-                              agentId: persistedPlan.plan.agentId,
-                              desiredAgent,
-                              operation: "update",
-                            });
-                            actualAccessMatchesReview =
-                              phase === "after-agent-commit"
-                                ? digestClawValue(actualAccess.current) === reviewedDesiredDigest &&
-                                  digestClawValue(actualAccess.desired) === reviewedDesiredDigest
-                                : digestClawValue(actualAccess) === reviewedAccessDigest;
-                          } catch {
+                      config: persistedPlan.config,
+                      ...(clawHubBaseUrl ? { clawHubBaseUrl } : {}),
+                      sourceMcpServers: persistedPlan.sourceMcpServers,
+                      packagePreflight: persistedPlan.packagePreflight,
+                      planPackageDeps: persistedPlan.packageDeps,
+                      consentPlanIntegrity: persistedPlan.plan.planIntegrity,
+                      ...(pluginConsent ? { pluginConsent } : {}),
+                      ...(skillConsent ? { skillConsent } : {}),
+                      ...(input.reloadPlugins ? { reloadPlugins: input.reloadPlugins } : {}),
+                      ...(input.cronGateway ? { cronGateway: input.cronGateway } : {}),
+                    };
+                    const readiness = persistedPlan.projection.readiness ?? {
+                      ready: false,
+                      requirements: [],
+                    };
+                    if (!input.reloadPlugins) {
+                      const result = await applyClawUpdatePlan(
+                        persistedPlan.plan,
+                        target,
+                        updateOptions,
+                      );
+                      settledResult = { agentId: result.agentId, status: result.status, readiness };
+                      return { kind: "settled" as const, value: settledResult };
+                    }
+
+                    const batch = new PluginInstallRuntimeBatch(
+                      persistedPlan.stateOptions,
+                      async (targets) => {
+                        const deferredPluginMigrations = await readDeferredPluginMigrationsAsync({
+                          env: input.policyConfig.env,
+                          path: pluginLease.databasePath,
+                        });
+                        const assertReloadPolicy = () => {
+                          assertCurrent();
+                          const config = readCurrentConfigForPolicyCheckWithMigrations({
+                            ...input.policyConfig,
+                            deferredPluginMigrations,
+                          });
+                          assertClawsLabsEnabled(config);
+                          assertClawPluginRequirementsEnabled(
+                            stage?.requiredPluginIds ?? [],
+                            config,
+                          );
+                          if (!reviewedDesiredAgent) {
                             throw new ClawUpdateMutationError(
                               "reviewed_access_changed",
                               "The effective Claw access changed since review. Preview it again.",
                             );
                           }
-                          if (!actualAccessMatchesReview) {
-                            throw new ClawUpdateMutationError(
-                              "reviewed_access_changed",
-                              "The effective Claw access changed since review. Preview it again.",
-                            );
-                          }
-                        },
-                        config: persistedPlan.config,
-                        ...(clawHubBaseUrl ? { clawHubBaseUrl } : {}),
-                        sourceMcpServers: persistedPlan.sourceMcpServers,
-                        packagePreflight: persistedPlan.packagePreflight,
-                        planPackageDeps: persistedPlan.packageDeps,
-                        consentPlanIntegrity: persistedPlan.plan.planIntegrity,
-                        ...(pluginConsent ? { pluginConsent } : {}),
-                        ...(skillConsent ? { skillConsent } : {}),
-                        ...(input.reloadPlugins ? { reloadPlugins: input.reloadPlugins } : {}),
-                        ...(input.cronGateway ? { cronGateway: input.cronGateway } : {}),
+                          updateOptions.assertReviewedConfig?.(config, reviewedDesiredAgent);
+                          assertCurrent();
+                        };
+                        assertReloadPolicy();
+                        return await input.reloadPlugins!(targets, {
+                          commitGuard: assertReloadPolicy,
+                        });
                       },
                     );
-                    settledResult = {
-                      agentId: result.agentId,
-                      status: result.status,
-                      readiness: persistedPlan.projection.readiness ?? {
-                        ready: false,
-                        requirements: [],
-                      },
+                    let stage:
+                      | Awaited<ReturnType<typeof stageClawUpdateHostRequirements>>
+                      | undefined;
+                    let stageError: unknown;
+                    let stageFailed = false;
+                    try {
+                      stage = await stageClawUpdateHostRequirements(persistedPlan.plan, target, {
+                        ...updateOptions,
+                        runtimeBatch: batch,
+                      });
+                    } catch (error) {
+                      stageFailed = true;
+                      stageError = error;
+                    }
+                    if (stage && !stage.needsRuntimeHandoff) {
+                      batch.close();
+                      const result = await stage.continue(updateOptions);
+                      settledResult = { agentId: result.agentId, status: result.status, readiness };
+                      return { kind: "settled" as const, value: settledResult };
+                    }
+                    let ownerSnapshot: ReadonlyMap<string, string> | undefined;
+                    try {
+                      await batch.prepare(pluginLease);
+                      if (stage) {
+                        ownerSnapshot = await snapshotClawPluginInstallOwners(
+                          stage.requiredPluginIds,
+                          pluginLease,
+                        );
+                      }
+                    } catch (error) {
+                      batch.close();
+                      if (stage) {
+                        await stage.failRuntime(error);
+                      }
+                      if (stageFailed) {
+                        throw new AggregateError(
+                          [stageError, error],
+                          "Claw update staging and plugin preparation failed",
+                          { cause: error },
+                        );
+                      }
+                      throw error;
+                    }
+                    stagedHandoff = { batch, stage };
+                    return {
+                      kind: "staged" as const,
+                      batch,
+                      stage,
+                      stageError,
+                      stageFailed,
+                      ownerSnapshot,
+                      updateOptions,
+                      readiness,
                     };
-                    return settledResult;
                   },
                 ),
-            );
+            ).catch(async (error: unknown) => {
+              const handoff = stagedHandoff;
+              if (handoff) {
+                handoff.batch.close();
+                if (handoff.stage) {
+                  await handoff.stage.failRuntime(error);
+                }
+              }
+              throw error;
+            });
+            stagedHandoff = undefined;
+            if (firstPhase.kind === "settled") {
+              return firstPhase.value;
+            }
+            let runtimeFailure: { error: unknown } | undefined;
+            try {
+              await firstPhase.batch.finish((message) => log.warn(message));
+            } catch (error) {
+              runtimeFailure = { error };
+            }
+            if (firstPhase.stageFailed) {
+              if (runtimeFailure) {
+                throw new AggregateError(
+                  [firstPhase.stageError, runtimeFailure.error],
+                  "Claw update staging and plugin activation failed",
+                );
+              }
+              throw firstPhase.stageError;
+            }
+            const stage = firstPhase.stage;
+            if (!stage) {
+              throw new Error("Claw update requirement stage did not settle");
+            }
+            if (runtimeFailure) {
+              return await stage.failRuntime(runtimeFailure.error);
+            }
+            let continuationStarted = false;
+            let result: Awaited<ReturnType<typeof stage.continue>>;
+            try {
+              result = await withPluginLifecycleLease(
+                {
+                  env: input.policyConfig.env,
+                  signal: input.signal,
+                  assertCurrent,
+                },
+                (pluginLease) =>
+                  withCurrentConfigPolicyReader(
+                    { ...input.policyConfig, lease: pluginLease },
+                    async (getCurrentConfig) => {
+                      if (firstPhase.ownerSnapshot) {
+                        await assertClawPluginInstallOwnersCurrent(
+                          firstPhase.ownerSnapshot,
+                          pluginLease,
+                        );
+                      }
+                      const getCurrentClawsConfig = () => {
+                        const config = getCurrentConfig();
+                        assertClawsLabsEnabled(config);
+                        assertClawPluginRequirementsEnabled(stage.requiredPluginIds, config);
+                        return config;
+                      };
+                      getCurrentClawsConfig();
+                      continuationStarted = true;
+                      return await stage.continue({
+                        ...firstPhase.updateOptions,
+                        getCurrentConfig: getCurrentClawsConfig,
+                      });
+                    },
+                  ),
+              );
+            } catch (error) {
+              if (!continuationStarted) {
+                await stage.failRuntime(error);
+              }
+              throw error;
+            }
+            settledResult = {
+              agentId: result.agentId,
+              status: result.status,
+              readiness: firstPhase.readiness,
+            };
+            return settledResult;
           },
         );
       },
