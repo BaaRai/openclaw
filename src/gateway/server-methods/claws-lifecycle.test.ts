@@ -473,7 +473,7 @@ describe("claws.update.apply Gateway method", () => {
     expect(request.replies[0]?.[0]).toBe(false);
   });
 
-  it("updates the exact previously owned scheduler job", async () => {
+  it("updates the exact previously owned scheduler job with stored creator metadata", async () => {
     const liveDefinition = normalizeCronJobCreate(clawCronGatewayInput("worker", previous));
     if (!liveDefinition) {
       throw new Error("expected valid prior schedule");
@@ -491,6 +491,7 @@ describe("claws.update.apply Gateway method", () => {
             createdAtMs: 1,
             updatedAtMs: 1,
             state: { nextRunAtMs: 100, lastRunAtMs: 50, lastStatus: "ok" },
+            createdActor: { type: "human", source: "profile", id: "profile-ada" },
           });
           mutated = true;
           return { id: "owned-job" };
