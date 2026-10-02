@@ -1118,7 +1118,6 @@ describe("Claw status and remove", () => {
     });
     const packageDeps = {
       resolvePlugin,
-      acquirePackageLease: vi.fn(() => ({ heartbeat: vi.fn(), release: vi.fn() })),
     };
     const plan = await buildClawRemovePlan("worker", {
       env: current.env,

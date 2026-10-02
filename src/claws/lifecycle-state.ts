@@ -588,6 +588,7 @@ export async function applyClawRemovePlan(
           agentId,
           operationId: configRemoval.operationId,
           assertCurrent,
+          assertWorkerAdmissionCurrent: configRemoval.assertWorkerAdmissionCurrent,
         });
         result.packages = removed.packages;
         result.pluginRuntime = removed.application;
