@@ -16,6 +16,7 @@ import {
 import { planClawHubSkillUninstall } from "../skills/lifecycle/clawhub-uninstall.js";
 import { installSkillFromClawHub } from "../skills/lifecycle/clawhub.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { digestClawValue } from "./digest.js";
 import { projectClawConfiguredAccess } from "./gateway-disclosure.js";
 import { digestClawPackageRef } from "./package-update-provenance.js";
@@ -433,7 +434,7 @@ describe("owned ClawHub skill upgrade", () => {
       replaceExpected: async (
         expected: PersistedClawPackageRef | undefined,
         replacement: PersistedClawPackageRef | undefined,
-        writeOptions?: { assertCurrent?: () => void },
+        writeOptions?: OpenClawStateDatabaseOptions & { assertCurrent?: () => void },
       ) => {
         if (expected?.version === "2.0.0" && replacement?.version === "1.0.0") {
           await Promise.resolve();

@@ -66,7 +66,13 @@ describe("Gateway Claw Add plan", () => {
     const projected = projectGatewayClawAddPlan(
       plan,
       source.source.packageRoot,
-      { riskAcknowledgementRequired: false },
+      {
+        riskAcknowledgementRequired: false,
+        trustRecord: {
+          clawhubTrustDisposition: "clean",
+          clawhubTrustCheckedAt: "2026-09-30T00:00:00.000Z",
+        },
+      },
       config,
     );
     expect(projected).toMatchObject({
