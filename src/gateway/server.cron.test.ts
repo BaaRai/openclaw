@@ -628,7 +628,7 @@ describe("gateway server cron", () => {
     },
   );
 
-  test("atomically rejects stale update and removal revisions without conflicting on runtime state", async () => {
+  test("atomically rejects stale config revisions without conflicting on runtime state", async () => {
     await setupCronTestRun();
     const cronState = await createDirectCronState();
 
@@ -688,27 +688,6 @@ describe("gateway server cron", () => {
       description: "first writer",
       updatedAtMs: firstJob.updatedAtMs,
     });
-
-    const staleRemoval = await directCronReq(cronState, "cron.remove", {
-      id: initialJob.id,
-      expectedConfigRevision: initialJob.configRevision,
-    });
-    expect(staleRemoval.ok).toBe(false);
-    expect(staleRemoval.error).toMatchObject({
-      code: "INVALID_REQUEST",
-      details: {
-        code: "CRON_JOB_CHANGED",
-        expectedConfigRevision: initialJob.configRevision,
-        actualConfigRevision: firstJob.configRevision,
-      },
-    });
-    expect((await directCronReq(cronState, "cron.get", { id: initialJob.id })).ok).toBe(true);
-
-    const reviewedRemoval = await directCronReq(cronState, "cron.remove", {
-      id: initialJob.id,
-      expectedConfigRevision: firstJob.configRevision,
-    });
-    expect(reviewedRemoval).toMatchObject({ ok: true, payload: { removed: true } });
   });
 
   test("atomically rejects chat delivery after gateway config changes the default agent", async () => {

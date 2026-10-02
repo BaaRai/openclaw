@@ -13,7 +13,7 @@ import {
   type ClawRemoveBridgeResponse,
 } from "./remove-gateway-bridge-protocol.js";
 
-const configRevision = `sha256:${"a".repeat(64)}`;
+const configRevision = `sha256:${"A".repeat(43)}`;
 
 function fakeChild() {
   const writes: Buffer[] = [];

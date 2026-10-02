@@ -300,17 +300,11 @@ export function clawCronGatewayJobConfigRevision(value: unknown): string | undef
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  const revision = (value as { configRevision?: unknown }).configRevision;
-  if (typeof revision === "string" && /^sha256:[a-f0-9]{64}$/.test(revision)) {
+  const revision = "configRevision" in value ? value.configRevision : undefined;
+  if (typeof revision === "string" && revision.length > 0 && revision.length <= 128) {
     return revision;
   }
-  try {
-    return resolveCronJobConfigRevision(
-      cronJobDefinitionFromReadView(value as Partial<CronJob>) as CronJob,
-    );
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 export async function installClawCronJobs(

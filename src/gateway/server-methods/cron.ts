@@ -90,6 +90,7 @@ import {
 } from "./cron-job-access.js";
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 import { compactCronListJob } from "./cron-list-projection.js";
+import { respondCronJobConfigRevisionConflict } from "./cron-revision-error.js";
 import { cronRunsHandler } from "./cron-runs.js";
 import { cronScratchHandlers } from "./cron-scratch.js";
 import {
@@ -98,29 +99,8 @@ import {
   cronJobVisibilityTarget,
 } from "./cron-visibility.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
+import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
-
-function respondCronJobConfigRevisionConflict(
-  respond: RespondFn,
-  error: CronJobConfigRevisionConflictError,
-): void {
-  respond(
-    false,
-    undefined,
-    errorShape(
-      ErrorCodes.INVALID_REQUEST,
-      "cron job definition no longer matches the loaded version; review the latest version before retrying",
-      {
-        details: {
-          code: "CRON_JOB_CHANGED",
-          expectedConfigRevision: error.expectedConfigRevision,
-          actualConfigRevision: error.actualConfigRevision,
-        },
-      },
-    ),
-  );
-}
 
 function requiresExplicitAgentRuntimeToolsAllow(params: {
   job: Pick<CronJob, "payload" | "trigger">;

@@ -9,7 +9,7 @@ export const CLAW_REMOVE_AUTHORITY_DENIED = 0x44;
 
 const requestId = z.number().int().positive();
 const text = z.string().min(1).max(4096);
-const configRevision = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const configRevision = z.string().min(1).max(128);
 const baseRequest = { kind: z.literal("claw.remove.request"), id: requestId };
 
 export const clawRemoveBridgeRequestSchema = z.discriminatedUnion("op", [
