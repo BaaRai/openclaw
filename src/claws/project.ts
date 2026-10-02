@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
@@ -5,6 +6,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { root as fsSafeRoot } from "../infra/fs-safe.js";
 import { readClawManifestFile } from "./reader.js";
 import { isCanonicalClawHubPackageName, portableClawPathKey } from "./schema-portability.js";
+import { MAX_MANAGED_FILE_BYTES } from "./source-limits.js";
 import type { ClawDiagnostic, ClawReadResult } from "./types.js";
 
 export const CLAW_PROJECT_RESULT_SCHEMA_VERSION = "openclaw.clawProject.v1" as const;
@@ -17,6 +19,7 @@ type ClawProjectPackageJson = {
   name: string;
   version: string;
   type?: string;
+  license?: string;
   openclaw: { claw: "CLAW.md" };
 };
 
@@ -26,6 +29,7 @@ type ClawProjectValidationResult =
       root: string;
       packageJson: ClawProjectPackageJson;
       claw: Extract<ClawReadResult, { ok: true }>;
+      license?: { byteLength: number; digest: string };
       excludedPaths: string[];
       diagnostics: ClawDiagnostic[];
     }
@@ -333,6 +337,18 @@ export async function validateClawProject(
       ),
     );
   }
+  if (
+    record?.license !== undefined &&
+    (typeof record.license !== "string" || record.license.trim().length === 0)
+  ) {
+    diagnostics.push(
+      diagnostic(
+        "project_license_invalid",
+        "package.json.license",
+        "Claw project license metadata must be a non-empty string.",
+      ),
+    );
+  }
   if (diagnostics.length > 0) {
     return { ok: false, root, diagnostics };
   }
@@ -372,9 +388,40 @@ export async function validateClawProject(
       `Workspace source ${JSON.stringify(reservedPackageSource.sourcePath)} collides with generated package metadata.`,
     );
   }
+  let license: { byteLength: number; digest: string } | undefined;
+  try {
+    const licenseEntry = await lstat(resolve(root, "LICENSE")).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          return undefined;
+        }
+        throw error;
+      },
+    );
+    if (licenseEntry) {
+      const sourceRoot = await fsSafeRoot(root);
+      const read = await sourceRoot.read("LICENSE", {
+        hardlinks: "reject",
+        maxBytes: MAX_MANAGED_FILE_BYTES,
+        nonBlockingRead: true,
+        symlinks: "reject",
+      });
+      license = {
+        byteLength: read.buffer.byteLength,
+        digest: `sha256:${createHash("sha256").update(read.buffer).digest("hex")}`,
+      };
+    }
+  } catch (error) {
+    return failure(
+      "project_license_invalid",
+      "LICENSE",
+      `Package-root LICENSE must be a safe regular file: ${coerceErrorMessage(error)}`,
+    );
+  }
   const selectedPathList = [
     "package.json",
     "CLAW.md",
+    ...(license ? ["LICENSE"] : []),
     ...(claw.packageBootstrap ? ["BOOTSTRAP.md"] : []),
     ...(claw.snapshot.openClawProfile ? [claw.snapshot.openClawProfile.sourcePath] : []),
     ...claw.snapshot.workspaceSources.map((source) => source.sourcePath),
@@ -410,9 +457,11 @@ export async function validateClawProject(
       name: claw.source.name,
       version: claw.source.version,
       ...(typeof record?.type === "string" ? { type: record.type } : {}),
+      ...(typeof record?.license === "string" ? { license: record.license } : {}),
       openclaw: { claw: "CLAW.md" },
     },
     claw,
+    license,
     excludedPaths,
     diagnostics: claw.diagnostics,
   };
