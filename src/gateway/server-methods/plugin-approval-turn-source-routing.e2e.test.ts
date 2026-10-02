@@ -14,8 +14,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
-import { APPROVALS_SCOPE } from "../method-scopes.js";
+import { APPROVALS_SCOPE, WRITE_SCOPE } from "../method-scopes.js";
 import { startGatewayServer } from "../server.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../test-helpers.e2e.js";
 import { acquireGatewayE2ePortBlock, startClaimedGateway } from "../test-helpers.listener.js";
@@ -32,11 +33,17 @@ const TEST_ENV_KEYS = [
   "OPENCLAW_GATEWAY_URL",
   "OPENCLAW_GATEWAY_TOKEN",
   "OPENCLAW_GATEWAY_PASSWORD",
+  "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
+  "OPENCLAW_BUNDLED_PLUGINS_DIR",
+  "OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR",
+  "OPENCLAW_TEST_MINIMAL_GATEWAY",
 ];
 
 describe("plugin.approval.request delivery routing (real gateway)", () => {
   let envSnapshot: ReturnType<typeof captureEnv>;
   let tempHome: string;
+  let url: string;
+  let token: string;
   let server: Awaited<ReturnType<typeof startGatewayServer>>;
   let requester: Awaited<ReturnType<typeof connectGatewayClient>>;
   let approvalClient: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
@@ -57,10 +64,76 @@ describe("plugin.approval.request delivery routing (real gateway)", () => {
     setTestEnvValue("HOME", tempHome);
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     configureManualGatewayBackgroundEnv(tempHome);
+    const configPath = path.join(stateDir, "openclaw.json");
+    setTestEnvValue("OPENCLAW_CONFIG_PATH", configPath);
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        plugins: {
+          enabled: true,
+          allow: ["approval-route-probe"],
+          slots: { memory: "none" },
+          entries: { "approval-route-probe": { enabled: true } },
+        },
+      }),
+    );
+    const bundledDir = path.join(tempHome, "bundled-plugins");
+    const pluginDir = path.join(bundledDir, "approval-route-probe");
+    await fs.mkdir(pluginDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pluginDir, "package.json"),
+      JSON.stringify({
+        name: "@openclaw/approval-route-probe",
+        version: "1.0.0",
+        type: "commonjs",
+        main: "index.cjs",
+        openclaw: { extensions: ["./index.cjs"] },
+      }),
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "openclaw.plugin.json"),
+      JSON.stringify({
+        id: "approval-route-probe",
+        configSchema: { type: "object", additionalProperties: false },
+        contracts: { tools: ["approval_route_probe"] },
+      }),
+    );
+    await fs.writeFile(
+      path.join(pluginDir, "index.cjs"),
+      `module.exports = { id: "approval-route-probe", register(api) {
+        api.registerTool((ctx) => ({
+          name: "approval_route_probe",
+          description: "Request a plugin approval from the current tool context",
+          parameters: { type: "object", properties: {} },
+          execute: async () => {
+            const result = await api.runtime.gateway.request(
+              "plugin.approval.request",
+              {
+                pluginId: api.id,
+                title: "Review test action",
+                description: "No effect; approval delivery test only",
+                agentId: ctx.agentId,
+                sessionKey: ctx.sessionKey,
+                ...(ctx.approvalReviewerDeviceIds?.length
+                  ? { approvalReviewerDeviceIds: ctx.approvalReviewerDeviceIds }
+                  : {}),
+                timeoutMs: 3_000,
+              },
+              { scopes: ["operator.approvals"], timeoutMs: 4_000 },
+            );
+            return { content: [{ type: "text", text: result.decision ?? "cancelled" }] };
+          },
+        }), { name: "approval_route_probe" });
+      } };`,
+    );
+    setTestEnvValue("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "0");
+    setTestEnvValue("OPENCLAW_BUNDLED_PLUGINS_DIR", bundledDir);
+    setTestEnvValue("OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR", "1");
+    setTestEnvValue("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
 
     const claim = await acquireGatewayE2ePortBlock();
-    const token = "plugin-approval-turn-source-e2e-token";
-    const url = `ws://127.0.0.1:${claim.port}`;
+    token = "plugin-approval-turn-source-e2e-token";
+    url = `ws://127.0.0.1:${claim.port}`;
     setTestEnvValue("OPENCLAW_GATEWAY_PORT", String(claim.port));
 
     server = await startClaimedGateway(claim, () =>
@@ -72,14 +145,14 @@ describe("plugin.approval.request delivery routing (real gateway)", () => {
       }),
     );
 
-    // No operator approval client; only a requester with APPROVALS_SCOPE.
+    // No operator approval client; only a requester with write and approvals scopes.
     // This is the state that triggers the no-route expiry in the unfixed code.
     requester = await connectGatewayClient({
       url,
       token,
       clientDisplayName: "plugin-approval requester",
-      scopes: [APPROVALS_SCOPE],
-      requestTimeoutMs: 5_000,
+      scopes: [WRITE_SCOPE, APPROVALS_SCOPE],
+      requestTimeoutMs: 10_000,
       timeoutMs: 60_000,
     });
     connectApprovalClient = () =>
@@ -135,5 +208,87 @@ describe("plugin.approval.request delivery routing (real gateway)", () => {
 
     expect(result).toMatchObject({ status: "accepted" });
     expect((result as { id?: string }).id).toMatch(/^plugin:/);
+    await approvalClient.request("plugin.approval.resolve", {
+      id: (result as { id: string }).id,
+      decision: "allow-once",
+    });
+  });
+
+  it("routes a plugin tool approval only to the host-selected reviewer device", async () => {
+    if (approvalClient) {
+      await disconnectGatewayClient(approvalClient);
+      approvalClient = undefined;
+    }
+    const decided = createDeferredCore<void>();
+    let reviewer!: Awaited<ReturnType<typeof connectGatewayClient>>;
+    reviewer = await connectGatewayClient({
+      url,
+      token,
+      clientDisplayName: "same-device reviewer",
+      scopes: [APPROVALS_SCOPE],
+      caps: [GATEWAY_CLIENT_CAPS.APPROVALS],
+      onEvent: (event) => {
+        if (event.event !== "plugin.approval.requested") {
+          return;
+        }
+        const id = (event.payload as { id?: unknown } | undefined)?.id;
+        if (typeof id === "string") {
+          void reviewer
+            .request("plugin.approval.resolve", { id, decision: "allow-once" })
+            .then(() => decided.resolve(), decided.reject);
+        }
+      },
+      timeoutMs: 60_000,
+    });
+    try {
+      const result = await requester.request("tools.invoke", {
+        name: "approval_route_probe",
+        agentId: "main",
+        sessionKey: "main",
+        args: {},
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: { content: [{ type: "text", text: "allow-once" }] },
+      });
+      await decided.promise;
+    } finally {
+      await disconnectGatewayClient(reviewer);
+    }
+
+    for (const deniedReviewer of [
+      { deviceFamily: "other-device", scopes: [APPROVALS_SCOPE] },
+      { scopes: ["operator.read"] },
+    ]) {
+      let receivedRequests = 0;
+      const untrusted = await connectGatewayClient({
+        url,
+        token,
+        clientDisplayName: "unmatched reviewer",
+        ...deniedReviewer,
+        caps: [GATEWAY_CLIENT_CAPS.APPROVALS],
+        onEvent: (event) => {
+          if (event.event === "plugin.approval.requested") {
+            receivedRequests += 1;
+          }
+        },
+        timeoutMs: 60_000,
+      });
+      try {
+        const result = await requester.request("tools.invoke", {
+          name: "approval_route_probe",
+          agentId: "main",
+          sessionKey: "main",
+          args: {},
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          output: { content: [{ type: "text", text: "cancelled" }] },
+        });
+        expect(receivedRequests).toBe(0);
+      } finally {
+        await disconnectGatewayClient(untrusted);
+      }
+    }
   });
 });
