@@ -10,6 +10,7 @@ import { resolveCanonicalWorkspacePath } from "../agents/workspace-state-identit
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ClawHubFetchOptions } from "../infra/clawhub-client.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
@@ -46,7 +47,7 @@ async function selectNewWorkspace(
     try {
       await lstat(candidate);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if (hasErrnoCode(error, "ENOENT")) {
         return candidate;
       }
       throw error;
