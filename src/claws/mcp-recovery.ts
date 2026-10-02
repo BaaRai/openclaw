@@ -114,7 +114,7 @@ async function readRecoverySnapshot(
   const digest = server ? digestClawMcpServer(server) : undefined;
   const state = !digest ? "missing" : digest === ref.configDigest ? "exact" : "modified";
   const action = state === "exact" ? "complete" : "release";
-  const identity = {
+  const identity: Omit<ClawMcpRecoveryPlan, "planIntegrity"> = {
     schemaVersion: CLAW_MCP_RECOVERY_PLAN_SCHEMA_VERSION,
     stability: CLAW_OUTPUT_STABILITY,
     dryRun: true as const,
