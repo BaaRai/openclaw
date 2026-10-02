@@ -47,7 +47,7 @@ export type LobsterRunnerParams = {
   cwd: string;
   timeoutMs: number;
   maxStdoutBytes: number;
-  /** Host-owned liveness check, applied immediately before an approved continuation. */
+  /** Host-owned liveness check, forwarded for effect-site rechecks. */
   assertInvocationCurrent?: () => void;
 };
 
@@ -63,6 +63,7 @@ type EmbeddedToolContext = {
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
   signal?: AbortSignal;
+  assertInvocationCurrent?: () => void;
 };
 
 type EmbeddedToolEnvelope = {
@@ -241,6 +242,7 @@ export function createEmbeddedLobsterRunner(options?: {
           stdout: createLimitedSink(maxStdoutBytes, "stdout"),
           stderr: createLimitedSink(maxStdoutBytes, "stderr"),
           signal,
+          assertInvocationCurrent: params.assertInvocationCurrent,
         };
         let envelope: EmbeddedToolEnvelope;
 

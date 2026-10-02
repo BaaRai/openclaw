@@ -213,6 +213,49 @@ describe("createEmbeddedLobsterRunner", () => {
     expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
   });
 
+  it("rechecks host authority after awaited resume preparation before an effect", async () => {
+    const { runtime, runner } = createRunner();
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    let finishPreparation!: () => void;
+    const prepared = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    let current = true;
+    let effects = 0;
+    const assertInvocationCurrent = vi.fn(() => {
+      if (!current) {
+        throw new Error("host invocation retired");
+      }
+    });
+    runtime.resumeToolRequest.mockImplementation(async ({ ctx }) => {
+      preparationStarted();
+      await prepared;
+      ctx?.assertInvocationCurrent?.();
+      effects++;
+      return success;
+    });
+
+    const pending = runner.run(
+      runParams({
+        action: "resume",
+        pipeline: undefined,
+        token: "private-resume-token",
+        approve: true,
+        assertInvocationCurrent,
+      }),
+    );
+    await started;
+    current = false;
+    finishPreparation();
+
+    await expect(pending).rejects.toThrow("host invocation retired");
+    expect(assertInvocationCurrent).toHaveBeenCalledTimes(2);
+    expect(effects).toBe(0);
+  });
+
   it("passes approvalId through the normalized needs_approval envelope", async () => {
     const { runtime, runner } = createRunner();
     const approval = { prompt: "ok?", items: [], resumeToken: "eyJ...", approvalId: "dbc98d05" };
