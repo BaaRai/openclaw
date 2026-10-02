@@ -379,6 +379,42 @@ describe("owned ClawHub skill upgrade", () => {
     expect(await readClawHubSkillsLockfile(current.workspace)).toEqual(upgradedLock);
   });
 
+  it("checks the rollback lease again when restoring provenance through the worker", async () => {
+    const current = await setup();
+    const replaceExpected = current.options.replaceExpected;
+    let leaseCount = 0;
+    let rollbackLeaseCurrent = true;
+    current.options.packageDeps.acquirePackageLease = vi.fn(() => {
+      const rollbackLease = ++leaseCount === 2;
+      return {
+        heartbeat: vi.fn(() => {
+          if (rollbackLease && !rollbackLeaseCurrent) {
+            throw new Error("rollback lease lost during provenance admission");
+          }
+        }),
+        release: vi.fn(),
+      };
+    });
+    current.options.replaceExpected = async (expected, replacement, writeOptions) => {
+      if (expected?.version === "2.0.0" && replacement?.version === "1.0.0") {
+        await Promise.resolve();
+        rollbackLeaseCurrent = false;
+        writeOptions?.assertCurrent?.();
+      }
+      await replaceExpected(expected, replacement);
+    };
+
+    const execution = await applyClawPackageUpdate(
+      createClawUpdatePlanFixture([current.action]),
+      current.targetAddPlan,
+      current.options,
+    );
+
+    await expect(execution.rollback()).rejects.toMatchObject({ partial: true });
+    expect(leaseCount).toBe(2);
+    expect(current.current()).toMatchObject({ version: "2.0.0" });
+  });
+
   it("does not touch bytes or ownership when the old tracked tree drifted", async () => {
     const current = await setup();
     await fs.writeFile(path.join(current.skillDir, "SKILL.md"), "operator edits\n");
@@ -808,9 +844,6 @@ describe("owned ClawHub skill upgrade", () => {
     const v3 = await makeArchive(current.root, "3.0.0");
     registry.download.mockImplementation(async (params: { version: string }) => {
       if (params.version === "2.0.0") {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 20);
-        });
         return current.v2;
       }
       return params.version === "3.0.0" ? v3 : current.v1;
