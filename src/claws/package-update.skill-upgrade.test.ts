@@ -340,6 +340,39 @@ describe("owned ClawHub skill upgrade", () => {
     );
   });
 
+  it("retains a deferred skill receipt when authority retires after install tracking", async () => {
+    const current = await setup();
+    let retired = false;
+    registry.telemetry.mockImplementation(async (params: { version: string }) => {
+      if (params.version === "2.0.0") {
+        retired = true;
+      }
+    });
+
+    await expect(
+      applyClawPackageUpdate(createClawUpdatePlanFixture([current.action]), current.targetAddPlan, {
+        ...current.options,
+        assertCurrent: () => {
+          if (retired) {
+            throw new Error("authority retired after skill tracking");
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ partial: true });
+
+    expect(retired).toBe(true);
+    expect(current.current()).toMatchObject({ version: "2.0.0" });
+    expect(await fs.readFile(path.join(current.skillDir, "SKILL.md"), "utf8")).toBe(
+      current.v2.content,
+    );
+    expect((await readClawHubSkillsLockfile(current.workspace)).skills.triage?.version).toBe(
+      "2.0.0",
+    );
+    expect(
+      await fs.readdir(path.join(current.workspace, "skills", ".openclaw-install-backups")),
+    ).toHaveLength(1);
+  });
+
   it("keeps the upgraded skill and lockfile when the rollback lease closes during planning", async () => {
     const current = await setup();
     const readRefs = current.options.readRefs;
@@ -395,19 +428,26 @@ describe("owned ClawHub skill upgrade", () => {
         release: vi.fn(),
       };
     });
-    current.options.replaceExpected = async (expected, replacement, writeOptions) => {
-      if (expected?.version === "2.0.0" && replacement?.version === "1.0.0") {
-        await Promise.resolve();
-        rollbackLeaseCurrent = false;
-        writeOptions?.assertCurrent?.();
-      }
-      await replaceExpected(expected, replacement);
+    const options = {
+      ...current.options,
+      replaceExpected: async (
+        expected: PersistedClawPackageRef | undefined,
+        replacement: PersistedClawPackageRef | undefined,
+        writeOptions?: { assertCurrent?: () => void },
+      ) => {
+        if (expected?.version === "2.0.0" && replacement?.version === "1.0.0") {
+          await Promise.resolve();
+          rollbackLeaseCurrent = false;
+          writeOptions?.assertCurrent?.();
+        }
+        await replaceExpected(expected, replacement);
+      },
     };
 
     const execution = await applyClawPackageUpdate(
       createClawUpdatePlanFixture([current.action]),
       current.targetAddPlan,
-      current.options,
+      options,
     );
 
     await expect(execution.rollback()).rejects.toMatchObject({ partial: true });
