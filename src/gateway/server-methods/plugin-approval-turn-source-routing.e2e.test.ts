@@ -219,9 +219,8 @@ describe("plugin.approval.request delivery routing (real gateway)", () => {
       await disconnectGatewayClient(approvalClient);
       approvalClient = undefined;
     }
-    const decided = createDeferredCore<void>();
-    let reviewer!: Awaited<ReturnType<typeof connectGatewayClient>>;
-    reviewer = await connectGatewayClient({
+    const decided = createDeferredCore();
+    const reviewer = await connectGatewayClient({
       url,
       token,
       clientDisplayName: "same-device reviewer",
