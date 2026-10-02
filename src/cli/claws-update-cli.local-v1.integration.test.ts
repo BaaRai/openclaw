@@ -100,6 +100,7 @@ it("keeps old Add consent during preview and host settings during local Update",
   };
   const { id: _id, ...agentEntry } = installedAgent;
   const config: OpenClawConfig = {
+    gateway: { controlUi: { experimental: { claws: true } } },
     agents: { ownership: "explicit", entries: { worker: agentEntry, researcher: {} } },
   };
   await writeFile(configPath, JSON.stringify(config));
