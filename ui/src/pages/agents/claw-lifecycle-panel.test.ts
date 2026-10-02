@@ -17,6 +17,44 @@ beforeEach(setupClawLifecyclePanelTest);
 afterEach(cleanupClawLifecyclePanelTest);
 
 describe("Agent Claw lifecycle", () => {
+  it("keeps Update available while an installed Claw status refresh is pending", async () => {
+    const { panel, request } = mount({ clawsEnabled: true });
+    await vi.waitFor(() =>
+      expect(panel.querySelector<HTMLButtonElement>("[data-claw-update]")?.disabled).toBe(false),
+    );
+
+    const originalRequest = request.getMockImplementation();
+    if (!originalRequest) {
+      throw new Error("Missing Gateway request mock");
+    }
+    let resolveRefresh: ((value: unknown) => void) | undefined;
+    request.mockImplementation((...args) => {
+      if (args[0] === "claws.status") {
+        return new Promise((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      return originalRequest(...args);
+    });
+
+    const refresh = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Refresh status",
+    );
+    refresh?.click();
+    await vi.waitFor(() => expect(resolveRefresh).toBeDefined());
+
+    const update = panel.querySelector<HTMLButtonElement>("[data-claw-update]");
+    expect(update?.disabled).toBe(false);
+    update?.click();
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("claws.update.plan", {
+        agentId: "workflow",
+        source: { packageName: "@openclaw/workflow-operator", version: "1.3.0" },
+      }),
+    );
+    resolveRefresh?.({ records: [installed] });
+  });
+
   it("allows read-only operators to preview Update without applying it", async () => {
     const { panel, request } = mount({ clawsEnabled: true, scopes: ["operator.read"] });
     await vi.waitFor(() =>

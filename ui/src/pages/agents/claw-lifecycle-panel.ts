@@ -416,7 +416,6 @@ export class AgentClawPanel extends OpenClawLightDomElement {
     return (
       this.clawsEnabled() &&
       this.isOfficialPackage() &&
-      !this.statusLoading &&
       !this.removing &&
       !this.removeUnknown &&
       !this.removeResult &&
