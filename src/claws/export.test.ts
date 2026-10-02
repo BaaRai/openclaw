@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stringify as stringifyYaml } from "yaml";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { McpServerConfig } from "../config/types.mcp.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -11,6 +12,7 @@ import { applyClawAddPlan } from "./add.js";
 import { exportClawAgent } from "./export.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { installClawMcpServers, readClawMcpServerRefs, upsertClawMcpServerRef } from "./mcp.js";
+import { buildClawProject } from "./project-build.js";
 import {
   persistClawPackageRef,
   updateClawInstallRecord,
@@ -65,6 +67,7 @@ async function installedFixture(
     packageBootstrapContent?: Buffer;
     soulContent?: string | Buffer;
     withPackage?: boolean;
+    officialArtifact?: { license?: string; notice?: string };
   } = {},
 ) {
   const root = tempDirs.make("openclaw-claw-export-");
@@ -132,15 +135,41 @@ async function installedFixture(
       },
     },
   };
+  let officialArtifact: Awaited<ReturnType<typeof buildClawProject>> | undefined;
+  if (options.officialArtifact) {
+    await writeFile(join(root, "CLAW.md"), `---\n${stringifyYaml(parsed.manifest)}---\n`);
+    await writeFile(
+      join(root, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "@openclaw/worker",
+          version: "1.2.3",
+          ...(options.officialArtifact.license
+            ? { license: options.officialArtifact.license }
+            : {}),
+          openclaw: { claw: "CLAW.md" },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    if (options.officialArtifact.notice !== undefined) {
+      await writeFile(join(root, "LICENSE"), options.officialArtifact.notice);
+    }
+    officialArtifact = await buildClawProject(
+      root,
+      join(tempDirs.make("openclaw-claw-export-artifact-"), "source.tgz"),
+    );
+  }
   const source: ClawSourceIdentity = {
     kind: "package",
-    name: "@acme/worker",
+    name: officialArtifact ? "@openclaw/worker" : "@acme/worker",
     version: "1.2.3",
     packageRoot: root,
-    manifestPath: join(root, "openclaw.claw.json"),
+    manifestPath: join(root, officialArtifact ? "CLAW.md" : "openclaw.claw.json"),
     integrityKind: "artifact",
-    integrity: "sha256:manifest",
-    byteLength: 100,
+    integrity: officialArtifact?.integrity ?? "sha256:manifest",
+    byteLength: officialArtifact?.byteLength ?? 100,
   };
   const packageBootstrapContent =
     options.packageBootstrapContent ??
@@ -231,6 +260,53 @@ async function installedFixture(
 }
 
 describe("exportClawAgent", () => {
+  it("preserves the exact metadata and notice from a verified official artifact", async () => {
+    const notice = "MIT License\n\nCopyright (c) 2026 OpenClaw\n";
+    const fixture = await installedFixture({
+      officialArtifact: { license: "MIT", notice },
+    });
+    const out = join(tempDirs.make("openclaw-claw-export-output-"), "licensed-export");
+
+    const result = await exportClawAgent("worker", out, fixture.exportOptions);
+
+    expect(JSON.parse(await readFile(join(out, "package.json"), "utf8"))).toMatchObject({
+      license: "MIT",
+    });
+    await expect(readFile(join(out, "LICENSE"), "utf8")).resolves.toBe(notice);
+    expect(result.filesWritten).toContain("LICENSE");
+    const built = await buildClawProject(
+      out,
+      join(tempDirs.make("openclaw-claw-export-rebuilt-"), "derivative.tgz"),
+    );
+    expect(built.files).toContain("LICENSE");
+  });
+
+  it("does not invent a license for a verified legacy official artifact", async () => {
+    const fixture = await installedFixture({ officialArtifact: {} });
+    const out = join(fixture.root, "unlicensed-export");
+
+    const result = await exportClawAgent("worker", out, fixture.exportOptions);
+
+    expect(JSON.parse(await readFile(join(out, "package.json"), "utf8"))).not.toHaveProperty(
+      "license",
+    );
+    await expect(readFile(join(out, "LICENSE"))).rejects.toThrow();
+    expect(result.filesWritten).not.toContain("LICENSE");
+  });
+
+  it("rejects a changed official source before creating the export directory", async () => {
+    const fixture = await installedFixture({
+      officialArtifact: { license: "MIT", notice: "MIT License\n" },
+    });
+    const out = join(fixture.root, "changed-license-export");
+    await writeFile(join(fixture.root, "LICENSE"), "Changed notice\n");
+
+    await expect(exportClawAgent("worker", out, fixture.exportOptions)).rejects.toMatchObject({
+      code: "source_artifact_unverifiable",
+    });
+    await expect(stat(out)).rejects.toThrow();
+  });
+
   it("leaves an exact live MCP server pending instead of reconciling it during export", async () => {
     const fixture = await installedFixture();
     const ref = readClawMcpServerRefs("worker", { env: fixture.env }).find(
