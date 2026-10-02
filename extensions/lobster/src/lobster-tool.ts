@@ -168,7 +168,7 @@ export function createLobsterTool(api: OpenClawPluginApi, options?: LobsterToolO
                 : {}),
               timeoutMs: APPROVAL_TIMEOUT_MS,
             },
-            { timeoutMs: APPROVAL_TIMEOUT_MS + 5_000 },
+            { timeoutMs: APPROVAL_TIMEOUT_MS + 5_000, scopes: ["operator.approvals"] },
           );
         } catch {
           await runner.run({ ...resume, approve: false }).catch(() => undefined);

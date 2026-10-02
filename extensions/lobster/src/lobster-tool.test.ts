@@ -428,7 +428,7 @@ describe("lobster plugin tool", () => {
         sessionKey: "agent:main:main",
         toolCallId: "operator-gated",
       }),
-      expect.anything(),
+      expect.objectContaining({ scopes: ["operator.approvals"] }),
     );
     expect(JSON.stringify(request.mock.calls)).not.toContain("private-resume-token");
     expect(JSON.stringify(request.mock.calls)).not.toContain("private-approval-id");
