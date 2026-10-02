@@ -457,6 +457,13 @@ export async function readClawManifestFile(
   path: string,
   options: {
     allowLegacyDynamicToolProfile?: boolean;
+    authorizeLegacyLocalUpdateHostSettings?: (params: {
+      manifest: ClawManifest;
+      source: Pick<
+        ClawSourceIdentity,
+        "kind" | "name" | "version" | "packageRoot" | "manifestPath"
+      >;
+    }) => boolean | Promise<boolean>;
     authorizeLegacyDynamicToolProfile?: (params: {
       manifest: ClawManifest;
       source: Pick<
@@ -492,24 +499,29 @@ export async function readClawManifestFile(
       "$.workspace",
     );
   }
+  const legacyAuthorizationContext = {
+    manifest: parsed.manifest,
+    source: {
+      kind: sourceResult.source.kind,
+      name: sourceResult.source.name,
+      version: sourceResult.source.version,
+      packageRoot: sourceResult.source.packageRoot,
+      manifestPath: sourceResult.source.manifestPath,
+    },
+  };
   const allowLegacyDynamicToolProfile =
     options.allowLegacyDynamicToolProfile === true ||
     (options.authorizeLegacyDynamicToolProfile
-      ? await options.authorizeLegacyDynamicToolProfile({
-          manifest: parsed.manifest,
-          source: {
-            kind: sourceResult.source.kind,
-            name: sourceResult.source.name,
-            version: sourceResult.source.version,
-            packageRoot: sourceResult.source.packageRoot,
-            manifestPath: sourceResult.source.manifestPath,
-          },
-        })
+      ? await options.authorizeLegacyDynamicToolProfile(legacyAuthorizationContext)
       : false);
+  const allowLegacyLocalUpdateHostSettings = options.authorizeLegacyLocalUpdateHostSettings
+    ? await options.authorizeLegacyLocalUpdateHostSettings(legacyAuthorizationContext)
+    : false;
   const profile = await readClawOpenClawProfile({
     packageRoot: sourceResult.source.packageRoot,
     metadata: parsed.manifest.metadata,
     ...(allowLegacyDynamicToolProfile ? { allowLegacyDynamicToolProfile: true } : {}),
+    ...(allowLegacyLocalUpdateHostSettings ? { allowLegacyLocalUpdateHostSettings: true } : {}),
   });
   if (!profile.ok) {
     return profile;

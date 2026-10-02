@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { z } from "zod";
 import { isToolAllowedByPolicyName } from "../agents/tool-policy-match.js";
 import {
@@ -38,6 +39,10 @@ const nonEmptyString = z
     "Value must not have leading or trailing whitespace.",
   );
 const optionalString = nonEmptyString.optional();
+const legacyV1ModelRef = nonEmptyString.regex(
+  /^[^\s/]+\/[^\s/]+(?:\/[^\s/]+)*$/,
+  "Model must use provider/model form.",
+);
 
 function isBoundedClawToolGrant(value: string): boolean {
   const normalized = normalizeToolPolicyName(value);
@@ -308,6 +313,22 @@ const openClawProfileSchema = z
       refs.add(ref);
     });
   });
+
+const legacyLocalUpdateHostSettingsSchema = z
+  .object({
+    model: z
+      .object({ primary: legacyV1ModelRef, fallbacks: z.array(legacyV1ModelRef).optional() })
+      .strict()
+      .optional(),
+    subagents: z
+      .object({
+        allowAgents: z.array(agentId).optional(),
+        delegationMode: z.enum(["suggest", "prefer"]).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .passthrough();
 
 const workspaceSourceSchema = z.object({ source: packageRelativePath }).strict();
 const bootstrapFilesSchema = z
@@ -640,4 +661,50 @@ export function parseClawOpenClawProfile(value: unknown):
     profile: parsed.data as ClawOpenClawProfile,
     diagnostics: [],
   };
+}
+
+export function parseLegacyLocalUpdateClawOpenClawProfile(
+  value: unknown,
+): ReturnType<typeof parseClawOpenClawProfile> {
+  if (!isRecord(value) || !isRecord(value.agent)) {
+    return parseClawOpenClawProfile(value);
+  }
+  const legacy = legacyLocalUpdateHostSettingsSchema.safeParse(value.agent);
+  if (!legacy.success) {
+    const diagnostics = diagnosticsFromZodError(legacy.error);
+    for (const entry of diagnostics) {
+      entry.path = `$.agent${entry.path.slice(1)}`;
+    }
+    return {
+      ok: false,
+      diagnostics,
+    };
+  }
+  const { model: _model, subagents: _subagents, ...agent } = value.agent;
+  const parsed = parseClawOpenClawProfile({ ...value, agent });
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const diagnostics: ClawDiagnostic[] = [...parsed.diagnostics];
+  if (Object.hasOwn(value.agent, "model")) {
+    diagnostics.push({
+      level: "warning",
+      code: "legacy_openclaw_model_ignored",
+      phase: "schema",
+      path: "$.agent.model",
+      message:
+        "Legacy agent.model is ignored during local Claw Update; host model settings are operator-owned.",
+    });
+  }
+  if (Object.hasOwn(value.agent, "subagents")) {
+    diagnostics.push({
+      level: "warning",
+      code: "legacy_openclaw_subagents_ignored",
+      phase: "schema",
+      path: "$.agent.subagents",
+      message:
+        "Legacy agent.subagents is ignored during local Claw Update; named delegation settings are operator-owned.",
+    });
+  }
+  return { ...parsed, diagnostics };
 }
