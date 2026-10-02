@@ -163,9 +163,9 @@ describe("Gateway Claw Add application", () => {
       readiness: { ready: true, requirements: [] },
     });
     expect(input.getPlanningContext).toHaveBeenCalledTimes(3);
-    expect(mocks.project).toHaveBeenNthCalledWith(1, plan, "/tmp/extracted", trust, config);
-    expect(mocks.project).toHaveBeenNthCalledWith(2, plan, "/tmp/extracted", trust, config);
-    expect(mocks.project).toHaveBeenNthCalledWith(3, plan, "/tmp/verified-cache", trust, config);
+    expect(mocks.project).toHaveBeenNthCalledWith(1, plan, source, trust, config);
+    expect(mocks.project).toHaveBeenNthCalledWith(2, plan, source, trust, config);
+    expect(mocks.project).toHaveBeenNthCalledWith(3, plan, persistedSource, trust, config);
     expect(mocks.persist).toHaveBeenCalledTimes(1);
     expect(mocks.plansMatch).toHaveBeenCalledTimes(1);
     expect(mocks.apply).toHaveBeenCalledWith(
@@ -200,12 +200,16 @@ describe("Gateway Claw Add application", () => {
       ) => await run(() => onDisk),
     );
     mocks.project.mockImplementation(
-      (_plan: ClawAddPlan, _root: string, _trust: ClawHubClawTrust, current: OpenClawConfig) =>
-        current === config ? projected : { ...projected, planIntegrity: "sha256:changed" },
+      (
+        _plan: ClawAddPlan,
+        _source: typeof source,
+        _trust: ClawHubClawTrust,
+        current: OpenClawConfig,
+      ) => (current === config ? projected : { ...projected, planIntegrity: "sha256:changed" }),
     );
 
     await expect(applyClawAddForGateway(input)).rejects.toBeInstanceOf(ClawGatewayPlanChangedError);
-    expect(mocks.project).toHaveBeenNthCalledWith(2, plan, "/tmp/extracted", trust, changedConfig);
+    expect(mocks.project).toHaveBeenNthCalledWith(2, plan, source, trust, changedConfig);
     expect(mocks.persist).not.toHaveBeenCalled();
     expect(mocks.apply).not.toHaveBeenCalled();
   });

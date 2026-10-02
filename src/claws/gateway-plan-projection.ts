@@ -24,6 +24,7 @@ import {
   projectClawRemoveScheduledJobs,
   projectClawUpdateScheduledJobs,
 } from "./gateway-disclosure.js";
+import { projectClawManifestDisclosure } from "./gateway-manifest-disclosure.js";
 import type { ClawRemovePlan } from "./lifecycle-remove-contract.js";
 import type { PersistedClawPackageRef } from "./provenance.js";
 import type {
@@ -32,6 +33,7 @@ import type {
   ClawCronJob,
   ClawDiagnostic,
   ClawLocalPrerequisite,
+  ClawReadResult,
 } from "./types.js";
 import type { ClawUpdateAction, ClawUpdatePlan } from "./update-plan-types.js";
 
@@ -214,6 +216,7 @@ export function projectClawAddPlan(
   sourceRoot: string,
   pluginReviews: ClawPluginReview[],
   config: OpenClawConfig,
+  source?: Extract<ClawReadResult, { ok: true }>,
 ): ClawLifecyclePlanResult {
   const effects = projectActionsWithEffects("add", plan.actions, (action) =>
     projectClawAddActionEffect(action, sourceRoot),
@@ -280,6 +283,7 @@ export function projectClawAddPlan(
           : []),
       ],
       riskAcknowledgementRequired: false,
+      ...(source ? { manifestDisclosure: projectClawManifestDisclosure(source, plan.claw) } : {}),
       ...(configuredAccess ? { configuredAccess } : {}),
       ...(scheduledJobs ? { scheduledJobs } : {}),
       readiness: {
@@ -303,6 +307,7 @@ export function projectClawUpdatePlan(
     targetActions?: readonly ClawAddPlanAction[];
     currentPackages?: readonly PersistedClawPackageRef[];
     skillReviews?: ClawSkillReview[];
+    source?: Extract<ClawReadResult, { ok: true }>;
   },
 ): ClawLifecyclePlanResult {
   const effects = projectActionsWithEffects("update", plan.actions, (action: ClawUpdateAction) =>
@@ -384,6 +389,11 @@ export function projectClawUpdatePlan(
           : []),
       ],
       riskAcknowledgementRequired: false,
+      ...(review.source && plan.targetClaw
+        ? {
+            manifestDisclosure: projectClawManifestDisclosure(review.source, plan.targetClaw),
+          }
+        : {}),
       ...(configuredAccess ? { configuredAccess } : {}),
       ...(scheduledJobs ? { scheduledJobs } : {}),
       readiness: {

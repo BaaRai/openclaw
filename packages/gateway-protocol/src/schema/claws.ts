@@ -342,6 +342,17 @@ export const ClawActionEffectSchema = Type.Union([
   }),
 ]);
 
+export const ClawManifestDisclosureSchema = closedObject({
+  source: closedObject({
+    packageName: OfficialClawName,
+    version: NonEmptyString,
+    integrity: Type.String({ pattern: "^sha256:[a-f0-9]{64}$" }),
+    byteLength: Type.Integer({ minimum: 1 }),
+  }),
+  manifestJson: NonEmptyString,
+  openClawProfileJson: Type.Optional(NonEmptyString),
+});
+
 export const ClawLifecyclePlanResultSchema = closedObject({
   schemaVersion: Type.Literal("openclaw.clawsGatewayPlan.v1"),
   operation: Type.Union([Type.Literal("add"), Type.Literal("update"), Type.Literal("remove")]),
@@ -381,6 +392,7 @@ export const ClawLifecyclePlanResultSchema = closedObject({
     }),
   ),
   trustWarning: Type.Optional(NonEmptyString),
+  manifestDisclosure: Type.Optional(ClawManifestDisclosureSchema),
   riskAcknowledgementRequired: Type.Boolean(),
   configuredAccess: Type.Optional(ClawConfiguredAccessSchema),
   scheduledJobs: Type.Optional(ClawScheduledJobsSchema),
@@ -423,4 +435,5 @@ export type ClawSkillAcknowledgement = Static<typeof ClawSkillAcknowledgementSch
 export type ClawConfiguredAccess = Static<typeof ClawConfiguredAccessSchema>;
 export type ClawScheduledJobs = Static<typeof ClawScheduledJobsSchema>;
 export type ClawActionEffect = Static<typeof ClawActionEffectSchema>;
+export type ClawManifestDisclosure = Static<typeof ClawManifestDisclosureSchema>;
 export type ClawLifecyclePlanResult = Static<typeof ClawLifecyclePlanResultSchema>;

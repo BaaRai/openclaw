@@ -117,8 +117,31 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
           target: {
             agentId: "workflow-operator",
             workspace: "/tmp/workspace-workflow-operator-2",
-            name: "Workflow Operator",
+            name: "@openclaw/workflow-operator",
             targetVersion: "1.2.0",
+          },
+          manifestDisclosure: {
+            source: {
+              packageName: "@openclaw/workflow-operator",
+              version: "1.2.0",
+              integrity: `sha256:${"a".repeat(64)}`,
+              byteLength: 123,
+            },
+            manifestJson: JSON.stringify({
+              schemaVersion: 1,
+              agent: { id: "workflow-operator", name: "Workflow Operator" },
+              workspace: { bootstrapFiles: {}, files: [] },
+              packages: [
+                {
+                  kind: "plugin",
+                  source: "clawhub",
+                  ref: "@openclaw/workflow-tools",
+                  version: "1.2.0",
+                },
+              ],
+              mcpServers: {},
+              cronJobs: [],
+            }),
           },
           actions: [
             {
@@ -282,11 +305,17 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
 
       await cards.first().getByRole("button", { name: "Add" }).click();
       const dialog = page.locator(".claws-catalog");
-      await dialog.getByText("workflow-tools").first().waitFor();
       expect(await dialog.locator(".claws-catalog__list").count()).toBe(0);
       await dialog.getByText("Configured access", { exact: true }).waitFor();
       await dialog.getByText("workflow.start", { exact: true }).waitFor();
       await dialog.getByText("workspace/SOUL.md", { exact: true }).waitFor();
+      const manifest = dialog.locator("[data-claws-manifest]");
+      await manifest.waitFor();
+      expect(await manifest.evaluate((element) => (element as HTMLDetailsElement).open)).toBe(
+        false,
+      );
+      await manifest.locator("summary").click();
+      expect(await manifest.locator("pre").textContent()).toContain("workflow-tools");
       const reviewedWorkspace = dialog.getByText("/tmp/workspace-workflow-operator-2", {
         exact: true,
       });
