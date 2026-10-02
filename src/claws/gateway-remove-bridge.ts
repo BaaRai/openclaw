@@ -28,7 +28,7 @@ type ClawRemoveGatewayBridgeBase = {
   assertCurrent: () => void;
 };
 
-export type ClawRemoveGatewayPreviewBridge = ClawRemoveGatewayBridgeBase & {
+type ClawRemoveGatewayPreviewBridge = ClawRemoveGatewayBridgeBase & {
   previewOnly: true;
   monitorGateway: Pick<ClawMonitorCleanupGateway, "inspect">;
 };

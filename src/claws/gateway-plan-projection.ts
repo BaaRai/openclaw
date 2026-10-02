@@ -160,7 +160,7 @@ function sealClawLifecyclePlan(
   return { schemaVersion: "openclaw.clawsGatewayPlan.v1", planIntegrity, ...plan };
 }
 
-export function canonicalizeClawSourcePlan(value: unknown, sourceRoot: string): unknown {
+function canonicalizeClawSourcePlan(value: unknown, sourceRoot: string): unknown {
   const root = path.resolve(sourceRoot);
   const visit = (current: unknown): unknown => {
     if (typeof current === "string" && path.isAbsolute(current)) {

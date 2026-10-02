@@ -285,7 +285,7 @@ export function readClawWorkspaceFiles(
   );
 }
 
-export function readClawWorkspaceFilesInDatabase(
+function readClawWorkspaceFilesInDatabase(
   db: DatabaseSync,
   agentId: string,
   readOnly = false,
