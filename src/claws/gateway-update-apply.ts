@@ -161,6 +161,7 @@ export async function applyClawUpdateForGateway(
                 targetClawMarkdownBody: persisted.clawMarkdownBody,
                 targetOpenClawProfile: persisted.openClawProfile,
                 targetSource: persisted.source,
+                targetDiagnostics: persisted.diagnostics,
               },
               {
                 ...persistedPlan.stateOptions,

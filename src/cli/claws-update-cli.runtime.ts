@@ -1,4 +1,4 @@
-import { readClawStatus } from "../claws/lifecycle-state.js";
+import { readClawStatus, type ClawStatusRecord } from "../claws/lifecycle-state.js";
 import { withAuthoredAgentRoster } from "../claws/migrate-validation.js";
 import { preflightClawPackage } from "../claws/packages.js";
 import { readClawManifestFile } from "../claws/reader.js";
@@ -17,6 +17,7 @@ import {
   emitClawFailure,
   formatClawDiagnostics,
   logClawExperimentalWarning,
+  logClawPlanNotices,
   logClawUpdatePlanSummary,
 } from "./claws-cli-output.js";
 import { waitUntilGatewayAgentAvailable } from "./claws-cli.gateway-readiness.js";
@@ -67,6 +68,7 @@ export async function runClawsUpdateCommand(
     listedMcpServers.sourceConfigBeforeMigrations,
   );
   let source = opts.from;
+  let recordedInstall: ClawStatusRecord["install"] | undefined;
   if (!source) {
     const database = await openExistingOpenClawStateDatabaseReadOnly();
     let status: Awaited<ReturnType<typeof readClawStatus>> | { records: never[] } = {
@@ -112,12 +114,21 @@ export async function runClawsUpdateCommand(
       });
       return;
     }
-    const recorded = status.records[0]!.install.claw;
+    recordedInstall = status.records[0]!.install;
+    const recorded = recordedInstall.claw;
     source = recorded.kind === "package" ? recorded.packageRoot : recorded.manifestPath;
   }
 
   const loaded = await readClawManifestFile(source, {
     allowLegacyDynamicToolProfile: !opts.from,
+    authorizeLegacyLocalUpdateHostSettings: ({ manifest, source: loadedSource }) =>
+      !opts.from &&
+      recordedInstall?.claw.integrityKind === "development-snapshot" &&
+      recordedInstall.claw.kind === loadedSource.kind &&
+      recordedInstall.claw.name === loadedSource.name &&
+      recordedInstall.claw.packageRoot === loadedSource.packageRoot &&
+      recordedInstall.claw.manifestPath === loadedSource.manifestPath &&
+      recordedInstall.agentId === manifest.agent.id,
   });
   if (!loaded.ok) {
     const diagnostics = opts.from
@@ -191,6 +202,7 @@ export async function runClawsUpdateCommand(
             targetClawMarkdownBody: loaded.clawMarkdownBody,
             targetOpenClawProfile: loaded.openClawProfile,
             targetSource: loaded.source,
+            targetDiagnostics: loaded.diagnostics,
           },
           {
             config,
@@ -215,6 +227,7 @@ export async function runClawsUpdateCommand(
       return;
     }
     logClawExperimentalWarning(runtime);
+    logClawPlanNotices(plan.diagnostics, runtime);
     runtime.log(`Updated agent: ${result.agentId}`);
     runtime.log(`Claw version: ${result.previousClaw.version} -> ${result.targetClaw.version}`);
   } catch (error) {

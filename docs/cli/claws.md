@@ -459,6 +459,15 @@ openclaw claws update incident-triage \
   --dry-run --json
 ```
 
+Only an existing local Claw updated from its recorded source can read a
+released-v1 profile with `agent.model` or `agent.subagents`. OpenClaw validates
+those fields, then ignores them and warns that host model and named delegation
+settings belong to the operator. The raw profile bytes remain bound to source
+integrity. New Add, Inspect, `update --from`, and ClawHub sources reject those
+fields. A changed legacy agent configuration digest still blocks Update for
+manual reconciliation; the compatibility read does not waive exact
+`planIntegrity` consent.
+
 The plan compares current provenance and live state with the target manifest.
 It reports agent, workspace, package, MCP, cron, and ownership changes,
 including capability escalations and blockers. Capability escalations have

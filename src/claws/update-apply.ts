@@ -45,6 +45,7 @@ import {
 } from "./provenance.js";
 import {
   CLAW_OUTPUT_STABILITY,
+  type ClawDiagnostic,
   type ClawManifest,
   type ClawOpenClawProfile,
   type ClawSourceIdentity,
@@ -125,6 +126,7 @@ export async function applyClawUpdatePlan(
     targetClawMarkdownBody?: Buffer;
     targetOpenClawProfile?: ClawOpenClawProfile;
     targetSource: ClawSourceIdentity;
+    targetDiagnostics?: ClawDiagnostic[];
   },
   options: ClawUpdateStateOptions & {
     config: OpenClawConfig;
@@ -178,6 +180,7 @@ export async function applyClawUpdatePlan(
     targetClawMarkdownBody: params.targetClawMarkdownBody,
     targetOpenClawProfile: params.targetOpenClawProfile,
     targetSource: params.targetSource,
+    ...(params.targetDiagnostics ? { diagnostics: params.targetDiagnostics } : {}),
     config: options.config,
     sourceMcpServers: options.sourceMcpServers,
     ...(inventory ? { inventory, exactAgentId: true } : {}),
@@ -521,8 +524,9 @@ export async function applyClawUpdatePlan(
       // Adopted ownership records effective settings, including inherited defaults
       // and the canonical workspace, while rollback retains the authored entry.
       return (
-        digest(normalizeWorkspaceConfig(resolveMigrationAgentSettings(config, agent), workspace)) ===
-        expectedDigest
+        digest(
+          normalizeWorkspaceConfig(resolveMigrationAgentSettings(config, agent), workspace),
+        ) === expectedDigest
       );
     } catch {
       return false;

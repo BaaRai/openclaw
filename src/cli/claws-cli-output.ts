@@ -30,7 +30,7 @@ export function logClawExperimentalWarning(runtime: RuntimeEnv): void {
   runtime.log("Experimental: Claws contracts may change while RFC 0016 is under review.");
 }
 
-function logClawPlanNotices(diagnostics: ClawDiagnostic[], runtime: RuntimeEnv): void {
+export function logClawPlanNotices(diagnostics: ClawDiagnostic[], runtime: RuntimeEnv): void {
   for (const diagnostic of diagnostics.filter((entry) => entry.level === "warning")) {
     runtime.log(redactSensitiveText(`Notice: ${diagnostic.message}`));
   }
