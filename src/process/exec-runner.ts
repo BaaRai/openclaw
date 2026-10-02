@@ -622,7 +622,7 @@ async function runCommandWithOutputEncoding(
     throw failedProcess(inputAdmissionError, cleanup);
   }
   if (privateControlError) {
-    throw Object.assign(privateControlError, { cleanup });
+    throw failedProcess(privateControlError, cleanup);
   }
   if (terminatingOutputError) {
     throw failedProcess(terminatingOutputError, cleanup);
