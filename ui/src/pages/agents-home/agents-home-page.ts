@@ -127,6 +127,9 @@ export class AgentsHomePage extends AgentRosterElement {
   }
 
   private manageInstalledClaw(record: ClawStatusRecord) {
+    if (this.removePendingAgentId) {
+      return;
+    }
     this.catalogOpen = false;
     this.selectedClaw = null;
     if (hasInstalledClawAgent(record)) {
