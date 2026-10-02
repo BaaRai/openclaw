@@ -54,7 +54,6 @@ import {
   type SkillsWatchOwner,
 } from "./refresh-watch-registry.js";
 import {
-  closeSkillsWatchersForAgent as closeAgentSkillsWatchers,
   disposeWorkspaceWatchState,
   unsubscribeOwnedWorkspaceFromPath,
 } from "./refresh-watch-retirement.js";
@@ -64,6 +63,7 @@ import {
   type WatchTarget,
 } from "./refresh-watch-targets.js";
 export { registerSkillsChangeListener } from "./refresh-state.js";
+export { closeSkillsWatchersForAgent } from "./refresh-watch-retirement.js";
 
 const log = createSubsystemLogger("gateway/skills");
 // Gateway startup imports this owner before serving turns. Shared watcher handles,
@@ -693,13 +693,6 @@ export function ensureSkillsWatcher(params: {
     reconcileTargets(false);
   };
   reconcileTargets(true);
-}
-
-export async function closeSkillsWatchersForAgent(params: {
-  workspaceDir: string;
-  agentId: string;
-}): Promise<void> {
-  await closeAgentSkillsWatchers(params);
 }
 
 /** Finish discovery deferred during an outage before a worker advertises coverage. */
