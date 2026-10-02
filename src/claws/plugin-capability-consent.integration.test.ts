@@ -376,6 +376,51 @@ describe("Claw plugin capability consent through the managed installer", () => {
     });
   });
 
+  it("blocks Add before reinstalling a plugin left disabled by uninstall", async () => {
+    const fixture = await createPluginClawFixture(dirs.make("openclaw-claw-uninstalled-plugin-"));
+    const { configPath, env, manifestPath } = fixture;
+    const config: OpenClawConfig = {
+      agents: { entries: {} },
+      plugins: { entries: { diffs: { enabled: false } } },
+    };
+    await fs.writeFile(configPath, JSON.stringify(config));
+
+    await withEnvAsync(env, async () => {
+      const source = await readClawManifestFile(manifestPath);
+      expect(source.ok).toBe(true);
+      if (!source.ok) {
+        return;
+      }
+      const plan = await buildGatewayClawAddPlan(source, { config, sourceMcpServers: {} });
+      const projected = projectGatewayClawAddPlan(
+        plan,
+        source.source.packageRoot,
+        {
+          riskAcknowledgementRequired: false,
+          trustRecord: {
+            clawhubTrustDisposition: "clean",
+            clawhubTrustCheckedAt: "2026-09-30T00:00:00.000Z",
+          },
+        },
+        config,
+      );
+
+      expect(projected.blockers).toContainEqual(
+        expect.objectContaining({
+          code: "plugin_disabled",
+          message: expect.stringContaining("reinstall it there first if needed"),
+        }),
+      );
+      expect(
+        projected.actions.find((action) => action.id === `plugin:${fixture.packageName}`),
+      ).toMatchObject({ blocked: true });
+      expect(readPersistedInstalledPluginIndexInstallRecords({ env })?.diffs).toBeFalsy();
+      await expect(
+        fs.stat(path.join(resolveDefaultPluginExtensionsDir(env), "diffs")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   it("rejects a newly review-required community plugin before an Add install commits", async () => {
     const fixture = await createPluginClawFixture(
       dirs.make("openclaw-claw-plugin-trust-add-"),
