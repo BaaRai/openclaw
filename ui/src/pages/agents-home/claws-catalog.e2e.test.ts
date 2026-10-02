@@ -389,7 +389,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
         await page.waitForFunction(
           () => (document.querySelector("[data-claws-confirm]") as HTMLButtonElement)?.disabled,
         );
-        gateway.resolveDeferred("claws.status", { records: [installedWorkflow] });
+        await gateway.resolveDeferred("claws.status", { records: [installedWorkflow] });
         await page.waitForURL(/\/settings\/agents\/workflow-operator$/u);
         expect(await gateway.getRequests("claws.add.apply")).toHaveLength(0);
       }
@@ -485,7 +485,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
       expect(await gateway.getRequests("claws.add.plan")).toHaveLength(0);
 
       await gateway.waitForRequest("claws.status");
-      gateway.rejectDeferred("claws.status", { message: "temporary status outage" });
+      await gateway.rejectDeferred("claws.status", { message: "temporary status outage" });
       await catalog.getByRole("alert").getByText("temporary status outage").waitFor();
       expect(await row.getByRole("button", { name: "Add" }).isDisabled()).toBe(true);
       await catalog.getByRole("alert").getByRole("button", { name: "Retry" }).click();
@@ -507,7 +507,7 @@ describe.skipIf(!browserAvailable)("Claws catalog in Agents", () => {
       }
       expect((await gateway.getRequests("claws.status")).length).toBeGreaterThan(statusRequests);
       expect(await row.getByRole("button", { name: "Add" }).isDisabled()).toBe(true);
-      gateway.resolveDeferred("claws.status", { records: [installedWorkflow] });
+      await gateway.resolveDeferred("claws.status", { records: [installedWorkflow] });
       await row.getByRole("link", { name: "Manage" }).waitFor();
       expect(await row.getByRole("button", { name: "Add" }).count()).toBe(0);
       expect(await gateway.getRequests("claws.add.plan")).toHaveLength(0);
