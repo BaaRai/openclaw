@@ -181,6 +181,7 @@ describe.each(["HTTP", "WebSocket"] as const)(
             publicKey: "test",
             signature: "test",
             signedAt: 1,
+            nonce: "test",
           };
           if (testCase.system) {
             client.internal = { operatorRoleActor: { kind: "system" } };
