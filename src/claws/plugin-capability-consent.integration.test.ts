@@ -472,18 +472,61 @@ describe("Claw plugin capability consent through the managed installer", () => {
     });
   });
 
-  it("adds and enables a reviewed plugin under restrictive allow and deny lists", async () => {
-    const fixture = await createPluginClawFixture(dirs.make("openclaw-claw-plugin-policy-"));
+  it.each([
+    { name: "denylist", policy: { deny: ["diffs", "other"] } },
+    { name: "allowlist", policy: { allow: ["other"] } },
+  ])("blocks a fresh plugin install excluded by the host $name", async ({ name, policy }) => {
+    const fixture = await createPluginClawFixture(dirs.make(`openclaw-claw-plugin-${name}-`));
     const { configPath, env, manifestPath } = fixture;
     const config: OpenClawConfig = {
       ...fixture.config,
       plugins: {
         ...fixture.config.plugins,
-        allow: ["other"],
-        deny: ["diffs", "other"],
+        ...policy,
       },
     };
-    await fs.writeFile(configPath, JSON.stringify(config));
+    const originalConfig = JSON.stringify(config);
+    await fs.writeFile(configPath, originalConfig);
+
+    await withEnvAsync(env, async () => {
+      const source = await readClawManifestFile(manifestPath);
+      expect(source.ok).toBe(true);
+      if (!source.ok) {
+        return;
+      }
+      const plan = await buildGatewayClawAddPlan(source, { config, sourceMcpServers: {} });
+      const projected = projectGatewayClawAddPlan(
+        plan,
+        source.source.packageRoot,
+        {
+          riskAcknowledgementRequired: false,
+          trustRecord: {
+            clawhubTrustDisposition: "clean",
+            clawhubTrustCheckedAt: "2026-09-30T00:00:00.000Z",
+          },
+        },
+        config,
+      );
+      expect(projected.blockers).toContainEqual(
+        expect.objectContaining({ code: "plugin_disabled" }),
+      );
+      expect(projected.actions).toContainEqual(
+        expect.objectContaining({ id: `plugin:${fixture.packageName}`, blocked: true }),
+      );
+      await expect(
+        applyClawAddPlan(plan, { env, config, consentPlanIntegrity: plan.planIntegrity }),
+      ).rejects.toMatchObject({ code: "plan_blocked" });
+      expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
+      expect(readPersistedInstalledPluginIndexInstallRecords({ env })?.diffs).toBeFalsy();
+      await expect(
+        fs.stat(path.join(resolveDefaultPluginExtensionsDir(env), "diffs")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("installs and enables a plugin under the default host policy", async () => {
+    const fixture = await createPluginClawFixture(dirs.make("openclaw-claw-plugin-default-"));
+    const { config, configPath, env, manifestPath } = fixture;
 
     await withEnvAsync(env, async () => {
       const source = await readClawManifestFile(manifestPath);
@@ -502,8 +545,8 @@ describe("Claw plugin capability consent through the managed installer", () => {
 
       expect(result.status).toBe("complete");
       const installedConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as OpenClawConfig;
-      expect(installedConfig.plugins?.allow).toEqual(["other", "diffs"]);
-      expect(installedConfig.plugins?.deny).toEqual(["other"]);
+      expect(installedConfig.plugins?.allow).toBeUndefined();
+      expect(installedConfig.plugins?.deny).toBeUndefined();
       expect(installedConfig.plugins?.entries?.diffs?.enabled).toBe(true);
     });
   });
