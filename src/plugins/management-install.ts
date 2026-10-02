@@ -381,8 +381,8 @@ async function installResolvedManagedPluginSource(
     params.requireCapabilityConsent &&
     (params.onBeforePluginArtifactCommit || params.beforePersistentEffect)
       ? async (artifact: PluginInstallArtifactConsentRequest) => {
-          await params.onBeforePluginArtifactCommit?.(artifact, params.snapshot.config);
           await params.beforePersistentEffect?.();
+          await params.onBeforePluginArtifactCommit?.(artifact, params.snapshot.config);
         }
       : undefined;
   const capabilityConsent = consentExemptSource

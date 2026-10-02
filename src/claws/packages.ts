@@ -469,7 +469,7 @@ async function installClawPackagesUnlocked(
       installedPackages.push(packageRef);
 
       assertForwardCurrent();
-      const beforePluginCommit = bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent);
+      const pluginCommit = bindClawPluginBeforeCommit(options, pkg, assertForwardCurrent);
       await installPlugin({
         request: {
           source: "clawhub",
@@ -482,7 +482,7 @@ async function installClawPackagesUnlocked(
         env: options.clawHubBaseUrl
           ? { ...options.env, OPENCLAW_CLAWHUB_URL: options.clawHubBaseUrl }
           : options.env,
-        beforePersistentApply: assertForwardCurrent,
+        beforePersistentApply: pluginCommit.beforePersistentApply,
         onBeforePluginArtifactCommit: async (artifact) => {
           const { snapshot } = await readConfigFileSnapshotForWrite();
           const current = inspectClawPluginCapabilities(
@@ -500,8 +500,9 @@ async function installClawPackagesUnlocked(
               `Plugin ${pkg.ref}@${pkg.version} effective capability grants changed after planning; run add --dry-run again.`,
             );
           }
+          pluginCommit.artifactReviewed();
         },
-        beforePersistentEffect: beforePluginCommit,
+        beforePersistentEffect: pluginCommit.beforePersistentEffect,
         logger: createPluginInstallLogger(runtime),
         confirmInstall: async (warning) => {
           assertCurrent();
