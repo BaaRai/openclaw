@@ -30,9 +30,11 @@ import {
   readClawStatus,
 } from "../claws/lifecycle-state.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
+import { readClawMcpServerRefs, type PersistedClawMcpServerRef } from "../claws/mcp.js";
 import {
   findResumableIntroducedPluginRequirement,
   readClawResumeStateReadOnly,
+  selectResumableClawMcpServers,
 } from "../claws/package-resume.js";
 import { preflightClawPackage } from "../claws/packages.js";
 import {
@@ -151,6 +153,7 @@ async function matchingResumeState(plan: ClawAddPlan, opts: ClawsAddOptions) {
   return {
     record,
     packageRefs: readOnlyState?.packageRefs ?? readClawPackageRefs({ agentId: plan.agent.finalId }),
+    mcpRefs: readOnlyState?.mcpRefs ?? readClawMcpServerRefs(plan.agent.finalId),
   };
 }
 
@@ -318,6 +321,7 @@ export async function runClawsAddCommand(
       })
     : undefined;
   let resumableInstallRecord: PersistedClawInstall | undefined;
+  const resumeManagedMcpRefs: PersistedClawMcpServerRef[] = [];
   const resumeState = await matchingResumeState(legacyResumePlan ?? plan, opts);
   if (result.legacyOpenClawProfile && !resumeState) {
     plan = {
@@ -336,7 +340,11 @@ export async function runClawsAddCommand(
     };
   }
   if (resumeState) {
-    const { record: resumeRecord, packageRefs: resumePackageRefs } = resumeState;
+    const {
+      record: resumeRecord,
+      packageRefs: resumePackageRefs,
+      mcpRefs: resumeMcpRefs,
+    } = resumeState;
     resumableInstallRecord = resumeRecord;
     const packagePreflight = async (
       pkg: Parameters<typeof preflightClawPackage>[0],
@@ -367,8 +375,17 @@ export async function runClawsAddCommand(
     const canResumeAgent =
       resumeRecord.status === "config_committed" ||
       (resumeRecord.status === "workspace_ready" && committedAgent !== undefined);
+    const { existingMcpServers: resumedMcpServers, resumeMcpRefs: managedMcpRefs } =
+      selectResumableClawMcpServers({
+        agentId: resumeRecord.agentId,
+        manifestServers: result.manifest.mcpServers,
+        configuredServers: listedMcpServers.mcpServers,
+        refs: resumeMcpRefs,
+      });
+    resumeManagedMcpRefs.push(...managedMcpRefs);
     const resumePlanContext = {
       ...basePlanContext,
+      existingMcpServers: resumedMcpServers,
       packagePreflight,
       existingAgentIds: canResumeAgent
         ? existingAgentIds.filter((agentId) => agentId !== resumeRecord.agentId)
@@ -485,6 +502,7 @@ export async function runClawsAddCommand(
           consentPlanIntegrity: opts.planIntegrity,
           resumeRecord: resumableInstallRecord,
           resumePlan: legacyResumePlan,
+          resumeMcpRefs: resumeManagedMcpRefs,
           runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
           cronGateway: {
             add: async (input) => await callGatewayFromCli("cron.add", {}, input),

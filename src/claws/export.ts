@@ -302,7 +302,7 @@ export async function exportClawAgent(
     bootstrapPath?: string;
   },
 ): Promise<ClawExportResult> {
-  const status = await readClawStatus(agentId, options);
+  const status = await readClawStatus(agentId, { ...options, readOnly: true });
   const record = status.records.find((candidate) => candidate.install.agentId === agentId);
   if (!record) {
     throw new ClawExportError(

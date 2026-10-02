@@ -71,6 +71,7 @@ type ClawAddApplyOptions = ClawAddStateOptions & {
   consentPlanIntegrity?: string;
   resumeRecord?: PersistedClawInstall;
   resumePlan?: ClawAddPlan;
+  resumeMcpRefs?: readonly PersistedClawMcpServerRef[];
   commitConfig?: ConfigCommit;
   persistRecord?: (
     plan: Parameters<typeof persistClawInstallRecord>[0],
