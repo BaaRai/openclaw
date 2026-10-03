@@ -228,7 +228,7 @@ vi.mock("../agents/prepared-model-runtime.js", () => ({
 }));
 
 vi.mock("../auto-reply/reply/get-reply-from-config.runtime.js", () => ({
-  getReplyFromConfig: vi.fn(),
+  getReplyFromConfigInternal: vi.fn(),
   prewarmConfigDrivenReplyRuntime: hoisted.prewarmConfigDrivenReplyRuntime,
 }));
 

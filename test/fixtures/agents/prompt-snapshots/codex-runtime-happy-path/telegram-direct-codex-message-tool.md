@@ -38,9 +38,6 @@
 {
   "agents": {
     "defaults": {
-      "heartbeat": {
-        "every": "30m"
-      },
       "userTimezone": "UTC"
     },
     "entries": {
@@ -256,24 +253,24 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 0
   },
   "dynamicToolsJson": {
-    "chars": 72513,
-    "roughTokens": 18129
+    "chars": 74163,
+    "roughTokens": 18541
   },
   "openClawDeveloperInstructions": {
-    "chars": 3194,
-    "roughTokens": 799
+    "chars": 2992,
+    "roughTokens": 748
   },
   "openClawParentLocalInstructions": {
     "chars": 507,
     "roughTokens": 127
   },
   "totalTextOnly": {
-    "chars": 27580,
-    "roughTokens": 6895
+    "chars": 27378,
+    "roughTokens": 6845
   },
   "totalWithDynamicToolsJson": {
-    "chars": 100095,
-    "roughTokens": 25024
+    "chars": 101543,
+    "roughTokens": 25386
   },
   "userInputText": {
     "chars": 879,
@@ -484,7 +481,7 @@ You are a personal agent running inside OpenClaw. OpenClaw has dynamic tools for
 
 Deferred searchable OpenClaw dynamic tools available: automations, gateway, nodes, session_status, sessions_history, sessions_list, sessions_search, sessions_send, subagents, tts, web_fetch, web_search.
 
-Deferred tools may be absent from the direct tool list. Call a tool that is in the direct tool list directly. Use `tool_search` to find a tool that is not listed; if `tool_search` is not directly callable, use `exec` to filter `ALL_TOOLS` by name and description and call the matching entry through `tools`. Never use `exec` to look up a tool that is already listed, and do not re-run a completed call to get a result you already have.
+Deferred tools may be absent from the direct tool list. Use `tool_search` when directly callable. On code-mode-only models, use `exec` instead: filter `ALL_TOOLS` by name and description, then call the matching entry through `tools`.
 
 Use Codex native `spawn_agent` for Codex subagents. `spawn_agent` and the other native collaboration tools may be deferred. For follow-up work on an existing native child, use the native collaboration tool that starts or queues a new turn. Use OpenClaw `sessions_spawn` only for OpenClaw or ACP delegation, never as a substitute for `spawn_agent` on internal legwork.
 

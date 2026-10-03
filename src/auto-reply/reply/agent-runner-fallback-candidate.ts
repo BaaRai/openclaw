@@ -69,7 +69,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
   bindSourceReplyDeliveryRuntime(turn.followupRun.run, sourceReplyDeliveryRuntime);
   const sourceReplyDeliveryModeOrigin = sourceReplyDeliveryRuntime.origin;
   const preserveProgressCallbackStartOrder = turn.opts?.preserveProgressCallbackStartOrder === true;
-  const runLane = turn.isHeartbeat ? CommandLane.CronNested : CommandLane.Main;
+  const runLane = CommandLane.Main;
   let queuedUserMessagePersistedAcrossFallback = false;
   const messageToolDeliveryState: MessageToolDeliveryState = {
     toolCallIds: new Set(),
@@ -82,8 +82,8 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
     offAnnounced: false,
     resetAnnounced: false,
   };
-  const bootstrapContextRunKind = turn.opts?.isHeartbeat
-    ? ("heartbeat" as const)
+  const bootstrapContextRunKind = turn.followupRun.run.scheduledAutomation
+    ? ("cron" as const)
     : ("default" as const);
 
   params.timing.logMilestoneIfSlow({
@@ -276,10 +276,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             }
             runStart.signalExecutionPhaseForTyping(info);
           };
-        const messageActionTurnCapability = mintReplyMessageActionTurnCapability(
-          turn,
-          params.runId,
-        );
+        const messageActionTurnCapability = turn.followupRun.run.scheduledAutomation
+          ? params.scheduledMessageActionTurnCapability
+          : mintReplyMessageActionTurnCapability(turn, params.runId);
         try {
           const common = {
             ...runOptions,
@@ -354,7 +353,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           return result;
         } finally {
           runStart.close();
-          revokeMessageActionTurnCapability(messageActionTurnCapability);
+          if (!params.scheduledMessageActionTurnCapability) {
+            revokeMessageActionTurnCapability(messageActionTurnCapability);
+          }
         }
       },
     }),

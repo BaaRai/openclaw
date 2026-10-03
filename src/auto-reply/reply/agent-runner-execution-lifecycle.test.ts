@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import { createChannelParticipantAdmissionEvidence } from "../../../test/helpers/channel-admission-evidence.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type {
@@ -15,8 +15,18 @@ import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
 } from "../../agents/run-termination.js";
+import {
+  createAdmittedGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "../../agents/tools/gateway-caller-context.js";
 import { configureExecutionIdentityAdmissionSink } from "../../audit/execution-identity-admission.js";
 import { createChannelAdmissionAudit } from "../../channels/message-access/admission-evidence.js";
+import {
+  clearRuntimeConfigSnapshot,
+  getRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
+import * as sessionEntryRuntime from "../../config/sessions/session-entry-read-runtime.js";
 import { getDiagnosticSessionActivitySnapshot } from "../../logging/diagnostic-run-activity.js";
 import { useBundledProviderPolicyArtifactsForTest } from "../../plugin-sdk/test-helpers/provider-policy-artifacts.test-support.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -45,6 +55,8 @@ import {
   replyRunRegistry,
   type ReplyOperation,
 } from "./reply-run-registry.js";
+import type { ScheduledSessionAutomation, SessionEventTarget } from "./session-event-contract.js";
+import { captureSessionEventTargetForHost } from "./session-event-target.js";
 
 useBundledProviderPolicyArtifactsForTest(["openai", "anthropic"]);
 const state = await setupAgentRunnerExecutionTestState();
@@ -58,6 +70,24 @@ const compactionTarget = {
   lifecycleRevision: "generation-1",
   activeWriterRunId: "run-compaction",
 };
+
+function createScheduledAutomation(): ScheduledSessionAutomation {
+  return {
+    job: {
+      id: "scheduled-target-test",
+      name: "Scheduled target test",
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "main",
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "Check for updates" },
+      state: {},
+    },
+    assertCurrent: vi.fn(),
+  };
+}
 
 describe("executeAgentTurn: run lifecycle and ownership", () => {
   it("classifies cancellation raised by the real deferred lifecycle owner", async () => {
@@ -804,7 +834,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     });
   });
 
-  it("requires explicit message targets on heartbeat CLI runs", async () => {
+  it("requires explicit message targets on scheduled CLI runs", async () => {
     state.isCliProviderMock.mockReturnValue(true);
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
       result: await params.run("claude-cli", "sonnet-4.6", initialFallbackAttemptOptions(params)),
@@ -821,77 +851,116 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     followupRun.run.model = "sonnet-4.6";
     const params = createMinimalRunAgentTurnParams({
       followupRun,
-      opts: { isHeartbeat: true },
     });
-    params.isHeartbeat = true;
+    params.followupRun.run.scheduledAutomation = createScheduledAutomation();
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     await executeAgentTurn(params);
 
     expectMockCallArgFields(state.runCliAgentMock, 0, "CLI run params", {
-      trigger: "heartbeat",
+      trigger: "cron",
       requireExplicitMessageTarget: true,
     });
   });
 
-  it("requires explicit message targets on heartbeat embedded runs", async () => {
-    // Heartbeat ambient From/To must not become implicit message-tool recipients.
-    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
-      result: await params.run("anthropic", "claude", initialFallbackAttemptOptions(params)),
-      provider: "anthropic",
-      model: "claude",
-      attempts: [],
-    }));
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "HEARTBEAT_OK" }],
-      meta: {},
+  it.each([
+    { source: "scheduled", deliver: false },
+    { source: "nested event", deliver: false },
+    { source: "ordinary", deliver: undefined },
+  ] as const)("preserves completion delivery custody for $source embedded runs", async (row) => {
+    const registry = await import("../../infra/agent-run-registry.js");
+    const actualRegistry = await vi.importActual<typeof registry>(
+      "../../infra/agent-run-registry.js",
+    );
+    const readEntry = vi.spyOn(sessionEntryRuntime, "withSessionEntryReadOnlyInWorker");
+    readEntry.mockImplementation(async (_scope, assertCurrent, consume) => {
+      assertCurrent();
+      return await consume({ ok: true, value: undefined }, { kind: "unresolved", assertCurrent });
     });
-
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const params = createMinimalRunAgentTurnParams({
-      opts: { isHeartbeat: true },
-    });
-    params.isHeartbeat = true;
-
-    await executeAgentTurn(params);
-
-    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "heartbeat embedded run params", {
-      trigger: "heartbeat",
-      requireExplicitMessageTarget: true,
-    });
-  });
-
-  it("forwards bundle MCP retirement to isolated heartbeat embedded runs", async () => {
-    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
-      result: await params.run("anthropic", "claude", initialFallbackAttemptOptions(params)),
-      provider: "anthropic",
-      model: "claude",
-      attempts: [],
-    }));
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "HEARTBEAT_OK" }],
-      meta: {},
-    });
-
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const opts: InternalGetReplyOptions = { isHeartbeat: true, cleanupBundleMcpOnRunEnd: true };
-    const params = createMinimalRunAgentTurnParams({ opts });
-    params.isHeartbeat = true;
-
-    await executeAgentTurn(params);
-
-    expectMockCallArgFields(
-      state.runEmbeddedAgentMock,
-      0,
-      "isolated heartbeat embedded run params",
-      {
-        trigger: "heartbeat",
-        cleanupBundleMcpOnRunEnd: true,
+    const previousConfig = getRuntimeConfigSnapshot();
+    setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
+    const runId = `completion-delivery-${row.source.replaceAll(" ", "-")}`;
+    const params = createMinimalRunAgentTurnParams({ opts: { runId } });
+    if (row.source !== "ordinary") {
+      params.followupRun.run.internalEventExecution = {
+        deliver: row.deliver,
+        onStarted: vi.fn(),
+        onTerminal: vi.fn(),
+      };
+    }
+    if (row.source === "scheduled") {
+      params.followupRun.run.scheduledAutomation = createScheduledAutomation();
+      params.followupRun.run.scheduledAutomation.job.delivery = { mode: "none" };
+    }
+    let target: SessionEventTarget | undefined;
+    state.runEmbeddedAgentMock.mockImplementationOnce(
+      async (run: RunEmbeddedAgentInternalParams) => {
+        assert(run.preparedRunAdmission && run.agentId && run.sessionKey);
+        const admitted = await run.preparedRunAdmission.admit("gateway", run.runId);
+        const caller = createAdmittedGatewayToolCallerIdentity({
+          admittedRunContext: admitted,
+          agentId: run.agentId,
+          sessionKey: run.sessionKey,
+        });
+        assert(caller);
+        target = await withGatewayToolCallerIdentity(caller, () =>
+          captureSessionEventTargetForHost(caller.agentId, caller.sessionKey),
+        );
+        return { payloads: [{ text: "NO_REPLY" }], meta: {} };
       },
     );
+    try {
+      const executeAgentTurn = await getExecuteAgentTurnForTest();
+      await vi
+        .mocked(registry.registerAgentRunContext)
+        .withImplementation(actualRegistry.registerAgentRunContext, () => executeAgentTurn(params));
+      expect(target).toMatchObject({ deliver: row.deliver });
+      if (row.source === "scheduled") {
+        expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "scheduled embedded run params", {
+          trigger: "cron",
+          requireExplicitMessageTarget: true,
+        });
+      }
+    } finally {
+      actualRegistry.clearAgentRunContext(runId);
+      readEntry.mockRestore();
+      if (previousConfig) {
+        setRuntimeConfigSnapshot(previousConfig);
+      } else {
+        clearRuntimeConfigSnapshot();
+      }
+    }
   });
 
-  it("forwards bundle MCP retirement to isolated heartbeat CLI runs", async () => {
+  it("forwards bundle MCP retirement to isolated event embedded runs", async () => {
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("anthropic", "claude", initialFallbackAttemptOptions(params)),
+      provider: "anthropic",
+      model: "claude",
+      attempts: [],
+    }));
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: {},
+    });
+
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    const opts: InternalGetReplyOptions = {
+      internalEventExecution: { onStarted: vi.fn(), onTerminal: vi.fn() },
+      cleanupBundleMcpOnRunEnd: true,
+    };
+    const params = createMinimalRunAgentTurnParams({ opts });
+    params.followupRun.run.internalEventExecution = opts.internalEventExecution;
+
+    await executeAgentTurn(params);
+
+    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "isolated event embedded run params", {
+      trigger: "event",
+      cleanupBundleMcpOnRunEnd: true,
+    });
+  });
+
+  it("forwards bundle MCP retirement to isolated event CLI runs", async () => {
     state.isCliProviderMock.mockReturnValue(true);
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
       result: await params.run("claude-cli", "sonnet-4.6", initialFallbackAttemptOptions(params)),
@@ -906,15 +975,18 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
     const followupRun = createFollowupRun();
     followupRun.run.provider = "claude-cli";
     followupRun.run.model = "sonnet-4.6";
-    const opts: InternalGetReplyOptions = { isHeartbeat: true, cleanupBundleMcpOnRunEnd: true };
+    const opts: InternalGetReplyOptions = {
+      internalEventExecution: { onStarted: vi.fn(), onTerminal: vi.fn() },
+      cleanupBundleMcpOnRunEnd: true,
+    };
     const params = createMinimalRunAgentTurnParams({ followupRun, opts });
-    params.isHeartbeat = true;
+    params.followupRun.run.internalEventExecution = opts.internalEventExecution;
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     await executeAgentTurn(params);
 
-    expectMockCallArgFields(state.runCliAgentMock, 0, "isolated heartbeat CLI run params", {
-      trigger: "heartbeat",
+    expectMockCallArgFields(state.runCliAgentMock, 0, "isolated event CLI run params", {
+      trigger: "event",
       cleanupBundleMcpOnRunEnd: true,
     });
   });

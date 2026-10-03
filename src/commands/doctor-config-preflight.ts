@@ -60,7 +60,10 @@ export async function runDoctorConfigPreflight(
   options: DoctorConfigPreflightOptions = {},
 ): Promise<DoctorConfigPreflightResult> {
   // Reuse child imports for this state operation; every read still acquires fresh admission.
-  if (options.migrateState !== false && options.doctorOnlyStateMigrations === true) {
+  if (
+    options.migrateState !== false &&
+    (options.doctorOnlyStateMigrations === true || options.automaticHeartbeatRepair)
+  ) {
     const { withSqliteReadOnlyWorkerScope } = await import("../infra/sqlite-readonly-worker.js");
     return await withSqliteReadOnlyWorkerScope(() => runDoctorConfigPreflightOperation(options));
   }
@@ -343,6 +346,21 @@ async function runDoctorConfigPreflightOperation(
   }
   // Import retired locators before removing them from the authored config.
   if (await pluginMigrations.complete()) {
+    configSnapshotRead = await readConfigSnapshotForPreflight(false);
+    snapshot = configSnapshotRead.snapshot;
+    baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};
+    automaticConfigRepair = planAdmittedConfigRepair(snapshot);
+  }
+  const automaticHeartbeatRepair = options.automaticHeartbeatRepair;
+  if (automaticHeartbeatRepair) {
+    const { commitAutomaticHeartbeatRepair } =
+      await import("./doctor-automatic-heartbeat-repair.js");
+    const changes = await measurePreflightStep("automatic-heartbeat-config-repair", () =>
+      pluginMetadata.run({ config: snapshot.sourceConfig }, () =>
+        commitAutomaticHeartbeatRepair(automaticHeartbeatRepair, snapshot),
+      ),
+    );
+    note(changes.join("\n"), "Doctor changes");
     configSnapshotRead = await readConfigSnapshotForPreflight(false);
     snapshot = configSnapshotRead.snapshot;
     baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};

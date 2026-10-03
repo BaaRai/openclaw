@@ -138,7 +138,6 @@ it("rechecks unrepaired delivery in the current row before activating a prepared
       cronEnabled: true,
       log: createNoopLogger(),
       enqueueSystemEvent: vi.fn(),
-      requestHeartbeat: vi.fn(),
       runIsolatedAgentJob: vi.fn(),
     });
     const marker = markServiceCronJobActive(state, job, handle);
@@ -252,8 +251,7 @@ it.each(["payload", "webhook"] as const)(
             taskPorts,
           );
         });
-      const enqueueSystemEvent = vi.fn();
-      const requestHeartbeat = vi.fn();
+      const runSessionEvent = vi.fn(async () => ({ status: "ok" as const }));
       const sendCronWebhook = vi.fn(async () => ({ status: "delivered" as const }));
       const storePath = state.statePath("cron", "jobs.json");
       const cron = new CronService({
@@ -262,8 +260,8 @@ it.each(["payload", "webhook"] as const)(
         cronEnabled: false,
         defaultAgentId: "main",
         log: createNoopLogger(),
-        enqueueSystemEvent,
-        requestHeartbeat,
+        enqueueSystemEvent: vi.fn(),
+        runSessionEvent,
         sendCronWebhook,
         runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
       });
@@ -297,7 +295,7 @@ it.each(["payload", "webhook"] as const)(
           jobId: job.id,
           jobPresent: true,
         });
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(phase === "webhook" ? 1 : 0);
+        expect(runSessionEvent).toHaveBeenCalledTimes(phase === "webhook" ? 1 : 0);
         expect(sendCronWebhook).not.toHaveBeenCalled();
         await expect(cron.remove(job.id)).resolves.toEqual({
           ok: true,
@@ -312,8 +310,7 @@ it.each(["payload", "webhook"] as const)(
         Atomics.store(gate, 2, 1);
         Atomics.notify(gate, 2);
         await expect(run).resolves.toMatchObject({ ok: true, ran: true });
-        expect(enqueueSystemEvent).toHaveBeenCalledTimes(phase === "webhook" ? 1 : 0);
-        expect(requestHeartbeat).toHaveBeenCalledTimes(phase === "webhook" ? 1 : 0);
+        expect(runSessionEvent).toHaveBeenCalledTimes(phase === "webhook" ? 1 : 0);
         expect(sendCronWebhook).not.toHaveBeenCalled();
       } finally {
         Atomics.store(gate, 2, 1);

@@ -30,6 +30,7 @@ import {
   type PersistedClawMcpServerRef,
 } from "./mcp.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";
+import { installPortableHeartbeat } from "./portable-heartbeat.js";
 import {
   deleteClawInstallRecord,
   persistClawInstallRecord,
@@ -393,6 +394,7 @@ export async function applyClawAddPlan(
     });
   }
 
+  let committedConfig: OpenClawConfig;
   try {
     const commit: ConfigCommit =
       options.commitConfig ??
@@ -419,6 +421,7 @@ export async function applyClawAddPlan(
       );
       if (existingAgent) {
         if (sameCommittedAgent(existingAgent, plan)) {
+          committedConfig = config;
           return config;
         }
         if (
@@ -427,7 +430,7 @@ export async function applyClawAddPlan(
           options.resumeRecord.status !== "complete" &&
           sameCommittedAgent(existingAgent, options.resumePlan)
         ) {
-          return {
+          committedConfig = {
             ...configWithPreservedAgents,
             agents: {
               ...configWithPreservedAgents.agents,
@@ -438,6 +441,7 @@ export async function applyClawAddPlan(
               ),
             },
           };
+          return committedConfig;
         }
         throw new ClawAddMutationError(
           "agent_id_collision",
@@ -456,7 +460,7 @@ export async function applyClawAddPlan(
       const nextConfig = applyAgentConfig(configWithPreservedAgents, {
         agentId: normalizedAgentId,
       });
-      return {
+      committedConfig = {
         ...nextConfig,
         agents: {
           ...nextConfig.agents,
@@ -466,6 +470,7 @@ export async function applyClawAddPlan(
           },
         },
       };
+      return committedConfig;
     });
     // The transform runs before persistence can still fail; record the fact only after commit.
     // Moving this into the callback retains the workspace and reports a write that never landed.
@@ -590,6 +595,7 @@ export async function applyClawAddPlan(
   const installCronJobs = options.installCronJobs ?? installClawCronJobs;
   try {
     cronJobs = await installCronJobs(plan, { ...options, gateway: options.cronGateway });
+    await installPortableHeartbeat(plan, committedConfig!, options);
   } catch (error) {
     const cronError = error instanceof ClawCronInstallError ? error : undefined;
     markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
