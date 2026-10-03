@@ -1,9 +1,10 @@
-// Shared ClawHub exact-release trust gate for plugin and skill installs.
+// Shared ClawHub exact-release trust gate for plugin, skill, and Claw installs.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { stripAnsi, visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { resolveClawHubBaseUrl, type ClawHubFetch } from "./clawhub-client.js";
+import { normalizeClawHubSha256Hex } from "./clawhub-integrity.js";
 import {
   fetchClawHubPackageSecurity,
   type ClawHubPackageSecurityResponse,
@@ -62,6 +63,12 @@ type ClawHubFetchedSubjectSecurity = {
     subject?: string;
     security?: string;
   };
+};
+
+type ClawHubExpectedClawArtifact = {
+  sha256: string;
+  npmIntegrity: string;
+  npmShasum?: string;
 };
 
 const CLAWHUB_BLOCKING_MODERATION_STATES = new Set(["blocked", "quarantined", "revoked"]);
@@ -284,6 +291,7 @@ function validateClawHubSecurityIdentity(params: {
   packageLabel?: string;
   version: string;
   expectedFamily?: string;
+  expectedClawArtifact?: ClawHubExpectedClawArtifact;
 }): ClawHubTrustFailure | null {
   const packageLabel = params.packageLabel ?? params.packageName;
   const responsePackageName = normalizeOptionalString(params.security.package?.name);
@@ -311,6 +319,32 @@ function validateClawHubSecurityIdentity(params: {
       code: CLAWHUB_TRUST_ERROR_CODE.CLAWHUB_SECURITY_UNAVAILABLE,
       version: params.version,
     };
+  }
+  if (params.expectedFamily === "claw" && !params.expectedClawArtifact) {
+    return {
+      ok: false,
+      error: `ClawHub release trust check for "${formatClawHubReleaseLabel(packageLabel, params.version)}" has no selected artifact identity.`,
+      code: CLAWHUB_TRUST_ERROR_CODE.CLAWHUB_SECURITY_UNAVAILABLE,
+      version: params.version,
+    };
+  }
+  if (params.expectedClawArtifact) {
+    const release = params.security.release;
+    if (
+      release?.artifactKind !== "npm-pack" ||
+      normalizeClawHubSha256Hex(release.artifactSha256 ?? "") !==
+        params.expectedClawArtifact.sha256 ||
+      release.npmIntegrity !== params.expectedClawArtifact.npmIntegrity ||
+      (params.expectedClawArtifact.npmShasum !== undefined &&
+        release.npmShasum !== params.expectedClawArtifact.npmShasum)
+    ) {
+      return {
+        ok: false,
+        error: `ClawHub release trust check for "${formatClawHubReleaseLabel(packageLabel, params.version)}" returned a different artifact identity.`,
+        code: CLAWHUB_TRUST_ERROR_CODE.CLAWHUB_SECURITY_UNAVAILABLE,
+        version: params.version,
+      };
+    }
   }
   return null;
 }
@@ -530,6 +564,7 @@ async function fetchClawHubSubjectSecurity(params: {
 export async function checkClawHubPackageTrust(params: {
   subject: ClawHubTrustSubject;
   version: string;
+  expectedClawArtifact?: ClawHubExpectedClawArtifact;
   baseUrl?: string;
   token?: string;
   timeoutMs?: number;
@@ -558,6 +593,9 @@ export async function checkClawHubPackageTrust(params: {
       packageLabel,
       version: params.version,
       ...(params.subject.kind === "claw" ? { expectedFamily: "claw" } : {}),
+      ...(params.subject.kind === "claw" && params.expectedClawArtifact
+        ? { expectedClawArtifact: params.expectedClawArtifact }
+        : {}),
     });
     if (identityFailure) {
       return identityFailure;

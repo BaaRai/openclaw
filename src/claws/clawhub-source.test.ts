@@ -52,6 +52,26 @@ const version = "1.0.0";
 const archiveBytes = Buffer.alloc(321);
 const digest = createHash("sha256").update(archiveBytes).digest("hex");
 const tempDirs = createTrackedTempDirs();
+const matchingSecurity = {
+  package: { name: packageName, family: "claw" },
+  release: {
+    version,
+    artifactKind: "npm-pack",
+    artifactSha256: digest,
+    npmIntegrity: "sha512-proof",
+  },
+  overview: "No concerning capabilities found.",
+  verdict: "benign",
+  securityAuditUrl: "https://clawhub.ai/openclaw/claws/research-briefing/security-audit",
+  trust: {
+    scanStatus: "clean",
+    moderationState: "approved",
+    blockedFromDownload: false,
+    reasons: [],
+    pending: false,
+    stale: false,
+  },
+};
 
 function officialPackage(name = packageName) {
   return {
@@ -439,25 +459,58 @@ describe("verified ClawHub Claw source", () => {
     expect(mocks.extract).not.toHaveBeenCalled();
   });
 
+  it("accepts a security verdict for the selected Claw artifact before download", async () => {
+    await prepareResolverFixture();
+    const { checkClawHubPackageTrust } = await vi.importActual<
+      typeof import("../infra/clawhub-install-trust.js")
+    >("../infra/clawhub-install-trust.js");
+    mocks.security.mockResolvedValue(matchingSecurity);
+    mocks.trust.mockImplementation(checkClawHubPackageTrust);
+
+    await expect(
+      withResolvedClawHubSource({
+        coordinate: { packageName, version },
+        mode: "preview",
+        run: async () => undefined,
+      }),
+    ).resolves.toMatchObject({ riskAcknowledgementRequired: false });
+    expect(mocks.download).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a mismatched security artifact before download even with risk acknowledged", async () => {
+    const { stateDir } = await prepareResolverFixture();
+    const { checkClawHubPackageTrust } = await vi.importActual<
+      typeof import("../infra/clawhub-install-trust.js")
+    >("../infra/clawhub-install-trust.js");
+    mocks.security.mockResolvedValue({
+      ...matchingSecurity,
+      release: { ...matchingSecurity.release, artifactSha256: "b".repeat(64) },
+    });
+    mocks.trust.mockImplementation(checkClawHubPackageTrust);
+
+    await expect(
+      withResolvedClawHubSource({
+        coordinate: { packageName, version },
+        mode: "apply",
+        acknowledgeClawHubRisk: true,
+        stateDir,
+        run: async () => undefined,
+      }),
+    ).rejects.toMatchObject({ code: "clawhub_security_unavailable" });
+    expect(mocks.download).not.toHaveBeenCalled();
+    expect(mocks.extract).not.toHaveBeenCalled();
+    await expect(fs.stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("requires a fresh risk acknowledgement on apply and never persists denied content", async () => {
     const { stateDir } = await prepareResolverFixture();
     const { checkClawHubPackageTrust } = await vi.importActual<
       typeof import("../infra/clawhub-install-trust.js")
     >("../infra/clawhub-install-trust.js");
     mocks.security.mockResolvedValue({
-      package: { name: packageName, family: "claw" },
-      release: { version },
+      ...matchingSecurity,
       overview: "No security analysis has been recorded yet.",
       verdict: "review",
-      securityAuditUrl: "https://clawhub.ai/openclaw/claws/research-briefing/security-audit",
-      trust: {
-        scanStatus: "clean",
-        moderationState: "approved",
-        blockedFromDownload: false,
-        reasons: [],
-        pending: false,
-        stale: false,
-      },
     });
     mocks.trust.mockImplementation(checkClawHubPackageTrust);
 
