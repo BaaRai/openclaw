@@ -52,6 +52,10 @@ import {
 const fixture = useClawMonitorFixture();
 
 describe("Claw serving monitor cleanup", () => {
+  it.each(["WORKER", "worker "])("rejects noncanonical monitor agent ID %j", async (agentId) =>
+    expect((await fixture(false)).invoke({ phase: "inspect", agentId })).rejects.toThrow(/Invalid/),
+  );
+
   it("releases the deleted agent's reverse directory owner after complete removal", async () => {
     const current = await fixture(false);
     const agentDir = resolveAgentDir(current.getConfig(), "worker");

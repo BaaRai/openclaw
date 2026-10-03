@@ -34,6 +34,7 @@ import { resolveSkillCollectionReviewMonitorSpecs } from "../../cron/skill-colle
 import { cronStoreKey } from "../../cron/store/key.js";
 import { hasActiveCronRunReceiptsForAgent } from "../../cron/store/run-receipt-drain.js";
 import type { CronJob, CronJobCreate } from "../../cron/types.js";
+import { normalizeAgentIdStrict } from "../../routing/session-key.js";
 import { closeSkillsWatchersForAgent } from "../../skills/runtime/refresh.js";
 import {
   invalidateRegisteredAgentDatabasesMemo,
@@ -49,7 +50,11 @@ export type ClawMonitorContext = Pick<
 >;
 
 const text = z.string().min(1).max(4096);
-const target = { agentId: text, binding: clawMonitorCleanupBindingSchema };
+const canonicalAgentId = text.refine((value) => {
+  const normalized = normalizeAgentIdStrict(value);
+  return normalized.ok && normalized.value === value;
+});
+const target = { agentId: canonicalAgentId, binding: clawMonitorCleanupBindingSchema };
 const paramsSchema = z.discriminatedUnion("phase", [
   z.object({ ...target, phase: z.literal("inspect") }).strict(),
   z
