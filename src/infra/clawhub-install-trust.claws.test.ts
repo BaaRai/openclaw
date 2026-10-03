@@ -1,15 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { checkClawHubPackageTrust } from "./clawhub-install-trust.js";
 
 const subject = { kind: "claw" as const, packageName: "@openclaw/research-briefing" };
 const version = "1.0.0";
 
-function securityResponse(family: string, warned = false) {
+function securityResponse(
+  family: string,
+  warned = false,
+  verdict: string | null = "benign",
+  trustOverrides: Record<string, unknown> = {},
+) {
   return new Response(
     JSON.stringify({
       package: { name: subject.packageName, displayName: "Research Briefing", family },
       release: { version },
       overview: "No concerning capabilities found.",
+      ...(verdict ? { verdict } : {}),
       securityAuditUrl: "https://clawhub.example/audit",
       trust: {
         scanStatus: warned ? "suspicious" : "clean",
@@ -18,6 +24,7 @@ function securityResponse(family: string, warned = false) {
         reasons: warned ? ["scan:suspicious"] : [],
         pending: false,
         stale: false,
+        ...trustOverrides,
       },
     }),
     { status: 200, headers: { "content-type": "application/json" } },
@@ -72,4 +79,60 @@ describe("ClawHub Claw trust", () => {
     expect(observedWarning).toBeTruthy();
     expect(observedWarning).toBe(result.warning);
   });
+
+  it.each([
+    ["review", "review-required"],
+    ["suspicious", "review-required"],
+    ["warn", "review-required"],
+    ["pending", "review-required"],
+    ["unknown", "review-required"],
+    [null, "review-required"],
+    ["malicious", "blocked"],
+    ["blocked", "blocked"],
+  ] as const)(
+    "does not call a clean trust scan Safe when the aggregate verdict is %s",
+    async (verdict, disposition) => {
+      const logger = { info: vi.fn(), warn: vi.fn() };
+      const result = await checkClawHubPackageTrust({
+        subject,
+        version,
+        fetchImpl: async () => securityResponse("claw", false, verdict),
+        logger,
+      });
+
+      if (disposition === "blocked") {
+        expect(result).toMatchObject({ ok: false, code: "clawhub_download_blocked" });
+        expect(result.warning).toContain("Outcome: Blocked");
+      } else {
+        expect(result).toMatchObject({
+          ok: true,
+          trustInstallRecordFields: { clawhubTrustDisposition: "review-required" },
+        });
+        expect(result.warning).toContain("Outcome: Review");
+      }
+      expect(logger.info).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pending", "stale"] as const)(
+    "requires Claw Add acknowledgement when publisher trust is %s despite a clean aggregate verdict",
+    async (state) => {
+      const result = await checkClawHubPackageTrust({
+        subject,
+        version,
+        fetchImpl: async () =>
+          securityResponse("claw", false, "benign", {
+            scanStatus: state,
+            reasons: [`scan:${state}`],
+            [state]: true,
+          }),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        trustInstallRecordFields: { clawhubTrustDisposition: "review-required" },
+      });
+      expect(result.warning).toContain("Outcome: Review");
+    },
+  );
 });

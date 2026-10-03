@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   detail: vi.fn(),
   version: vi.fn(),
   artifact: vi.fn(),
+  security: vi.fn(),
   download: vi.fn(),
   trust: vi.fn(),
   extract: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../infra/clawhub-packages.js", () => ({
   fetchClawHubPackageDetail: mocks.detail,
   fetchClawHubPackageVersion: mocks.version,
   fetchClawHubPackageArtifact: mocks.artifact,
+  fetchClawHubPackageSecurity: mocks.security,
 }));
 vi.mock("../infra/clawhub-artifacts.js", () => ({
   downloadClawHubPackageArchive: mocks.download,
@@ -439,11 +441,25 @@ describe("verified ClawHub Claw source", () => {
 
   it("requires a fresh risk acknowledgement on apply and never persists denied content", async () => {
     const { stateDir } = await prepareResolverFixture();
-    mocks.trust.mockResolvedValue({
-      ok: true,
-      warning: "Security review required.",
-      trustInstallRecordFields: { clawhubTrustDisposition: "review-required" },
+    const { checkClawHubPackageTrust } = await vi.importActual<
+      typeof import("../infra/clawhub-install-trust.js")
+    >("../infra/clawhub-install-trust.js");
+    mocks.security.mockResolvedValue({
+      package: { name: packageName, family: "claw" },
+      release: { version },
+      overview: "No security analysis has been recorded yet.",
+      verdict: "review",
+      securityAuditUrl: "https://clawhub.ai/openclaw/claws/research-briefing/security-audit",
+      trust: {
+        scanStatus: "clean",
+        moderationState: "approved",
+        blockedFromDownload: false,
+        reasons: [],
+        pending: false,
+        stale: false,
+      },
     });
+    mocks.trust.mockImplementation(checkClawHubPackageTrust);
 
     await expect(
       withResolvedClawHubSource({
