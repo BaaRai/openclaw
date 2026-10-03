@@ -143,9 +143,8 @@ describe("Claw serving monitor cleanup", () => {
     const releaseClose = createDeferred();
     const close = vi
       .spyOn(skillsRefresh, "closeSkillsWatchersForAgent")
-      .mockImplementation(async ({ agentId, workspaceDir }) => {
+      .mockImplementation(async ({ agentId }) => {
         expect(agentId).toBe("worker");
-        expect(workspaceDir).toBe(current.workspaceDir);
         closeStarted.resolve();
         await releaseClose.promise;
       });

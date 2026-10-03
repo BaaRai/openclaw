@@ -143,7 +143,7 @@ describe("skills watcher subscription lifecycle", () => {
 
     let drain: Promise<void> | undefined;
     try {
-      drain = refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+      drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
       await awaitGateBeforeSettlement(
         watcher.closeStarted,
         drain,
@@ -162,6 +162,86 @@ describe("skills watcher subscription lifecycle", () => {
     expect(watcher.close).toHaveBeenCalledOnce();
   });
 
+  it("retires a watcher registered through a workspace alias when removal names the real path", async () => {
+    const workspaceDir = fixtureWorkspaceDir;
+    const alias = path.join(fixture.root, "workspace-alias");
+    await fs.symlink(workspaceDir, alias, process.platform === "win32" ? "junction" : "dir");
+    refreshModule.ensureSkillsWatcher({ workspaceDir: alias, agentId: "worker" });
+    await observer.readyAll();
+    const watcher = observer.forRoot(path.join(alias, "skills"));
+
+    await refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
+
+    expect(watcher.close).toHaveBeenCalledOnce();
+  });
+
+  it("joins detached watcher retirement after its workspace alias is repointed", async () => {
+    const workspaceDir = fixtureWorkspaceDir;
+    const replacement = await createFixtureDirectory("replacement-workspace");
+    const alias = path.join(fixture.root, "workspace-alias");
+    await fs.symlink(workspaceDir, alias, process.platform === "win32" ? "junction" : "dir");
+    refreshModule.ensureSkillsWatcher({ workspaceDir: alias, agentId: "worker" });
+    await observer.readyAll();
+    const watcher = observer.forRoot(path.join(alias, "skills"));
+    const releaseClose = createDeferred();
+    watcher.holdClose(releaseClose.promise);
+    refreshModule.ensureSkillsWatcher({
+      workspaceDir: alias,
+      agentId: "worker",
+      config: { skills: { load: { watch: false } } },
+    });
+    await watcher.closeStarted;
+    await fs.unlink(alias);
+    await fs.symlink(replacement, alias, process.platform === "win32" ? "junction" : "dir");
+
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
+    let drained = false;
+    void drain.then(() => {
+      drained = true;
+    });
+    try {
+      await waitForSkillsWatcherTurn();
+      expect(drained).toBe(false);
+    } finally {
+      releaseClose.resolve();
+    }
+    await drain;
+    expect(watcher.close).toHaveBeenCalledOnce();
+  });
+
+  it("joins watcher retirement when the alias moves before watch disable", async () => {
+    const workspaceDir = fixtureWorkspaceDir;
+    const replacement = await createFixtureDirectory("replacement-workspace");
+    const alias = path.join(fixture.root, "workspace-alias");
+    await fs.symlink(workspaceDir, alias, process.platform === "win32" ? "junction" : "dir");
+    refreshModule.ensureSkillsWatcher({ workspaceDir: alias, agentId: "worker" });
+    await observer.readyAll();
+    const watcher = observer.forRoot(path.join(alias, "skills"));
+    const releaseClose = createDeferred();
+    watcher.holdClose(releaseClose.promise);
+    await fs.unlink(alias);
+    await fs.symlink(replacement, alias, process.platform === "win32" ? "junction" : "dir");
+    refreshModule.ensureSkillsWatcher({
+      workspaceDir: alias,
+      agentId: "worker",
+      config: { skills: { load: { watch: false } } },
+    });
+    await watcher.closeStarted;
+
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
+    let drained = false;
+    void drain.then(() => {
+      drained = true;
+    });
+    try {
+      await waitForSkillsWatcherTurn();
+      expect(drained).toBe(false);
+    } finally {
+      releaseClose.resolve();
+    }
+    await drain;
+  });
+
   it("joins a workspace watcher already closing after detached reconciliation", async () => {
     const workspaceDir = fixtureWorkspaceDir;
     refreshModule.ensureSkillsWatcher({ workspaceDir, agentId: "worker" });
@@ -176,7 +256,7 @@ describe("skills watcher subscription lifecycle", () => {
     });
     await watcher.closeStarted;
 
-    const drain = refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
     let drained = false;
     void drain.then(() => {
       drained = true;
@@ -210,7 +290,7 @@ describe("skills watcher subscription lifecycle", () => {
     });
     await watcher.closeStarted;
 
-    const drain = refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
     let drained = false;
     void drain.then(() => {
       drained = true;
@@ -232,10 +312,30 @@ describe("skills watcher subscription lifecycle", () => {
     await observer.readyAll();
     const watcher = observer.forRoot(path.join(workspaceDir, "skills"));
 
-    await refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+    await refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
     expect(watcher.close).not.toHaveBeenCalled();
-    await refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "survivor" });
+    await refreshModule.closeSkillsWatchersForAgent({ agentId: "survivor" });
     expect(watcher.close).toHaveBeenCalledOnce();
+  });
+
+  it("retires all workspaces owned by the removed agent", async () => {
+    const movedWorkspace = await createFixtureDirectory("moved-workspace");
+    const survivorWorkspace = await createFixtureDirectory("survivor-workspace");
+    await createFixtureDirectory("moved-workspace/skills");
+    await createFixtureDirectory("survivor-workspace/skills");
+    refreshModule.ensureSkillsWatcher({ workspaceDir: fixtureWorkspaceDir, agentId: "worker" });
+    refreshModule.ensureSkillsWatcher({ workspaceDir: movedWorkspace, agentId: "worker" });
+    refreshModule.ensureSkillsWatcher({ workspaceDir: survivorWorkspace, agentId: "survivor" });
+    await observer.readyAll();
+    const original = observer.forRoot(path.join(fixtureWorkspaceDir, "skills"));
+    const moved = observer.forRoot(path.join(movedWorkspace, "skills"));
+    const survivor = observer.forRoot(path.join(survivorWorkspace, "skills"));
+
+    await refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
+
+    expect(original.close).toHaveBeenCalledOnce();
+    expect(moved.close).toHaveBeenCalledOnce();
+    expect(survivor.close).not.toHaveBeenCalled();
   });
 
   it("preserves a replacement owner acquired during physical watcher retirement", async () => {
@@ -254,7 +354,7 @@ describe("skills watcher subscription lifecycle", () => {
     await original.closeStarted;
     refreshModule.ensureSkillsWatcher({ workspaceDir, agentId: "survivor" });
 
-    const drain = refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
     let drained = false;
     void drain.then(() => {
       drained = true;
@@ -270,7 +370,7 @@ describe("skills watcher subscription lifecycle", () => {
     const replacement = observer.forRoot(root);
     expect(replacement).not.toBe(original);
     expect(replacement.close).not.toHaveBeenCalled();
-    await refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "survivor" });
+    await refreshModule.closeSkillsWatchersForAgent({ agentId: "survivor" });
     expect(replacement.close).toHaveBeenCalledOnce();
   });
 
@@ -281,7 +381,7 @@ describe("skills watcher subscription lifecycle", () => {
     const original = observer.forRoot(path.join(workspaceDir, "skills"));
     const releaseClose = createDeferred();
     original.holdClose(releaseClose.promise);
-    const drain = refreshModule.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+    const drain = refreshModule.closeSkillsWatchersForAgent({ agentId: "worker" });
     try {
       await awaitGateBeforeSettlement(
         original.closeStarted,

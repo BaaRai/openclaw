@@ -409,7 +409,6 @@ export const clawsMonitorHandlers = {
           resolveAgentDeleteRuntimeDirs(input.agentId, journal.agentDir, registry.result.entries),
         );
         await closeSkillsWatchersForAgent({
-          workspaceDir: journal.workspaceDir,
           agentId: input.agentId,
         });
         await assertCurrent();

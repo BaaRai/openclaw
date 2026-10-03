@@ -1,4 +1,3 @@
-import { isPathInside } from "../../infra/path-guards.js";
 import { closeRemoteSkillsWatchersForAgent, disposeRemoteSkillsWatcher } from "./refresh-remote.js";
 import {
   unsubscribeWorkspaceFromPath,
@@ -59,14 +58,9 @@ export function disposeWorkspaceWatchState(
   return closing;
 }
 
-export async function closeSkillsWatchersForAgent(params: {
-  workspaceDir: string;
-  agentId: string;
-}): Promise<void> {
-  const matchesOwner = (owner: SkillsWatchOwner) =>
-    owner.agentId === params.agentId &&
-    isPathInside(owner.workspaceDir, params.workspaceDir) &&
-    isPathInside(params.workspaceDir, owner.workspaceDir);
+export async function closeSkillsWatchersForAgent(params: { agentId: string }): Promise<void> {
+  // A moved workspace can leave old subscriptions behind; the agent ID owns them all.
+  const matchesOwner = (owner: SkillsWatchOwner) => owner.agentId === params.agentId;
   const closing = new Set<Promise<void>>();
   for (const [watcherKey, owner] of workspaceWatchOwners) {
     if (matchesOwner(owner)) {

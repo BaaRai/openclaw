@@ -29,12 +29,12 @@ it("keeps Claw removal partial across retries after a physical watcher close fai
   });
   await watcher.closeStarted;
 
-  const drain = refresh.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" });
+  const drain = refresh.closeSkillsWatchersForAgent({ agentId: "worker" });
   const failure = expect(drain).rejects.toThrow(/restart the Gateway, preview removal, and retry/);
   close.reject(new Error("synthetic Windows EPERM"));
   await failure;
-  await expect(
-    refresh.closeSkillsWatchersForAgent({ workspaceDir, agentId: "worker" }),
-  ).rejects.toThrow(/restart the Gateway, preview removal, and retry/);
+  await expect(refresh.closeSkillsWatchersForAgent({ agentId: "worker" })).rejects.toThrow(
+    /restart the Gateway, preview removal, and retry/,
+  );
   expect(watcher.close).toHaveBeenCalledOnce();
 });
