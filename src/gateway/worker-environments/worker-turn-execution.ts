@@ -130,15 +130,14 @@ export async function executeWorkerTurn(
   await recoverWorkspaceBeforeTurn({ ...params, signal: turn.abortSignal });
   params.assertRunCurrent?.();
   turn.abortSignal?.throwIfAborted();
-  // Shared account refresh and repository lookup own their own lifetime. A
-  // cancelled turn may stop waiting, but cannot consume a late binding.
-  const githubContext = {
-    ...placement,
-    assertCurrent: () =>
-      !turn.abortSignal?.aborted && params.placements.validateTurnClaim(params.turnClaim),
-  };
+  // Cancellation stops this turn waiting, not the shared account lookup.
   const githubPublicationAvailable = await raceNodeWorkerOperation(
-    prepareGitHubPublicationAvailability({ ...githubContext, sessionTarget: turn.sessionTarget }),
+    prepareGitHubPublicationAvailability({
+      ...placement,
+      sessionTarget: turn.sessionTarget,
+      assertCurrent: () =>
+        !turn.abortSignal?.aborted && params.placements.validateTurnClaim(params.turnClaim),
+    }),
     turn.abortSignal,
   );
   params.assertRunCurrent?.();
@@ -298,7 +297,6 @@ export async function executeWorkerTurn(
     assertSourceCurrent,
   });
   assertActive();
-  const authority = runtimeIdentity.approvalAuthority;
   const authorityAbort = new AbortController();
   const signal = AbortSignal.any(
     [turn.abortSignal, operatorAuthority?.signal, authorityAbort.signal].filter(
@@ -357,23 +355,18 @@ export async function executeWorkerTurn(
       throw new StaleWorkerBuildError();
     }
     const preparingGitHubGrant = prepareWorkerGitHubBindingGrant({
+      ...placement,
       operatorAuthority,
       signal,
-      sessionId: placement.sessionId,
-      sessionKey: placement.sessionKey,
-      agentId: placement.agentId,
       assertCurrent: isAuthorized,
     });
     try {
       githubGrant = await raceNodeWorkerOperation(preparingGitHubGrant, signal);
+      signal.throwIfAborted();
     } catch (error) {
       // The shared account owner may finish after cancellation; retire any late execution copy.
       void preparingGitHubGrant.then(revokeWorkerGitHubBindingGrant, () => {});
       throw error;
-    }
-    if (signal.aborted) {
-      await revokeWorkerGitHubBindingGrant(githubGrant);
-      signal.throwIfAborted();
     }
     if (githubGrant?.refresh) {
       bindWorkerTurnGitHubGrant(params.placements, params.turnClaim, githubGrant);

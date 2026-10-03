@@ -210,88 +210,100 @@ describe("worker GitHub launch binding", () => {
     },
   );
 
-  it("delivers profile rotations automatically, retries failed delivery, and joins delivery on cleanup", async () => {
-    const profileDir = await installProfile();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    const grant = await prepareWorkerGitHubBindingGrant(session);
-    expect(grant).toBeDefined();
-    const firstDelivery = createDeferredCore();
-    const retryDelivery = createDeferredCore();
-    const heldDelivery = createDeferredCore();
-    const releaseDelivery = createDeferredCore();
-    const followupDelivery = createDeferredCore();
-    const releaseFollowup = createDeferredCore();
-    const install = vi
-      .fn()
-      .mockImplementationOnce(async () => {
-        firstDelivery.resolve();
-        throw new Error("synthetic transient transport failure");
-      })
-      .mockImplementationOnce(async () => {
-        retryDelivery.resolve();
-      })
-      .mockImplementationOnce(async () => {
-        heldDelivery.resolve();
-        await releaseDelivery.promise;
-      })
-      .mockImplementationOnce(async () => {
-        followupDelivery.resolve();
-        await releaseFollowup.promise;
-      });
-    const stop = grant!.startRenewal!(install);
-    try {
-      await writeManagedGitHubProfileFiles(profileDir, {
-        login: verified.account.login,
-        token: "synthetic-auto-token-1",
-      });
-      await vi.advanceTimersByTimeAsync(1);
-      await firstDelivery.promise;
-      expect(grant!.binding.token).toBe(token);
-      await vi.advanceTimersByTimeAsync(60_000);
-      await retryDelivery.promise;
-      // The consumer's completed installation acknowledges the exact pending generation.
-      await vi.advanceTimersByTimeAsync(0);
-      expect(install).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ generation: 1, token: "synthetic-auto-token-1" }),
-      );
-      expect(grant!.binding.token).toBe("synthetic-auto-token-1");
-      await writeManagedGitHubProfileFiles(profileDir, {
-        login: verified.account.login,
-        token: "synthetic-auto-token-2",
-      });
-      await vi.advanceTimersByTimeAsync(1);
-      await heldDelivery.promise;
-      await writeManagedGitHubProfileFiles(profileDir, {
-        login: verified.account.login,
-        token: "synthetic-auto-token-3",
-      });
-      releaseDelivery.resolve();
-      await followupDelivery.promise;
-      expect(install).toHaveBeenNthCalledWith(
-        4,
-        expect.objectContaining({ generation: 3, token: "synthetic-auto-token-3" }),
-      );
-      let settled = false;
-      const cleanup = grant!.revoke().then(() => {
-        settled = true;
-      });
-      await Promise.resolve();
-      expect(settled).toBe(false);
-      expect(grant!.signal!.aborted).toBe(true);
-      releaseFollowup.resolve();
-      await cleanup;
-      expect(settled).toBe(true);
-      await vi.advanceTimersByTimeAsync(120_000);
-      expect(install).toHaveBeenCalledTimes(4);
-    } finally {
-      releaseDelivery.resolve();
-      releaseFollowup.resolve();
-      stop();
-      await grant!.revoke();
-    }
-    expect((await prepareWorkerGitHubBinding(session))?.token).toBe("synthetic-auto-token-3");
-  });
+  it.each(["before renewal", "after renewal"] as const)(
+    "delivers rotations %s, retries failed delivery, and joins cleanup",
+    async (timing) => {
+      const profileDir = await installProfile();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const grant = await prepareWorkerGitHubBindingGrant(session);
+      expect(grant).toBeDefined();
+      const firstDelivery = createDeferredCore();
+      const retryDelivery = createDeferredCore();
+      const heldDelivery = createDeferredCore();
+      const releaseDelivery = createDeferredCore();
+      const followupDelivery = createDeferredCore();
+      const releaseFollowup = createDeferredCore();
+      const install = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          firstDelivery.resolve();
+          throw new Error("synthetic transient transport failure");
+        })
+        .mockImplementationOnce(async () => {
+          retryDelivery.resolve();
+        })
+        .mockImplementationOnce(async () => {
+          heldDelivery.resolve();
+          await releaseDelivery.promise;
+        })
+        .mockImplementationOnce(async () => {
+          followupDelivery.resolve();
+          await releaseFollowup.promise;
+        });
+      const rotate = () =>
+        writeManagedGitHubProfileFiles(profileDir, {
+          login: verified.account.login,
+          token: "synthetic-auto-token-1",
+        });
+      if (timing === "before renewal") {
+        await rotate();
+      }
+      const schedule = vi.spyOn(globalThis, "setTimeout");
+      const stop = grant!.startRenewal!(install);
+      try {
+        if (timing === "after renewal") {
+          await rotate();
+        }
+        expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1);
+        await vi.advanceTimersByTimeAsync(1);
+        await firstDelivery.promise;
+        expect(grant!.binding.token).toBe(token);
+        await vi.advanceTimersByTimeAsync(60_000);
+        await retryDelivery.promise;
+        // The consumer's completed installation acknowledges the exact pending generation.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(install).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({ generation: 1, token: "synthetic-auto-token-1" }),
+        );
+        expect(grant!.binding.token).toBe("synthetic-auto-token-1");
+        await writeManagedGitHubProfileFiles(profileDir, {
+          login: verified.account.login,
+          token: "synthetic-auto-token-2",
+        });
+        await vi.advanceTimersByTimeAsync(1);
+        await heldDelivery.promise;
+        await writeManagedGitHubProfileFiles(profileDir, {
+          login: verified.account.login,
+          token: "synthetic-auto-token-3",
+        });
+        releaseDelivery.resolve();
+        await followupDelivery.promise;
+        expect(install).toHaveBeenNthCalledWith(
+          4,
+          expect.objectContaining({ generation: 3, token: "synthetic-auto-token-3" }),
+        );
+        let settled = false;
+        const cleanup = grant!.revoke().then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(grant!.signal!.aborted).toBe(true);
+        releaseFollowup.resolve();
+        await cleanup;
+        expect(settled).toBe(true);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(install).toHaveBeenCalledTimes(4);
+      } finally {
+        releaseDelivery.resolve();
+        releaseFollowup.resolve();
+        stop();
+        await grant!.revoke();
+      }
+      expect((await prepareWorkerGitHubBinding(session))?.token).toBe("synthetic-auto-token-3");
+    },
+  );
 
   it("keeps a profile rotation that arrives while credential verification is pending", async () => {
     const profileDir = await installProfile();

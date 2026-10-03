@@ -181,7 +181,8 @@ export function createWorkerGitHubBindingGrant(params: {
         throw new Error("Worker GitHub grant already has a renewal consumer");
       }
       install = consumer;
-      schedule(60_000);
+      // A profile may rotate while node approval is pending and no consumer is attached.
+      schedule(params.refreshRequired?.() ? 1 : 60_000);
       return () => {
         renewalStopped = true;
         clearTimeout(renewalTimer);
