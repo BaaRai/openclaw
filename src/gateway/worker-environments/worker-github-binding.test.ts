@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   verify: vi.fn(),
   worktree: vi.fn(),
+  worktreeRead: vi.fn(),
   repository: vi.fn(),
   repositoryWorkspace: vi.fn(),
   session: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock("../../agents/worktrees/service.js", () => ({
 vi.mock("../../agents/worktrees/registry-read.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/worktrees/registry-read.js")>()),
   readLiveRegistryWorktreeByOwner: async (_context: unknown, kind: string, id: string) =>
-    mocks.worktree(kind, id),
+    mocks.worktreeRead(kind, id),
 }));
 vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.session }));
 vi.mock("../session-utils-store-worker.js", async (importOriginal) => ({
@@ -112,6 +113,7 @@ describe("worker GitHub launch binding", () => {
     mocks.oauth.mockReset().mockReturnValue({ state: "missing" });
     mocks.verify.mockReset().mockResolvedValue(verified);
     mocks.worktree.mockReset().mockReturnValue(worktree);
+    mocks.worktreeRead.mockReset().mockImplementation((kind, id) => mocks.worktree(kind, id));
     mocks.repository.mockReset().mockResolvedValue({ originUrl: "git@github.com:owner/repo.git" });
     mocks.repositoryWorkspace.mockReset();
     mocks.session.mockReset().mockReturnValue({
@@ -335,6 +337,35 @@ describe("worker GitHub launch binding", () => {
     }
   });
 
+  it.each(["repository lookup", "workspace read"] as const)(
+    "retains profile rotation during grant %s",
+    async (phase) => {
+      const profileDir = await installProfile();
+      const rotate = () =>
+        writeManagedGitHubProfileFiles(profileDir, {
+          login: verified.account.login,
+          token: "synthetic-preparation-rotation",
+        });
+      if (phase === "repository lookup") {
+        mocks.repository.mockImplementationOnce(async () => {
+          await rotate();
+          return { originUrl: "git@github.com:owner/repo.git" };
+        });
+      } else {
+        mocks.worktreeRead.mockResolvedValueOnce(worktree).mockImplementationOnce(async () => {
+          await rotate();
+          return worktree;
+        });
+      }
+      const grant = await prepareWorkerGitHubBindingGrant(session);
+      try {
+        expect(grant?.binding.token).toBe("synthetic-preparation-rotation");
+      } finally {
+        await grant?.revoke();
+      }
+    },
+  );
+
   it("binds selected credentials for non-repository turns without checkout metadata or native fallback", async () => {
     mocks.session.mockReturnValue({
       canonicalKey: session.sessionKey,
@@ -365,6 +396,42 @@ describe("worker GitHub launch binding", () => {
       await grant?.revoke();
     }
   });
+
+  it.each(["preparation", "repository lookup", "renewal"] as const)(
+    "rejects changed workspace facts from the reader during %s",
+    async (phase) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      await installProfile();
+      let grant: Awaited<ReturnType<typeof prepareWorkerGitHubBindingGrant>>;
+      try {
+        if (phase === "renewal") {
+          grant = await prepareWorkerGitHubBindingGrant(session);
+          vi.setSystemTime(Date.now() + 60_001);
+        } else {
+          mocks.worktreeRead.mockResolvedValueOnce(worktree);
+        }
+        const replaceWorkspace = () =>
+          mocks.worktreeRead.mockResolvedValue({ ...worktree, branch: "replacement" });
+        // The synchronous projection still has the old facts; the worker read sees replacement.
+        if (phase === "repository lookup") {
+          mocks.repository.mockImplementationOnce(async () => {
+            replaceWorkspace();
+            return { originUrl: "git@github.com:owner/repo.git" };
+          });
+        } else {
+          replaceWorkspace();
+        }
+        await expect(
+          phase === "renewal" ? grant!.refresh!() : prepareWorkerGitHubBindingGrant(session),
+        ).rejects.toThrow();
+        if (phase === "renewal") {
+          expect(grant!.signal?.aborted).toBe(true);
+        }
+      } finally {
+        await grant?.revoke();
+      }
+    },
+  );
 
   it("refuses missing configured credentials without borrowing the host login", async () => {
     await expect(prepareWorkerGitHubBindingGrant(session)).rejects.toThrow(

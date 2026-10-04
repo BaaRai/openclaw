@@ -26,6 +26,10 @@ import {
   prepareGitHubPublicationWorkspaceOwner,
   sameGitHubPublicationWorkspace,
 } from "../github-publication-availability.js";
+import {
+  GitHubPublicationSessionChangedError,
+  GitHubPublicationWorkspaceChangedError,
+} from "../github-publication-failure.js";
 import { parseGitHubRemoteUrl } from "../github-remote.js";
 import type { WorkerGitHubBindingGrant } from "./worker-github-binding-contract.js";
 import { createWorkerGitHubBindingGrant } from "./worker-github-grant.js";
@@ -77,7 +81,7 @@ export async function prepareWorkerGitHubBindingGrant(params: {
       (candidate): candidate is AbortSignal => candidate !== undefined,
     ),
   );
-  const readWorkspace = await prepareGitHubPublicationWorkspaceOwner(params, {
+  const preparedWorkspace = await prepareGitHubPublicationWorkspaceOwner(params, {
     allowMissingWorkspace: true,
   });
   signal.throwIfAborted();
@@ -85,49 +89,84 @@ export async function prepareWorkerGitHubBindingGrant(params: {
   if (params.assertCurrent?.() === false) {
     return undefined;
   }
-  const workspace = readWorkspace();
+  const workspace = preparedWorkspace.initial;
   const assertAuthority = () => {
     signal.throwIfAborted();
     operator?.assertCurrent();
     if (
       params.assertCurrent?.() === false ||
-      !sameGitHubPublicationWorkspace(workspace, readWorkspace())
+      !sameGitHubPublicationWorkspace(workspace, preparedWorkspace.current())
     ) {
       throw new Error("Worker GitHub credential authority closed");
     }
   };
-  assertAuthority();
-  let identity: Awaited<ReturnType<typeof prepareCurrentGitHubPublicationIdentity>>;
-  try {
-    identity = await prepareCurrentGitHubPublicationIdentity(params.agentId);
-  } catch (error) {
+  const refreshWorkspace = async () => {
+    const current = await preparedWorkspace.read().catch((error: unknown) => {
+      if (
+        error instanceof GitHubPublicationSessionChangedError ||
+        error instanceof GitHubPublicationWorkspaceChangedError
+      ) {
+        // A newer worker snapshot can revoke authority before the local projection catches up.
+        controller.abort(error);
+      }
+      throw error;
+    });
     assertAuthority();
-    const config = currentGitHubPublicationConfig();
-    if (
-      (["agent", "system"] as const).some((scope) =>
-        resolveConfiguredGitHubToolIdentity({ config, agentId: params.agentId, scope }),
-      )
-    ) {
-      throw new Error(
-        "The selected GitHub identity is unavailable; reconnect it in Settings before starting this turn.",
-        { cause: error },
-      );
+    if (!sameGitHubPublicationWorkspace(workspace, current)) {
+      const error = new Error("Worker GitHub credential authority closed");
+      controller.abort(error);
+      throw error;
     }
-    return undefined;
-  }
+  };
+  assertAuthority();
+  let profileRevision = 0;
+  let preparedProfileRevision = 0;
+  let preparingProfileDir: string | undefined;
+  // Cover preparation awaits until the constructed grant installs its own profile listener.
+  using _ = {
+    [Symbol.dispose]: onManagedGitHubProfileChanged((profileDir) => {
+      if (preparingProfileDir === undefined || preparingProfileDir === profileDir) {
+        profileRevision++;
+      }
+    }),
+  };
+  let identity: Awaited<ReturnType<typeof prepareCurrentGitHubPublicationIdentity>>;
+  let originUrl: string | undefined;
+  do {
+    preparedProfileRevision = profileRevision;
+    try {
+      identity = await prepareCurrentGitHubPublicationIdentity(params.agentId);
+    } catch (error) {
+      assertAuthority();
+      const config = currentGitHubPublicationConfig();
+      if (
+        (["agent", "system"] as const).some((scope) =>
+          resolveConfiguredGitHubToolIdentity({ config, agentId: params.agentId, scope }),
+        )
+      ) {
+        throw new Error(
+          "The selected GitHub identity is unavailable; reconnect it in Settings before starting this turn.",
+          { cause: error },
+        );
+      }
+      return undefined;
+    }
+    preparingProfileDir = identity.env.GH_CONFIG_DIR;
+    assertAuthority();
+    originUrl =
+      workspace.kind === "none"
+        ? undefined
+        : workspace.kind === "repository"
+          ? workspace.workspace.url
+          : (await managedWorktrees.resolveRepositoryIdentity(workspace.worktree.path)).originUrl;
+    await refreshWorkspace();
+  } while (preparedProfileRevision !== profileRevision);
   const assertCurrent = () => {
     assertAuthority();
     if (!matchesCurrentGitHubPublicationIdentity({ agentId: params.agentId, identity })) {
       throw new Error("Selected GitHub identity changed; start a new turn.");
     }
   };
-  assertCurrent();
-  const originUrl =
-    workspace.kind === "none"
-      ? undefined
-      : workspace.kind === "repository"
-        ? workspace.workspace.url
-        : (await managedWorktrees.resolveRepositoryIdentity(workspace.worktree.path)).originUrl;
   assertCurrent();
   const githubHost = identity.host ?? GITHUB_PUBLIC_HOST;
   const remote = originUrl ? parseGitHubRemoteUrl(originUrl, githubHost) : undefined;
@@ -162,8 +201,6 @@ export async function prepareWorkerGitHubBindingGrant(params: {
   if (!binding) {
     throw new Error("Selected GitHub identity does not meet the worker launch contract");
   }
-  let profileRevision = 0;
-  let preparedProfileRevision = 0;
   const refreshCredential = async () => {
     assertCurrent();
     let currentIdentity: typeof identity;
@@ -171,6 +208,7 @@ export async function prepareWorkerGitHubBindingGrant(params: {
     do {
       revision = profileRevision;
       currentIdentity = await prepareCurrentGitHubPublicationIdentity(params.agentId);
+      await refreshWorkspace();
       assertCurrent();
     } while (revision !== profileRevision);
     if (
