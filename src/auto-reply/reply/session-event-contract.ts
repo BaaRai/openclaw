@@ -1,4 +1,5 @@
 /** Host-owned event admission and settlement contracts; no live reply/Gateway imports. */
+import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import type { MessagingToolSend } from "../../agents/embedded-agent-messaging.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { CronStoredJob } from "../../cron/types.js";
@@ -57,6 +58,7 @@ export type SessionEventTarget = {
 /** Cron-owned snapshot and live occurrence fence shared with ordinary reply admission. */
 export type ScheduledSessionAutomation = {
   job: CronStoredJob;
+  admissionSource: NonNullable<AdmittedRunContext["admissionSource"]>;
   executionIdentity?: import("../../cron/service/state.js").CronExecutionIdentityAdmission;
   deliveryAttemptFence?:
     | import("../../cron/delivery-attempt-fence.js").CronCompletionDeliveryFence
@@ -77,6 +79,8 @@ export type ScheduledSessionAutomation = {
 export type SessionEventExecution = {
   /** Background producers inherit this turn's automatic-delivery restriction. */
   deliver?: false;
+  /** Captured producer and current session policy remain authoritative at final tool I/O. */
+  assertCurrent?: () => void;
   beforeStart?: () => Promise<void>;
   onFailed?: (error: unknown) => void;
   onSuppressed?: (

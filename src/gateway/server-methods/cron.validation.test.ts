@@ -26,7 +26,7 @@ import { loadCronStore, saveCronStore } from "../../cron/store.js";
 import { cronStoreKey } from "../../cron/store/key.js";
 import { loadCronRows } from "../../cron/store/row-codec.js";
 import type { CronRunRecord } from "../../cron/store/run-history.types.js";
-import type { CronDelivery, CronJob } from "../../cron/types.js";
+import type { CronJob } from "../../cron/types.js";
 import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
@@ -58,6 +58,7 @@ import {
   pluginEntries,
   telegramConfig,
   telegramSlackConfig,
+  telegramDeliveryWithSlackFailure,
   telegramDisabledAccountConfig,
   msteamsConfig,
   slackSynologyConfig,
@@ -970,6 +971,7 @@ describe("cron method validation", () => {
     loadGatewaySessionEntry.mockReturnValueOnce({ canonicalKey: sessionKey, entry });
     const { context, respond } = await invokeWake({ mode: "now", text: "ping", sessionKey });
     expect(context.cron.wake).toHaveBeenCalledWith({
+      commitGuard: expect.any(Function),
       agentId: "main",
       mode: "now",
       text: "ping",
@@ -2670,7 +2672,10 @@ describe("cron method validation", () => {
         params,
         caller ? callerClient(caller) : undefined,
       );
-      expect(context.cron.wake).toHaveBeenCalledWith(expected);
+      expect(context.cron.wake).toHaveBeenCalledWith({
+        ...expected,
+        commitGuard: expect.any(Function),
+      });
       expect(context.cron.prepareWake).toHaveBeenCalledOnce();
       expect(context.cron.prepareWake.mock.invocationCallOrder[0]).toBeLessThan(
         context.cron.wake.mock.invocationCallOrder[0]!,

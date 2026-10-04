@@ -22,6 +22,7 @@ vi.mock("../../infra/system-events.js", async (importOriginal) => ({
   enqueueSystemEventWithReceipt: (...args: unknown[]) =>
     enqueueSystemEventMock(...args) ? () => true : null,
 }));
+// mock-isolation: Observe the terminal wake destination without admitting a real follow-up turn.
 vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
   captureSessionEventTargetForHost: captureSessionEventTargetMock,
   enqueueSessionEventForHost: enqueueSessionEventMock,

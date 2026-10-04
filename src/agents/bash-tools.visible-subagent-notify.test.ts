@@ -40,6 +40,7 @@ const sendTextMock = vi.hoisted(() =>
     chatId: "100123",
   })),
 );
+// mock-isolation: Use synthetic model dispatch with real event admission and outbound delivery.
 vi.mock("../auto-reply/dispatch.js", () => ({
   dispatchInboundMessageWithRoutedChannelDispatcher: dispatchMock,
 }));

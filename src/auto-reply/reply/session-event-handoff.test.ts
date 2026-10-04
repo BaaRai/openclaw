@@ -28,7 +28,6 @@ import {
   enqueueSessionEventForHost,
   prepareSessionEventTargetForHost,
 } from "./session-event-handoff.js";
-
 // These cases stop before turn admission. Unexpected dispatch is a failure,
 // never a synthetic adoption/settlement supplied by the fixture.
 const dispatch = vi.hoisted(() =>
@@ -36,6 +35,7 @@ const dispatch = vi.hoisted(() =>
     throw new Error("Unexpected reply dispatch for a retired event target");
   }),
 );
+// mock-isolation: Reject unexpected reply execution; retired-target cases stop before admission.
 vi.mock("../dispatch.js", () => ({
   dispatchInboundMessageWithRoutedChannelDispatcher: dispatch,
 }));
@@ -53,7 +53,7 @@ async function withTargetFixture(
   run: (fixture: OpenClawTestState & { storePath: string }) => Promise<void>,
 ) {
   await withOpenClawTestState({ label: "session-event-target" }, async (state) => {
-    setRuntimeConfigSnapshot({ agents: { entries: { main: { default: true } } } });
+    setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
     const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
     writeSessionEntry(database, sessionKey, {
       sessionId: "original-session",
@@ -217,7 +217,7 @@ describe("session event target custody", () => {
         const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
         if (change === "store replacement") {
           setRuntimeConfigSnapshot({
-            agents: { entries: { main: { default: true } } },
+            agents: { entries: { main: {} } },
             session: { store: path("replacement.sqlite") },
           });
         } else {

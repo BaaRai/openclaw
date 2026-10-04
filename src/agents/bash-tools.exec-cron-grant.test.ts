@@ -12,6 +12,7 @@ import { createTypingSignaler } from "../auto-reply/reply/typing-mode.js";
 import { bindCronJobAdmittedRun, resetCronActiveJobs } from "../cron/active-jobs.js";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { prepareCronRunAdmission } from "../cron/run-admission.js";
+import { resolveCronRunAdmissionSource } from "../cron/run-authority.js";
 import { markServiceCronJobActive } from "../cron/service/run-receipts.js";
 import { createCronServiceState } from "../cron/service/state.js";
 import {
@@ -313,6 +314,7 @@ describe("cron standing grants", () => {
     sessionTarget: "isolated" | "main" = "isolated",
   ) {
     const job = seedCronJobRow(sessionTarget);
+    const admissionSource = resolveCronRunAdmissionSource(job);
     const revision = resolveCronJobConfigRevision(job);
     const receipt = claimCronRunReceiptForTest(CRON_STORE_KEY, job, Date.now());
     releases.push(() => releaseLocalCronRunReceiptOwnership(receipt));
@@ -337,7 +339,11 @@ describe("cron standing grants", () => {
           followupRun: createMockFollowupRun({
             run: {
               sessionKey: "agent:main:main",
-              scheduledAutomation: { job, assertCurrent: () => controller.signal.throwIfAborted() },
+              scheduledAutomation: {
+                job,
+                admissionSource,
+                assertCurrent: () => controller.signal.throwIfAborted(),
+              },
             },
           }),
           sessionCtx: {},
@@ -360,6 +366,7 @@ describe("cron standing grants", () => {
       );
     } else {
       isolatedAdmission = prepareCronRunAdmission({
+        admissionSource,
         cfg: {},
         agentId: "main",
         runId: "cron-run-1",

@@ -468,7 +468,7 @@ describe("Doctor workspace persistence", () => {
               main: { "openai/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
               ops: undefined,
             });
-            expect.soft(rows).toHaveLength(2);
+            expect.soft(rows).toHaveLength(1);
             expect.soft(rows[0]?.agent_id).toBe("main");
             expect
               .soft(
@@ -480,11 +480,6 @@ describe("Doctor workspace persistence", () => {
                   id: "retained-owner",
                   agentId: "main",
                   payload: { model: "openai/gpt-5.6-sol" },
-                },
-                {
-                  agentId: "ops",
-                  payload: { kind: "agentTurn" },
-                  delivery: { mode: "announce", target: "owner" },
                 },
               ]);
             if (pass === 2) {

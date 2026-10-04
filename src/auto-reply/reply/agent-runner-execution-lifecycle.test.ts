@@ -73,6 +73,7 @@ const compactionTarget = {
 
 function createScheduledAutomation(): ScheduledSessionAutomation {
   return {
+    admissionSource: "operator-schedule",
     job: {
       id: "scheduled-target-test",
       name: "Scheduled target test",
