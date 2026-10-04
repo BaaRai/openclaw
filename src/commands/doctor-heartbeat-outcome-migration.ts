@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { listAgentIds } from "../agents/agent-scope-config.js";
 import { buildRuntimeContextCustomMessage } from "../agents/embedded-agent-runner/run/runtime-context-prompt.js";
 import { sliceToolResultTextToBudget } from "../agents/embedded-agent-runner/tool-result-text-budget.js";
-import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   evaluateSessionFreshness,
   resolveSessionResetPolicy,
@@ -15,11 +13,19 @@ import {
   persistSessionTranscriptTurn,
 } from "../config/sessions/session-accessor.js";
 import {
+  resolveSqliteAgentId,
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  listExistingAgentDatabaseTargets,
+  resolveTargetSqliteOptions,
+  type ExistingAgentDatabaseTarget,
+} from "../infra/session-sqlite-migration-readers.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
@@ -28,7 +34,7 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 
-function readPendingHeartbeatOutcomes(agentId: string, storePath: string, env: NodeJS.ProcessEnv) {
+function readPendingHeartbeatOutcomes(target: ExistingAgentDatabaseTarget, env: NodeJS.ProcessEnv) {
   return withOpenClawAgentDatabaseReadOnly(
     ({ db }) =>
       executeSqliteQuerySync(
@@ -38,16 +44,16 @@ function readPendingHeartbeatOutcomes(agentId: string, storePath: string, env: N
           .selectAll()
           .where("context_run_id", "is", null),
       ).rows,
-    toDatabaseOptions(
-      resolveSqliteScope({ agentId, storePath, env, sessionKey: `agent:${agentId}:main` }),
-    ),
+    resolveTargetSqliteOptions(target, env),
   );
 }
 
-export function hasPendingHeartbeatOutcomes(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
-  return listAgentIds(cfg).some((agentId) => {
-    const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId, env });
-    const read = readPendingHeartbeatOutcomes(agentId, storePath, env);
+export function hasPendingHeartbeatOutcomes(
+  targets: readonly ExistingAgentDatabaseTarget[],
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return targets.some((target) => {
+    const read = readPendingHeartbeatOutcomes(target, env);
     return read.found && read.value.length > 0;
   });
 }
@@ -57,19 +63,31 @@ export async function migrateHeartbeatOutcomes(
   cfg: OpenClawConfig,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  for (const agentId of listAgentIds(cfg)) {
-    const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId, env });
-    const read = readPendingHeartbeatOutcomes(agentId, storePath, env);
+  for (const target of listExistingAgentDatabaseTargets(cfg, env)) {
+    const read = readPendingHeartbeatOutcomes(target, env);
     if (!read.found) {
       continue;
     }
+    const source = resolveSqliteTargetFromSessionStorePath(target.storePath, {
+      agentId: target.agentId,
+      env,
+    });
     for (const row of read.value) {
       if (!["progress", "done", "blocked", "needs_attention"].includes(row.outcome)) {
         throw new Error(
           `Unknown pending heartbeat outcome for ${row.session_key}; preserve the database and inspect it before cutover.`,
         );
       }
-      const scope = { agentId, storePath, env, sessionKey: row.session_key };
+      const scope = {
+        agentId: resolveSqliteAgentId({
+          scopedAgentId: parseAgentSessionKey(row.session_key)?.agentId ?? target.agentId,
+          storeAgentId: target.agentId,
+          storeShared: source.shared,
+        }),
+        storePath: target.sqlitePath,
+        env,
+        sessionKey: row.session_key,
+      };
       const entry = loadSessionEntryReadOnly(scope);
       if (!entry) {
         throw new Error(

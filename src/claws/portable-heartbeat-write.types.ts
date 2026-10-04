@@ -1,5 +1,7 @@
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CronStoredJob } from "../cron/types.js";
 import type { AgentDeletionWorkerWriteFacts } from "../state/agent-deletion-journal.types.js";
+import type { ClawAutomationInstallIntent } from "./automation-install-intent.js";
 import type { ClawCronInstallUpdate } from "./cron-update-contract.js";
 import type { ClawPortableHeartbeat } from "./cron.types.js";
 import type { PortableHeartbeatState } from "./portable-heartbeat-state.types.js";
@@ -17,6 +19,7 @@ export type PortableHeartbeatMutation = {
       source: PortableHeartbeatSource;
       expected?: PortableHeartbeatState;
       install?: ClawCronInstallUpdate;
+      gatewayInstall?: { intent: ClawAutomationInstallIntent; config: OpenClawConfig };
     }
   | {
       kind: "update";

@@ -58,7 +58,7 @@ function agentOwnedPaths(plan: ClawAddPlan): string[] {
   return plan.actions.filter((action) => action.kind === "agent").map((action) => action.target);
 }
 
-function bootstrapProvenance(plan: ClawAddPlan) {
+function bootstrapProvenance(plan: Pick<ClawInstallRecordUpdate, "actions">) {
   const action = plan.actions.find((candidate) => candidate.kind === "bootstrap");
   const sourcePath = action?.details?.sourcePath;
   return action && typeof sourcePath === "string" && action.digest
@@ -254,8 +254,16 @@ export function readClawInstallRecords(
   return readClawInstallRecordsInDatabase(openOpenClawStateDatabase(options).db);
 }
 
+export type ClawInstallRecordUpdate = Pick<
+  ClawAddPlan,
+  "claw" | "manifestSchemaVersion" | "planIntegrity"
+> & {
+  agent: Pick<ClawAddPlan["agent"], "finalId" | "workspace" | "config">;
+  actions: Array<Pick<ClawAddPlan["actions"][number], "kind" | "target" | "digest" | "details">>;
+};
+
 export function updateClawInstallRecord(
-  plan: ClawAddPlan,
+  plan: ClawInstallRecordUpdate,
   options: OpenClawStateDatabaseOptions & {
     nowMs?: number;
     expectedClaw?: { version: string; integrity: string };

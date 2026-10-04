@@ -113,9 +113,12 @@ describe("resolveRuntimeWorkerArgv", () => {
     const originalArgs = process.execArgv;
     const compilerArgs = [
       "--no-maglev",
+      "--no_maglev",
       "--maglev",
       "--concurrent-sparkplug",
+      "--concurrent_sparkplug",
       "--no-concurrent-sparkplug",
+      "--no_concurrent_sparkplug",
     ];
     process.execArgv = [
       "--import",

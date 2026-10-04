@@ -202,6 +202,12 @@ its no-fallback-delivery policy through their completion turns. This does not
 disable explicitly targeted message tools permitted by the session's tool policy.
 Use `tools.exec.notifyOnExit: false` to disable automatic completion turns.
 
+Each follow-up processes the event submitted by its owner. Scheduled checks
+include only deferred notices assigned to that job. Unrelated passive session
+notices remain queued for ordinary conversation turns; an immediate follow-up
+does not consume them. Put a scheduled check's required instructions in its
+job payload or scratch.
+
 Follow-ups for an internal conversation, such as Control UI or WebChat, remain
 in that conversation. A failed transcript publication does not redirect them
 to an automation's external delivery target or acknowledge them as delivered.

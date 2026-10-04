@@ -237,3 +237,14 @@ export function projectRetiredHeartbeatConfig(cfg: OpenClawConfigWithLegacyRoste
   }
   return next;
 }
+
+/** Invalid legacy input stays with Doctor's normal config-refusal reporting. */
+export function tryProjectRetiredHeartbeatConfig(
+  cfg: OpenClawConfigWithLegacyRoster,
+): OpenClawConfig | undefined {
+  try {
+    return projectRetiredHeartbeatConfig(cfg);
+  } catch {
+    return undefined;
+  }
+}

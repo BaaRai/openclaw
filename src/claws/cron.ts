@@ -20,6 +20,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import type { ClawAutomationMutationGateway } from "./automation-mutation-contract.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
   CLAW_PORTABLE_HEARTBEAT_ID,
@@ -40,6 +41,7 @@ type CronRefDatabase = Pick<DB, "claw_cron_refs">;
 type CronRefRow = Selectable<CronRefDatabase["claw_cron_refs"]>;
 
 export type ClawCronGateway = {
+  mutateAutomation?: ClawAutomationMutationGateway;
   add: (input: Record<string, unknown>) => Promise<unknown>;
   get?: (schedulerJobId: string) => Promise<unknown>;
   list?: (agentId: string) => Promise<unknown>;

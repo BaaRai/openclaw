@@ -315,6 +315,7 @@ describe("claws lifecycle cli e2e", () => {
     const instance = await createOpenClawTestInstance({
       name: "claws-lifecycle-remove",
       env: {
+        OPENCLAW_SKIP_CRON: "0",
         OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
         OPENCLAW_EXPERIMENTAL_CLAWS: "1",
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
@@ -393,6 +394,7 @@ describe("claws lifecycle cli e2e", () => {
     const instance = await createOpenClawTestInstance({
       name: "claws-lifecycle-export",
       env: {
+        OPENCLAW_SKIP_CRON: "0",
         OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
         OPENCLAW_EXPERIMENTAL_CLAWS: "1",
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",

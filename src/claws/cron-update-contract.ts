@@ -1,8 +1,8 @@
 import type { PersistedClawInstall } from "./provenance-types.js";
-import type { ClawAddPlan } from "./types.js";
+import type { ClawInstallRecordUpdate } from "./provenance.js";
 
 export type ClawCronInstallUpdate = {
-  plan: ClawAddPlan;
+  plan: ClawInstallRecordUpdate;
   expectedClaw?: { version: string; integrity: string };
   agentConfigDigest?: string;
 };

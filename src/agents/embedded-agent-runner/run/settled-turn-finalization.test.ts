@@ -540,7 +540,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       const attempt = failedTool ? settledFailedAttempt() : createSettledProviderFailureAttempt();
       const input = finalizationInput(attempt);
       Object.assign(input.terminalBase.runParams, {
-        trigger: "cron",
+        trigger: "user",
         terminalReplyExpectation: optional ? "optional" : "required",
         allowEmptyAssistantReplyAsSilent: allowed,
         sourceReplyDeliveryMode: "automatic",

@@ -675,7 +675,9 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
   let runContextOwnerToken: string | undefined;
   let terminalRecorded = false;
   try {
-    await eventExecution?.beforeStart?.();
+    if (eventExecution?.beforeStart) {
+      await eventExecution.beforeStart();
+    }
     executionParams.replyOperation?.abortSignal.throwIfAborted();
     automation?.assertCurrent();
     if (automation) {

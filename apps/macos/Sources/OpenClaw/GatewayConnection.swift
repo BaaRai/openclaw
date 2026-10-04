@@ -5,9 +5,6 @@ import Observation
 import OpenClawChatUI
 import OpenClawKit
 import OpenClawProtocol
-import OSLog
-
-private let gatewayConnectionLogger = Logger(subsystem: "ai.openclaw", category: "gateway.connection")
 
 /// Owns one Gateway websocket shared by its callers. The primary app runtime
 /// uses `.shared`; saved-profile windows use independent connections.

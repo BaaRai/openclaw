@@ -13,6 +13,10 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
 import { createAgentDeletionDatabaseCleanup } from "../state/agent-deletion-cleanup.js";
+import type {
+  AgentDeletionInput,
+  AgentDeletionJournalTransport,
+} from "../state/agent-deletion-journal-transport.js";
 import {
   beginAgentDeletionJournal,
   claimCompletedAgentDeletionJournal,
@@ -38,7 +42,9 @@ import type {
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { readOpenClawStateLease } from "../state/openclaw-state-lease-store.js";
+import { withOpenClawStateLeaseRemoteAdmission } from "../state/openclaw-state-lease-worker-owner.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
+import type { OpenClawStateLeaseIdentity } from "../state/openclaw-state-lease.types.js";
 import {
   captureOpenClawStateReadWorkerContext,
   captureOpenClawStateWorkerContext,
@@ -58,20 +64,6 @@ export type AgentLifecycleBinding = Readonly<{
   agentId: string;
   provenance: AgentProvenance | null;
 }>;
-
-type AgentDeletionInput = Omit<
-  AgentDeletionJournalEntry,
-  | "createdAt"
-  | "operationId"
-  | "cleanupCompleted"
-  | "databasePaths"
-  | "cleanupPaths"
-  | "deleteFiles"
-> & {
-  databasePaths?: string[];
-  cleanupPaths?: AgentDeletionJournalCleanupPath[];
-  deleteFiles?: boolean;
-};
 
 export type AgentDeletionOperation = {
   entry: AgentDeletionJournalEntry;
@@ -119,7 +111,7 @@ export function withAgentDeletion<T>(
     begin: (entry: AgentDeletionInput) => Promise<AgentDeletionOperation>,
     transact: AgentDeletionTransaction,
   ) => Promise<T>,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & { journalTransport?: AgentDeletionJournalTransport } = {},
 ): Promise<T> {
   const id = normalizeAgentId(agentId);
   if (isReservedSystemAgentId(id)) {
@@ -183,6 +175,13 @@ export function withAgentDeletion<T>(
           ) {
             throw new Error("Agent deletion requires a managed transaction");
           }
+          return attachJournal(journal, leaseIdentity);
+        };
+        const attachJournal = (
+          journal: AgentDeletionJournalEntry,
+          leaseIdentity: OpenClawStateLeaseIdentity,
+        ): AgentDeletionOperation => {
+          const operationId = journal.operationId;
           const readContext = captureOpenClawStateReadWorkerContext(stateOptions);
           const assertJournalIdentity = (
             currentStatePath: string,
@@ -353,8 +352,31 @@ export function withAgentDeletion<T>(
               }),
             completeInTransaction,
             finish: () => runOpenClawStateWriteTransaction(completeInTransaction, stateOptions),
-            rollback: () =>
-              withCronReceiptAuthorityMutation(
+            rollback: async () => {
+              if (options.journalTransport) {
+                assertCurrent();
+                const currentJournal = readAgentDeletionJournal(id, stateOptions);
+                if (!currentJournal) {
+                  throw new Error(`Agent ${id} deletion lost its journal before rollback.`);
+                }
+                const result = await withOpenClawStateLeaseRemoteAdmission(
+                  lease,
+                  statePath,
+                  (authority) =>
+                    options.journalTransport!(
+                      { kind: "rollback", journal: currentJournal },
+                      authority,
+                    ),
+                );
+                if (result !== null) {
+                  throw new AgentDeletionCommitUncertainError(
+                    "Gateway rollback returned a journal",
+                  );
+                }
+                closed = true;
+                return;
+              }
+              await withCronReceiptAuthorityMutation(
                 receiptContext,
                 async (mutation) =>
                   mutateJournal(() => {
@@ -364,10 +386,16 @@ export function withAgentDeletion<T>(
                     closed = true;
                   }, mutation),
                 { settlement: true },
-              ),
+              );
+            },
           };
         };
         const transact: AgentDeletionTransaction = (apply) => {
+          if (options.journalTransport) {
+            return Promise.reject(
+              new Error("Remote journal mutations require the typed begin operation"),
+            );
+          }
           if (closed) {
             return Promise.reject(
               new Error(`Agent ${id} deletion already began or has a different target.`),
@@ -395,7 +423,44 @@ export function withAgentDeletion<T>(
             }, stateOptions),
           );
         };
-        return await run((entry) => transact((_database, claim) => claim(entry)), transact);
+        const beginOwned = async (entry: AgentDeletionInput) => {
+          if (!options.journalTransport) {
+            return transact((_database, claim) => claim(entry));
+          }
+          if (closed || begun || normalizeAgentId(entry.agentId) !== id) {
+            throw new Error(`Agent ${id} deletion already began or has a different target.`);
+          }
+          begun = true;
+          const operationId = crypto.randomUUID();
+          const expectedJournal = readAgentDeletionJournal(id, stateOptions) ?? null;
+          let leaseIdentity: OpenClawStateLeaseIdentity | undefined;
+          const journal = await withOpenClawStateLeaseRemoteAdmission(
+            lease,
+            statePath,
+            async (authority) => {
+              leaseIdentity = authority.identity;
+              return options.journalTransport!(
+                { kind: "begin", entry, operationId, expectedJournal },
+                authority,
+              );
+            },
+          );
+          if (
+            !journal ||
+            !leaseIdentity ||
+            journal.agentId !== id ||
+            journal.operationId !== operationId ||
+            journal.cleanupCompleted
+          ) {
+            throw new AgentDeletionCommitUncertainError(
+              "Gateway returned a different deletion journal",
+            );
+          }
+          const deletion = attachJournal(journal, leaseIdentity);
+          deletion.assertCurrent();
+          return deletion;
+        };
+        return await run(beginOwned, transact);
       } finally {
         closed = true;
       }

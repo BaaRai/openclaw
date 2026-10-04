@@ -342,7 +342,7 @@ async function routeReplyOperation(
       threadId: resolvedThreadId,
       session: outboundSession,
       signal: abortSignal,
-      onDirectAdapterHandoff: params.beforeDeliver,
+      onPlatformSendDispatch: params.beforeDeliver,
       assertDirectAdapterHandoff: params.assertCurrent,
       ...(params.assertCurrent ? { deliveryRetryOwner: "caller" as const } : {}),
       ...(params.deliveryIntentId

@@ -26,50 +26,54 @@ import {
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
 
 describe("Doctor workspace persistence", () => {
-  it.each(["admitted", "external", "included", "newer", "unrelated-invalid"] as const)(
-    "admits only complete updater heartbeat normalization (%s)",
-    async (boundary) => {
-      await withDoctorConfigPreflightHome(async (home) => {
-        await withEnvAsync(
-          {
-            OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-            OPENCLAW_UPDATE_IN_PROGRESS: "1",
-            OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
-            OPENCLAW_CONFIG_READONLY: boundary === "external" ? "1" : undefined,
-            OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: undefined,
-          },
-          async () => {
-            const agents = {
-              defaults: { heartbeat: { every: "30m" } },
-              entries: { main: { workspace: path.join(home, "workspace") } },
-            };
-            const configPath = await writeOpenClawConfig(home, {
-              ...(boundary === "newer" ? { meta: { lastTouchedVersion: "9999.1.1" } } : {}),
-              agents: boundary === "included" ? { $include: "agents.json" } : agents,
-              gateway: {
-                mode: "local",
-                ...(boundary === "unrelated-invalid" ? { port: "bad" } : {}),
-              },
-              plugins: { enabled: false },
-            });
-            if (boundary === "included") {
-              await fs.writeFile(
-                path.join(path.dirname(configPath), "agents.json"),
-                JSON.stringify(agents),
-              );
-            }
-            const original = await fs.readFile(configPath, "utf8");
-            const admission = await prepareAutomaticHeartbeatRepair({ nonInteractive: true });
-            expect(Boolean(admission)).toBe(boundary === "admitted");
-            expect(await fs.readFile(configPath, "utf8")).toBe(original);
-            expect(admission?.snapshot.sourceConfig.agents?.defaults?.heartbeat).toEqual(
-              boundary === "admitted" ? { every: "30m" } : undefined,
+  it.each([
+    "admitted",
+    "external",
+    "included",
+    "newer",
+    "unrelated-invalid",
+    "heartbeat-invalid",
+  ] as const)("admits only complete updater heartbeat normalization (%s)", async (boundary) => {
+    await withDoctorConfigPreflightHome(async (home) => {
+      await withEnvAsync(
+        {
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_UPDATE_IN_PROGRESS: "1",
+          OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+          OPENCLAW_CONFIG_READONLY: boundary === "external" ? "1" : undefined,
+          OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: undefined,
+        },
+        async () => {
+          const agents = {
+            defaults: { heartbeat: { every: boundary === "heartbeat-invalid" ? 5 : "30m" } },
+            entries: { main: { workspace: path.join(home, "workspace") } },
+          };
+          const configPath = await writeOpenClawConfig(home, {
+            ...(boundary === "newer" ? { meta: { lastTouchedVersion: "9999.1.1" } } : {}),
+            agents: boundary === "included" ? { $include: "agents.json" } : agents,
+            gateway: {
+              mode: "local",
+              ...(boundary === "unrelated-invalid" ? { port: "bad" } : {}),
+            },
+            plugins: { enabled: false },
+          });
+          if (boundary === "included") {
+            await fs.writeFile(
+              path.join(path.dirname(configPath), "agents.json"),
+              JSON.stringify(agents),
             );
-          },
-        );
-      });
-    },
-  );
+          }
+          const original = await fs.readFile(configPath, "utf8");
+          const admission = await prepareAutomaticHeartbeatRepair({ nonInteractive: true });
+          expect(Boolean(admission)).toBe(boundary === "admitted");
+          expect(await fs.readFile(configPath, "utf8")).toBe(original);
+          expect(admission?.snapshot.sourceConfig.agents?.defaults?.heartbeat).toEqual(
+            boundary === "admitted" ? { every: "30m" } : undefined,
+          );
+        },
+      );
+    });
+  });
 
   afterEach(() => {
     closeOpenClawStateDatabaseForTest();
@@ -357,7 +361,7 @@ describe("Doctor workspace persistence", () => {
     },
   );
 
-  it("retains malformed heartbeat hours when durable migration refuses retirement", async () => {
+  it("retains malformed heartbeat hours through normal config-write refusal", async () => {
     await withDoctorConfigPreflightHome(async (home) => {
       await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
         const heartbeat = { every: "30m", activeHours: { start: "99:99", end: "17:00" } };
@@ -369,7 +373,9 @@ describe("Doctor workspace persistence", () => {
         const original = await fs.readFile(configPath, "utf8");
         expect((await readConfigFileSnapshot()).valid).toBe(false);
 
-        await expect(prepareDoctorContext(configPath)).rejects.toThrow("activeHours");
+        const ctx = await prepareDoctorContext(configPath);
+        await runInitialConfigWriteHealth(ctx);
+        expect(ctx.configWriteRefusal).toBe("validation");
 
         expect(await fs.readFile(configPath, "utf8")).toBe(original);
         const saved = await readConfigFileSnapshot();

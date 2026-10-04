@@ -4,7 +4,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Value } from "typebox/value";
 import { CronJobSchema } from "../../packages/gateway-protocol/src/schema/cron.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
-import { maybeMigrateHeartbeatTasksToCron } from "../commands/doctor-heartbeat-task-migration.js";
 import { analyzeLegacyHeartbeatTasks } from "../commands/heartbeat-task-legacy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
@@ -22,6 +21,7 @@ import {
   type ClawCronGateway,
 } from "./cron.js";
 import { ClawExportError } from "./export-error.js";
+import { mutatePortableHeartbeatViaGateway } from "./portable-heartbeat-gateway.js";
 import { readPortableHeartbeatState } from "./portable-heartbeat-state.js";
 import { assertPortableHeartbeatUnchanged } from "./portable-heartbeat-state.kernel.js";
 import type { PortableHeartbeatState } from "./portable-heartbeat-state.types.js";
@@ -92,6 +92,15 @@ export function portableHeartbeatJob(
   return job;
 }
 
+export function portableHeartbeatSettingsRevision(
+  cfg: OpenClawConfig,
+  agentId: string,
+  heartbeat: ClawPortableHeartbeat,
+): string {
+  const job = portableHeartbeatJob(cfg, agentId, heartbeat, 0);
+  return resolveCronJobConfigRevision({ ...job, id: "portable-automation-settings" });
+}
+
 export async function readPortableHeartbeatSource(
   plan: ClawAddPlan,
 ): Promise<{ heartbeat: ClawPortableHeartbeat; scratch?: string } | undefined> {
@@ -130,9 +139,30 @@ async function commitPortableHeartbeatImport(
   plan: ClawAddPlan,
   cfg: OpenClawConfig,
   source: NonNullable<Awaited<ReturnType<typeof readPortableHeartbeatSource>>>,
-  options: OpenClawStateDatabaseOptions,
+  options: OpenClawStateDatabaseOptions & {
+    cronGateway?: Pick<ClawCronGateway, "mutateAutomation" | "waitUntilAgentAvailable">;
+  },
 ): Promise<PortableHeartbeatState> {
   const previous = await readPortableHeartbeatState(plan.agent.finalId, cfg, options);
+  if (options.cronGateway) {
+    return (
+      await mutatePortableHeartbeatViaGateway(
+        plan.agent.finalId,
+        cfg,
+        previous,
+        {
+          kind: "import",
+          source,
+          expectedSettingsRevision: portableHeartbeatSettingsRevision(
+            cfg,
+            plan.agent.finalId,
+            source.heartbeat,
+          ),
+        },
+        { ...options, cronGateway: options.cronGateway },
+      )
+    ).state;
+  }
   const nowMs = Date.now();
   return (
     await mutatePortableHeartbeat(
@@ -150,36 +180,48 @@ async function commitPortableHeartbeatImport(
   ).state;
 }
 
-/** Existing cron inventory is the cross-process adoption acknowledgement, never an upsert. */
+/** Verify scheduler readback after the owned mutation without recreating missing jobs. */
 export async function publishPortableHeartbeat(
   agentId: string,
   cfg: OpenClawConfig,
   options: OpenClawStateDatabaseOptions & {
-    cronGateway?: Pick<ClawCronGateway, "list" | "waitUntilAgentAvailable">;
+    cronGateway?: Pick<
+      ClawCronGateway,
+      "get" | "list" | "waitUntilAgentAvailable" | "mutateAutomation"
+    >;
   },
 ): Promise<void> {
   const gateway = options.cronGateway;
   if (!gateway) {
     return;
   } // Offline library installs load normally on the next scheduler start.
-  if (!gateway.list) {
-    throw new Error("Portable automation publication requires the gateway cron.list API.");
-  }
   const current = await readPortableHeartbeatState(agentId, cfg, options);
   if (!current.receipt) {
     return;
   }
   await gateway.waitUntilAgentAvailable?.(agentId);
-  const result = await gateway.list(agentId);
-  if (!isRecord(result) || !Array.isArray(result.jobs)) {
-    throw new Error("cron.list did not acknowledge the committed portable automation.");
+  let live: unknown;
+  if (current.job) {
+    if (!gateway.get) {
+      throw new Error("Portable automation publication requires the gateway cron.get API.");
+    }
+    live = await gateway.get(current.receipt.jobId);
+  } else {
+    if (!gateway.list) {
+      throw new Error("Portable automation removal requires the gateway cron.list API.");
+    }
+    const result = await gateway.list(agentId);
+    if (!isRecord(result) || !Array.isArray(result.jobs)) {
+      throw new Error("cron.list did not acknowledge the removed portable automation.");
+    }
+    live = result.jobs.find((job) => isRecord(job) && job.id === current.receipt!.jobId);
   }
-  const live = result.jobs.find((job) => isRecord(job) && job.id === current.receipt!.jobId);
+  const definition = isRecord(live) ? cronJobDefinitionFromReadView(live) : undefined;
   if (
     current.job
-      ? !Value.Check(CronJobSchema, live) ||
+      ? !Value.Check(CronJobSchema, definition) ||
         // SAFETY: Its session-target regex enforces the TS template union that TypeBox types as string.
-        resolveCronJobConfigRevision(cronJobDefinitionFromReadView(live as CronJob) as CronJob) !==
+        resolveCronJobConfigRevision(definition as CronJob) !==
           resolveCronJobConfigRevision(current.job)
       : live !== undefined
   ) {
@@ -197,7 +239,10 @@ export async function installPortableHeartbeat(
   plan: ClawAddPlan,
   cfg: OpenClawConfig,
   options: OpenClawStateDatabaseOptions & {
-    cronGateway?: Pick<ClawCronGateway, "list" | "waitUntilAgentAvailable">;
+    cronGateway?: Pick<
+      ClawCronGateway,
+      "get" | "list" | "waitUntilAgentAvailable" | "mutateAutomation"
+    >;
   },
 ): Promise<void> {
   const source = await readPortableHeartbeatSource(plan);
@@ -210,13 +255,16 @@ export async function installPortableHeartbeat(
       throw new Error("Portable task import has no provisioning receipt.");
     }
     const sourceScratchDigest = hashCronScratchSource(source.scratch);
-    const result = await maybeMigrateHeartbeatTasksToCron({
-      cfg,
-      env: options.env,
-      shouldRepair: true,
-    });
-    if (result.warnings.length) {
-      throw new Error(result.warnings.join("\n"));
+    if (options.cronGateway) {
+      await mutatePortableHeartbeatViaGateway(
+        plan.agent.finalId,
+        cfg,
+        imported,
+        { kind: "completeTasks", jobId: imported.receipt.jobId, sourceScratchDigest },
+        { ...options, cronGateway: options.cronGateway },
+      );
+      await publishPortableHeartbeat(plan.agent.finalId, cfg, options);
+      return;
     }
     await mutatePortableHeartbeat(
       {
@@ -242,7 +290,18 @@ export async function exportPortableHeartbeat(
   cfg: OpenClawConfig,
   options: OpenClawStateDatabaseOptions,
 ): Promise<{ heartbeat: ClawPortableHeartbeat; scratch?: string } | undefined> {
-  const state = await readPortableHeartbeatState(agentId, cfg, options);
+  return portableHeartbeatSourceFromState(
+    agentId,
+    cfg,
+    await readPortableHeartbeatState(agentId, cfg, options),
+  );
+}
+
+export function portableHeartbeatSourceFromState(
+  agentId: string,
+  cfg: OpenClawConfig,
+  state: PortableHeartbeatState,
+): { heartbeat: ClawPortableHeartbeat; scratch?: string } | undefined {
   if (!state.ref && !state.receipt) {
     return undefined;
   }

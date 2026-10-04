@@ -8,6 +8,7 @@ import {
 } from "../agents/agent-lifecycle-registry.js";
 import { listAgentEntries } from "../agents/agent-scope.js";
 import { applyClawAddPlan } from "../claws/add.js";
+import { clawAutomationMutationResultSchema } from "../claws/automation-mutation-contract.js";
 import type { ClawRemoveApplyOptions } from "../claws/lifecycle-remove-contract.js";
 import { applyClawRemovePlan, buildClawRemovePlan } from "../claws/lifecycle-state.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
@@ -27,6 +28,7 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import * as sleep from "../utils/sleep.js";
 import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
+import { clawsAutomationHandlers } from "./server-methods/claws-automations.js";
 import { clawsMonitorHandlers } from "./server-methods/claws-monitors.js";
 import type { RespondFn } from "./server-methods/types.js";
 
@@ -160,6 +162,31 @@ export function useClawMonitorFixture() {
         resetConfigRuntimeState();
       },
       cronGateway: {
+        mutateAutomation: async (request) => {
+          let response:
+            | { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] }
+            | undefined;
+          await clawsAutomationHandlers["claws.automations.mutate"]({
+            params: { ...request, binding: resolveClawMonitorCleanupBinding(storePath) },
+            context: {
+              cronStorePath: storePath,
+              getRuntimeConfig: () => config,
+              isConfigReloadSettled: () => true,
+            },
+            hasCurrentClientAuthority: () => true,
+            respond: (ok, payload, error) => {
+              response = { ok, payload, error };
+            },
+          });
+          if (!response?.ok) {
+            throw new Error(response?.error?.message ?? "Automation mutation did not respond");
+          }
+          return clawAutomationMutationResultSchema.parse(response.payload);
+        },
+        get: async (id) => {
+          const job = await cron.readJob(id);
+          return job ? cronJobReadView(job) : undefined;
+        },
         list: async () => ({
           jobs: (await cron.list({ includeDisabled: true })).map(cronJobReadView),
         }),

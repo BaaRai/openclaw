@@ -29,8 +29,14 @@ import {
   readClawOrphanWorkspaceInDatabase,
 } from "./provenance-read.kernel.js";
 import type { ClawProvenanceWriteOperations } from "./provenance-write.worker-contract.js";
+import {
+  mutateClawRemovalJournalInWorker,
+  type ClawRemovalJournalWorkerInput,
+} from "./removal-journal.kernel.js";
 
 export const clawProvenanceOperations = {
+  "clawProvenance.removalJournal": (input: ClawRemovalJournalWorkerInput, { open, stateOptions }) =>
+    mutateClawRemovalJournalInWorker(open(), input, stateOptions()),
   "clawProvenance.portableHeartbeat": (
     input: PortableHeartbeatMutation & { nonce: string },
     { open, stateOptions },

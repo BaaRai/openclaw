@@ -1,10 +1,13 @@
 import { analyzeLegacyHeartbeatTasks } from "../commands/heartbeat-task-legacy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { hashCronScratchSource } from "../cron/scratch-store.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { clawAutomationInstallIntent } from "./automation-install-intent.js";
 import type { ClawCronUpdateExecution } from "./cron-update-contract.js";
 import { CLAW_PORTABLE_HEARTBEAT_ID, type ClawCronGateway } from "./cron.js";
 import { digestClawValue as digest } from "./digest.js";
+import { mutatePortableHeartbeatViaGateway } from "./portable-heartbeat-gateway.js";
 import { readPortableHeartbeatState } from "./portable-heartbeat-state.js";
 import {
   portableHeartbeatDrift,
@@ -14,6 +17,8 @@ import { mutatePortableHeartbeat } from "./portable-heartbeat-write.js";
 import {
   exportPortableHeartbeat,
   portableHeartbeatJob,
+  portableHeartbeatSettingsRevision,
+  portableHeartbeatSourceFromState,
   publishPortableHeartbeat,
   readPortableHeartbeatSource,
 } from "./portable-heartbeat.js";
@@ -118,6 +123,28 @@ export async function applyPortableHeartbeatUpdate(
       publish,
       rollback: async () => {},
       commit: async (install) => {
+        if (options.cronGateway) {
+          const outcome = await mutatePortableHeartbeatViaGateway(
+            update.agentId,
+            cfg,
+            before,
+            {
+              kind: "import",
+              source,
+              expectedSettingsRevision: portableHeartbeatSettingsRevision(
+                cfg,
+                update.agentId,
+                source.heartbeat,
+              ),
+              install: clawAutomationInstallIntent(install),
+            },
+            { ...options, cronGateway: options.cronGateway },
+          );
+          if (!outcome.installRecord) {
+            throw new Error("Portable automation commit did not return its install provenance.");
+          }
+          return outcome.installRecord;
+        }
         const nowMs = Date.now();
         const outcome = await mutatePortableHeartbeat(
           {
@@ -140,6 +167,53 @@ export async function applyPortableHeartbeatUpdate(
   }
   if (!before.ref || !before.job || !before.receipt) {
     throw new Error("Portable ownership is missing; no job was provisioned.");
+  }
+  if (options.cronGateway) {
+    const gatewayOptions = { ...options, cronGateway: options.cronGateway };
+    const previousSource = portableHeartbeatSourceFromState(update.agentId, cfg, before);
+    if (!previousSource) {
+      throw new Error("Portable automation rollback has no original authored settings.");
+    }
+    const { state: after } = await mutatePortableHeartbeatViaGateway(
+      update.agentId,
+      cfg,
+      before,
+      source
+        ? {
+            kind: "update",
+            source,
+            expectedSettingsRevision: portableHeartbeatSettingsRevision(
+              cfg,
+              update.agentId,
+              source.heartbeat,
+            ),
+          }
+        : { kind: "release" },
+      gatewayOptions,
+    );
+    const previous = {
+      source: previousSource,
+      configRevision: resolveCronJobConfigRevision(before.job),
+      heartbeat: before.ref.job.heartbeat,
+      sourceScratchDigest: before.ref.job.sourceScratchDigest,
+      sourceAgentDigest: before.ref.job.sourceAgentDigest,
+      expectedRuntimeDigest: digest(after.job?.state),
+      nextRunAtMs: before.job.state.nextRunAtMs,
+    };
+    return {
+      appliedIds: [CLAW_PORTABLE_HEARTBEAT_ID],
+      publish,
+      rollback: async () => {
+        await mutatePortableHeartbeatViaGateway(
+          update.agentId,
+          cfg,
+          after,
+          { kind: "rollback", previous },
+          gatewayOptions,
+        );
+        await publish();
+      },
+    };
   }
   const nowMs = Date.now();
   const after = (

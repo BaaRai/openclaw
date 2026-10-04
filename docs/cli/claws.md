@@ -471,6 +471,14 @@ declaration from an updated package releases its artifact ownership while
 retaining the ordinary job and scratch. Use Automations to remove a job you no
 longer want.
 
+With a running Gateway, portable automation imports, updates, and rollback use
+that Gateway's scheduler owner. The CLI and Gateway must select the same config,
+state database, and scheduler store. Offline library imports require exclusive
+database custody. A failed Gateway request never falls back to a direct database
+write; an uncertain commit retains the installation for inspection with
+`claws status`. Structured task imports complete under the same scheduler
+authority and preserve their converted job identities on retry.
+
 `claws status` and `claws update` use the generated package after migration.
 Removing an adopted Claw releases its ownership records while retaining the
 pre-existing agent, workspace, local package, credentials, databases, sessions,
@@ -529,8 +537,8 @@ openclaw claws remove incident-triage \
 
 The default removes eligible managed state and releases referenced state.
 Eligible Claw-owned schedules appear once as removal actions. The serving
-Gateway also identifies this agent's config-owned heartbeat and Skill Workshop
-monitors, including disabled monitors, as removal actions. Ordinary schedules,
+Gateway also identifies this agent's owned portable automation and Skill Workshop
+monitors, including disabled monitors, as removal actions. Other ordinary schedules,
 imported heartbeat tasks, uncorroborated monitors, and jobs in another scheduler store
 remain blockers.
 Modified files and resources with another current owner are retained or

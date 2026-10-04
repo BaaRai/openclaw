@@ -16,6 +16,7 @@ type HeartbeatRuntimeOptions = {
   artifactBase: string;
   repoRoot: string;
   clock?: GatewaySchedulerClock;
+  advanceClock?: (atMs: number) => void | Promise<void>;
 };
 
 type SchedulerObservation = {
@@ -129,6 +130,7 @@ async function runActiveHoursPhases(options: HeartbeatRuntimeOptions, storePath:
           schedule: { kind: "at", at: new Date(scheduledAtMs).toISOString() },
           activeHours: { start: "00:00", end: quiet ? "00:00" : "24:00", timezone: "UTC" },
         });
+        await options.advanceClock?.(scheduledAtMs);
         const event = await settled;
         if (
           event.status !== (quiet ? "skipped" : "ok") ||

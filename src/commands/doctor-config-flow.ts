@@ -555,9 +555,12 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
 
   const modelBillingRouteConfig = state.candidate;
   if (shouldRepair) {
+    const { tryProjectRetiredHeartbeatConfig } = await import("./doctor-heartbeat-legacy.js");
     const { retireHeartbeatWithDoctor } = await import("./doctor-heartbeat-retirement.js");
-    const retiredConfig = await retireHeartbeatWithDoctor(state.candidate);
-    if (JSON.stringify(retiredConfig) !== JSON.stringify(state.candidate)) {
+    const retiredConfig = tryProjectRetiredHeartbeatConfig(state.candidate)
+      ? await retireHeartbeatWithDoctor(state.candidate)
+      : undefined;
+    if (retiredConfig && JSON.stringify(retiredConfig) !== JSON.stringify(state.candidate)) {
       applyConfigMutation(
         {
           config: retiredConfig,

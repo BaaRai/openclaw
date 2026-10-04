@@ -6,8 +6,13 @@ import type {
   PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
 import type { PortableHeartbeatMutation } from "./portable-heartbeat-write.types.js";
+import type { ClawRemovalJournalWorkerInput } from "./removal-journal.kernel.js";
 
 export type ClawProvenanceWriteOperations = {
+  "clawProvenance.removalJournal": {
+    input: ClawRemovalJournalWorkerInput;
+    output: { nonce: string };
+  };
   "clawProvenance.portableHeartbeat": {
     input: PortableHeartbeatMutation & { nonce: string };
     output: { nonce: string };

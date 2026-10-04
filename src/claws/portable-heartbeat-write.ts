@@ -3,6 +3,11 @@ import { deserialize } from "node:v8";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { publishCronJobsStoreMutation } from "../cron/store.js";
+import {
+  withCronReceiptAuthorityMutation,
+  type CronReceiptAuthorityMutation,
+} from "../cron/store/receipt-authority-owner.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import type {
   SqliteWorkerNativeSettlementOwner,
@@ -11,6 +16,7 @@ import type {
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import type {
   PortableHeartbeatMutation,
@@ -41,9 +47,31 @@ export async function mutatePortableHeartbeat(
     ...options,
     path: options.database?.path ?? options.path,
   });
+  const run = (authority?: CronReceiptAuthorityMutation) =>
+    runPortableHeartbeatMutation(input, context, options.assertCurrent, authority);
+  if (input.kind === "removeRef") {
+    return run();
+  }
+  try {
+    return await withCronReceiptAuthorityMutation(context, run);
+  } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw new ClawPortableMutationUncertainError(error);
+    }
+    throw error;
+  }
+}
+
+async function runPortableHeartbeatMutation(
+  input: PortableHeartbeatMutation & { nonce: string },
+  context: OpenClawStateWorkerContext,
+  assertSourceCurrent: (() => void) | undefined,
+  authority?: CronReceiptAuthorityMutation,
+): Promise<PortableHeartbeatMutationResult> {
   const assertCurrent = () => {
     context.admission.assertCurrent();
-    options.assertCurrent?.();
+    assertSourceCurrent?.();
+    authority?.assertCurrent();
     context.admission.assertCurrent();
   };
   let native: SqliteWorkerNativeSettlementOwner | undefined;
@@ -52,7 +80,7 @@ export async function mutatePortableHeartbeat(
   let failure: unknown;
   try {
     await runOpenClawStateWorkerOperation(
-      context,
+      authority?.context ?? context,
       async (scope) => {
         const reply = await scope.execute({ type: "clawProvenance.portableHeartbeat", input });
         if (reply.nonce !== input.nonce) {
@@ -83,7 +111,8 @@ export async function mutatePortableHeartbeat(
               throw new Error("Portable automation mutation admission expired");
             }
             phase = phase === "transaction" ? "commit" : "settling";
-          });
+          }, authority?.attachment);
+          authority?.observe(admission, retained);
           native = admission;
           return { admission, nativeLocations: [context.admission.databasePath] };
         },

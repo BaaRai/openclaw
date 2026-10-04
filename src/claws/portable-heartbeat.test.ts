@@ -7,6 +7,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { retireHeartbeatWithDoctor } from "../commands/doctor-heartbeat-retirement.js";
 import { resetConfigRuntimeState } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { cronJobReadView } from "../cron/job-read-view.js";
 import { readDefaultProactiveJobReceiptInDatabase } from "../cron/proactive-job-receipt.js";
 import { readCronJobScratchState, writeCronJobScratch } from "../cron/scratch-store.js";
 import {
@@ -22,19 +23,28 @@ import {
   deleteCronJobRowInDatabase,
 } from "../cron/store/row-codec.js";
 import { replaceCronRuntimeAuthorityRows } from "../cron/store/runtime-authority-store.js";
+import { clawsAutomationHandlers } from "../gateway/server-methods/claws-automations.js";
+import type { RespondFn } from "../gateway/server-methods/types.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { applyClawAddPlan } from "./add.js";
-import { CLAW_PORTABLE_HEARTBEAT_ID, deleteClawCronRef, upsertClawCronRef } from "./cron.js";
+import { clawAutomationMutationResultSchema } from "./automation-mutation-contract.js";
+import {
+  CLAW_PORTABLE_HEARTBEAT_ID,
+  deleteClawCronRef,
+  upsertClawCronRef,
+  type ClawCronGateway,
+} from "./cron.js";
 import { exportClawAgent } from "./export.js";
 import { quiescentClawMonitorGateway } from "./lifecycle-remove.test-support.js";
 import { buildClawRemovePlan, applyClawRemovePlan } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
+import { resolveClawMonitorCleanupBinding } from "./monitor-cleanup-binding.js";
 import { readPortableHeartbeatState } from "./portable-heartbeat-state.js";
 import { applyPortableHeartbeatUpdate } from "./portable-heartbeat-update.js";
-import { installPortableHeartbeat } from "./portable-heartbeat.js";
+import { installPortableHeartbeat, publishPortableHeartbeat } from "./portable-heartbeat.js";
 import { readClawInstallRecord, updateClawInstallRecord } from "./provenance.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawOpenClawProfile, ClawSourceIdentity } from "./types.js";
@@ -56,6 +66,7 @@ async function fixture(
   heartbeat: ClawOpenClawProfile["agent"]["heartbeat"],
   scratch?: string,
   beforeApply?: (plan: Awaited<ReturnType<typeof buildClawAddPlan>>) => Promise<void>,
+  throughGateway = false,
 ) {
   const root = temps.make("claw-portable-heartbeat-");
   const sourceRoot = join(root, "source");
@@ -80,7 +91,7 @@ async function fixture(
     packageRoot: sourceRoot,
     manifestPath: join(sourceRoot, "CLAW.md"),
     integrityKind: "artifact",
-    integrity: "sha256:fixture",
+    integrity: `sha256:${"a".repeat(64)}`,
     byteLength: 100,
   };
   const profile: ClawOpenClawProfile = {
@@ -95,10 +106,12 @@ async function fixture(
   });
   const env = { OPENCLAW_STATE_DIR: join(root, "state") };
   let config: OpenClawConfig = {};
+  const cronGateway = throughGateway ? gatewayForFixture(env, () => config) : undefined;
   await beforeApply?.(plan);
   const install = await applyClawAddPlan(plan, {
     env,
     consentPlanIntegrity: plan.planIntegrity,
+    ...(cronGateway ? { cronGateway } : {}),
     commitConfig: async (transform) => {
       config = transform(config);
     },
@@ -120,6 +133,51 @@ async function fixture(
     db,
     receipt,
     jobs,
+    cronGateway,
+  };
+}
+
+function gatewayForFixture(
+  env: { OPENCLAW_STATE_DIR: string },
+  getConfig: () => OpenClawConfig,
+): ClawCronGateway {
+  vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+  vi.stubEnv("OPENCLAW_CONFIG_PATH", join(env.OPENCLAW_STATE_DIR, "openclaw.json"));
+  const storePath = () => resolveCronJobsStorePathFromConfig(getConfig(), env);
+  return {
+    add: async () => {
+      throw new Error("Unexpected ordinary cron.add");
+    },
+    remove: async () => {
+      throw new Error("Unexpected ordinary cron.remove");
+    },
+    get: async (id) => {
+      const state = await readPortableHeartbeatState("worker", getConfig(), { env });
+      return state.job?.id === id ? cronJobReadView(state.job) : undefined;
+    },
+    list: async () => {
+      const state = await readPortableHeartbeatState("worker", getConfig(), { env });
+      return { jobs: state.job ? [cronJobReadView(state.job)] : [] };
+    },
+    mutateAutomation: async (request) => {
+      let response: { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] } | undefined;
+      await clawsAutomationHandlers["claws.automations.mutate"]({
+        context: {
+          cronStorePath: storePath(),
+          getRuntimeConfig: getConfig,
+          isConfigReloadSettled: () => true,
+        },
+        params: { ...request, binding: resolveClawMonitorCleanupBinding(storePath()) },
+        hasCurrentClientAuthority: () => true,
+        respond: (ok, payload, error) => {
+          response = { ok, payload, error };
+        },
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error?.message ?? "Automation mutation did not respond");
+      }
+      return clawAutomationMutationResultSchema.parse(response.payload);
+    },
   };
 }
 
@@ -199,7 +257,7 @@ async function updateTarget(
     packageRoot: targetRoot,
     manifestPath: join(targetRoot, "CLAW.md"),
     version: "2.0.0",
-    integrity: "sha256:target",
+    integrity: `sha256:${"b".repeat(64)}`,
   };
   const profile = {
     schemaVersion: 1 as const,
@@ -228,6 +286,35 @@ async function updateTarget(
 }
 
 describe("portable heartbeat current-state and lifecycle safeguards", () => {
+  it("acknowledges public job views while refusing unknown fields, newer jobs and durable races", async () => {
+    const f = await fixture({ every: "37m" });
+    const job = f.jobs()[0]!;
+    const view = { ...cronJobReadView(job), effectiveAgentId: "worker" };
+    const get = vi.fn(async (): Promise<unknown> => view);
+    const list = vi.fn(async () => ({ jobs: [view] }));
+    const publish = () =>
+      publishPortableHeartbeat("worker", f.config, { env: f.env, cronGateway: { get, list } });
+    await expect(publish()).resolves.toBeUndefined();
+    expect(get).toHaveBeenCalledWith(job.id);
+    expect(list).not.toHaveBeenCalled();
+    for (const rejected of [
+      { ...view, unknownDefinitionField: true },
+      { ...view, name: "newer" },
+    ]) {
+      get.mockResolvedValueOnce(rejected);
+      await expect(publish()).rejects.toThrow("changed or was not adopted");
+      expect(f.jobs()[0]).toEqual(job);
+    }
+    get.mockImplementationOnce(async () => {
+      editJob(f, (current) => {
+        current.name = "changed during acknowledgment";
+      });
+      return view;
+    });
+    await expect(publish()).rejects.toThrow("changed after planning");
+    expect(f.jobs()[0]?.name).toBe("changed during acknowledgment");
+  });
+
   it.each([
     { every: "0m" },
     {},
@@ -473,15 +560,17 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
   });
 
   it("changes the owned job in place, then rolls back without resetting scratch revisions or history", async () => {
-    const f = await fixture({ every: "37m" }, "original\n");
+    const f = await fixture({ every: "37m" }, "original\n", undefined, true);
     const original = editJob(f, (job) => {
       job.state.lastRunAtMs = 123;
       job.state.lastRunStatus = "ok";
+      job.state.nextRunAtMs = Date.now() - 1_000;
     });
     const t = await updateTarget(f, { every: "41m" }, "updated\n");
     expect(t.plan.actions.filter((action) => action.blocked)).toEqual([]);
     const execution = await applyPortableHeartbeatUpdate(t.plan, t.target, f.config, {
       env: f.env,
+      cronGateway: f.cronGateway,
     });
     expect(f.receipt()?.jobId).toBe(original.id);
     expect(f.jobs()[0]).toMatchObject({
@@ -500,6 +589,21 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
       currentRevision: 3,
       scratch: { content: "original\n" },
     });
+
+    const next = await updateTarget(f, { every: "43m" }, "updated again\n");
+    const later = await applyPortableHeartbeatUpdate(next.plan, next.target, f.config, {
+      env: f.env,
+      cronGateway: f.cronGateway,
+    });
+    const runtimeAdvancedAt = Date.now();
+    editJob(f, (job) => {
+      job.state.lastRunAtMs = runtimeAdvancedAt;
+      job.state.nextRunAtMs = runtimeAdvancedAt + 3_600_000;
+    });
+    await later.rollback();
+    expect(f.jobs()[0]?.state.lastRunAtMs).toBe(runtimeAdvancedAt);
+    expect(f.jobs()[0]?.state.nextRunAtMs).toBeGreaterThan(runtimeAdvancedAt);
+    expect(f.jobs()[0]?.state.nextRunAtMs).not.toBe(original.state.nextRunAtMs);
   });
 
   it("rejects a CAS race at update and preserves a later edit when rollback conflicts", async () => {
@@ -536,13 +640,14 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
   });
 
   it("atomically adds a first portable automation during update and keeps failed provenance writes job-free", async () => {
-    const f = await fixture(undefined);
+    const f = await fixture(undefined, undefined, undefined, true);
     const t = await updateTarget(f, { every: "37m" });
     const options = {
       env: f.env,
       config: f.config,
       sourceMcpServers: {},
       consentPlanIntegrity: t.plan.planIntegrity,
+      cronGateway: f.cronGateway,
     };
     const beforeInstall = readClawInstallRecord("worker", { env: f.env });
     const originalAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
@@ -583,7 +688,7 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
   });
 
   it("releases a removed artifact declaration without deleting its ordinary job", async () => {
-    const f = await fixture({ every: "37m" });
+    const f = await fixture({ every: "37m" }, undefined, undefined, true);
     const before = f.jobs();
     const t = await updateTarget(f, undefined);
     const result = await applyClawUpdatePlan(t.plan, t.params, {
@@ -591,6 +696,7 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
       config: f.config,
       sourceMcpServers: {},
       consentPlanIntegrity: t.plan.planIntegrity,
+      cronGateway: f.cronGateway,
     });
     expect(result.status).toBe("complete");
     const next = await updateTarget(f, undefined);
@@ -602,7 +708,7 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
   });
 
   it("rolls the same job back if Claw provenance persistence fails", async () => {
-    const f = await fixture({ every: "37m" }, "original\n");
+    const f = await fixture({ every: "37m" }, "original\n", undefined, true);
     const original = f.jobs()[0];
     const t = await updateTarget(f, { every: "41m" }, "updated\n");
     await expect(
@@ -611,6 +717,7 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
         config: f.config,
         sourceMcpServers: {},
         consentPlanIntegrity: t.plan.planIntegrity,
+        cronGateway: f.cronGateway,
         persistInstall: () => {
           throw new Error("injected provenance failure");
         },
@@ -718,10 +825,12 @@ async function legacyFixture() {
 }
 
 describe("portable heartbeat interruption and Doctor provenance", () => {
-  it("uses Doctor conversion for structured tasks and rejects their unrepresentable multi-job export", async () => {
+  it("converts structured tasks through the serving owner once and refuses multi-job export", async () => {
     const f = await fixture(
       { every: "37m" },
       "# Checklist\n- ordinary check\n\ntasks:\n  - name: Report\n    interval: 41m\n    prompt: Summarize the report\n",
+      undefined,
+      true,
     );
     expect(f.install.status).toBe("complete");
     expect(f.receipt()?.convertedJobIds).toHaveLength(1);
@@ -733,6 +842,13 @@ describe("portable heartbeat interruption and Doctor provenance", () => {
     expect(
       readCronJobScratchState(f.storePath, f.receipt()!.jobId, { env: f.env }).scratch?.content,
     ).toContain("ordinary check");
+    const ids = f.jobs().map((job) => job.id);
+    const scratch = readCronJobScratchState(f.storePath, f.receipt()!.jobId, { env: f.env });
+    await installPortableHeartbeat(f.plan, f.config, { env: f.env, cronGateway: f.cronGateway });
+    expect(f.jobs().map((job) => job.id)).toEqual(ids);
+    expect(readCronJobScratchState(f.storePath, f.receipt()!.jobId, { env: f.env })).toEqual(
+      scratch,
+    );
     await expect(
       exportClawAgent("worker", join(f.root, "export"), { env: f.env, config: f.config }),
     ).rejects.toThrow("converted task jobs");
@@ -740,7 +856,7 @@ describe("portable heartbeat interruption and Doctor provenance", () => {
 
   it("keeps invalid structured tasks pending and preserves obsolete instruction text with a warning", async () => {
     const bytes = "Use heartbeat_respond or HEARTBEAT_OK.\n\ntasks:\n  - name: incomplete\n";
-    const f = await fixture({ every: "37m" }, bytes);
+    const f = await fixture({ every: "37m" }, bytes, undefined, true);
     expect(f.install.status).toBe("partial");
     expect(f.receipt()?.phase).toBe("pending");
     expect(f.plan.diagnostics).toContainEqual(
@@ -753,6 +869,7 @@ describe("portable heartbeat interruption and Doctor provenance", () => {
     await applyClawAddPlan(f.plan, {
       env: f.env,
       consentPlanIntegrity: f.plan.planIntegrity,
+      cronGateway: f.cronGateway,
       commitConfig: async (transform) => {
         f.config = transform(f.config);
       },

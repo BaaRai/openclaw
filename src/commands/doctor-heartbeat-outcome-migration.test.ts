@@ -1,3 +1,4 @@
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
@@ -23,12 +24,22 @@ import { migrateHeartbeatOutcomes } from "./doctor-heartbeat-outcome-migration.j
 const roots = useSessionStoreTempDirs(afterEach, "doctor-outcomes-");
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture() {
+async function fixture(store: "canonical" | "shared" | "partitioned" = "canonical") {
   const root = roots.make();
   const env = { ...process.env, HOME: root, OPENCLAW_STATE_DIR: root };
-  const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+  const cfg: OpenClawConfig = {
+    agents: {
+      ownership: "explicit",
+      entries: { main: {}, ...(store === "shared" ? { ops: {} } : {}) },
+    },
+    ...(store === "canonical"
+      ? {}
+      : {
+          session: { store: path.join(root, store === "shared" ? "shared.sqlite" : "custom.json") },
+        }),
+  };
   const now = Date.now();
-  const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env });
+  const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: "main", env });
   const scope = { agentId: "main", storePath, env, sessionKey: "agent:main:main" };
   await replaceSessionEntry(scope, {
     sessionId: "original",
@@ -54,12 +65,14 @@ async function fixture() {
     context_claimed_at: null,
     updated_at: now,
   };
-  executeSqliteQuerySync(
-    database(),
-    getNodeSqliteKysely<Pick<DB, "heartbeat_outcomes">>(database())
-      .insertInto("heartbeat_outcomes")
-      .values(row),
-  );
+  const insert = (value: typeof row) =>
+    executeSqliteQuerySync(
+      database(),
+      getNodeSqliteKysely<Pick<DB, "heartbeat_outcomes">>(database())
+        .insertInto("heartbeat_outcomes")
+        .values(value),
+    );
+  insert(row);
   const pending = () =>
     executeSqliteQuerySync(
       database(),
@@ -76,10 +89,65 @@ async function fixture() {
         .where("session_key", "=", scope.sessionKey),
     );
   const events = () => loadTranscriptEventsSync({ ...scope, sessionId: "original" });
-  return { cfg, env, scope, row, pending, update, events, now };
+  return { cfg, env, scope, row, pending, update, events, now, database, insert };
 }
 
 describe("Doctor pending heartbeat context", () => {
+  it("imports each logical agent's outcome from one shared physical store", async () => {
+    const f = await fixture("shared");
+    const ops = { ...f.scope, agentId: "ops", sessionKey: "agent:ops:main" };
+    await replaceSessionEntry(ops, {
+      sessionId: "ops-session",
+      lifecycleRevision: "ops-generation",
+      updatedAt: f.now,
+      sessionStartedAt: f.now - 2000,
+    });
+    const opsRow = {
+      ...f.row,
+      session_key: ops.sessionKey,
+      run_session_key: ops.sessionKey,
+      summary: "The synthetic ops audit finished.",
+    };
+    f.insert(opsRow);
+    await migrateHeartbeatOutcomes(f.cfg, f.env);
+    expect(f.pending()).toEqual([]);
+    const mainEvents = f.events();
+    const opsEvents = loadTranscriptEventsSync({ ...ops, sessionId: "ops-session" });
+    expect(JSON.stringify(mainEvents)).toContain(f.row.summary);
+    expect(JSON.stringify(mainEvents)).not.toContain(opsRow.summary);
+    expect(JSON.stringify(opsEvents)).toContain(opsRow.summary);
+    expect(JSON.stringify(opsEvents)).not.toContain(f.row.summary);
+    await migrateHeartbeatOutcomes(f.cfg, f.env);
+    expect(f.events()).toEqual(mainEvents);
+    expect(loadTranscriptEventsSync({ ...ops, sessionId: "ops-session" })).toEqual(opsEvents);
+  });
+
+  it.each(["canonical", "partitioned"] as const)(
+    "refuses another logical agent's outcome in a %s per-agent database",
+    async (store) => {
+      const f = await fixture(store);
+      const misplacedKey = "agent:ops:main";
+      f.database()
+        .prepare(
+          "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(
+          misplacedKey,
+          "misplaced-session",
+          JSON.stringify({ sessionId: "misplaced-session", updatedAt: f.now }),
+          f.now,
+        );
+      f.update({ session_key: misplacedKey, run_session_key: misplacedKey });
+      const pending = f.pending();
+      const events = f.database().prepare("SELECT * FROM transcript_events").all();
+      await expect(migrateHeartbeatOutcomes(f.cfg, f.env)).rejects.toThrow(
+        "SQLite session store path belongs to agent main; requested agent ops.",
+      );
+      expect(f.pending()).toEqual(pending);
+      expect(f.database().prepare("SELECT * FROM transcript_events").all()).toEqual(events);
+    },
+  );
+
   it("replays an interrupted transfer once and consumes only its original row across reopen", async () => {
     const f = await fixture();
     const append = sessionAccessor.persistSessionTranscriptTurn;

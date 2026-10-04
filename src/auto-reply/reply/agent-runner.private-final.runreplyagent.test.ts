@@ -374,6 +374,7 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
       },
     },
     { name: "cron side effect", params: { successfulCronAdds: 1 } },
+    { name: "optional-reply policy", params: { terminalReplyExpectation: "optional" as const } },
     { name: "user-controlled retry marker", params: { summaryLine: "stranded-reply-retry" } },
   ])("does not accept $name as source delivery or retry authority", async ({ params }) => {
     await runPrivateFinalCase(params);
@@ -408,21 +409,15 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
 
   it.each([
     { name: "room event", params: { inboundEventKind: "room_event" } },
-    { name: "optional reply", params: { terminalReplyExpectation: "optional" } },
     { name: "denied send policy", params: { sendPolicyDenied: true } },
   ] satisfies Array<{ name: string; params: Parameters<typeof runPrivateFinalCase>[0] }>)(
     "does not recover a $name",
     async ({ params }) => {
-      const { result, terminalEvent } = await runPrivateFinalCase(params);
+      const { terminalEvent } = await runPrivateFinalCase(params);
       expect((terminalEvent?.data.terminalReply as { code?: unknown } | undefined)?.code).not.toBe(
         "message-tool-not-called",
       );
       expectNoRecovery();
-      if (params.terminalReplyExpectation === "optional") {
-        expect(
-          normalizeReplyPayloads(result).some((payload) => payload.text === strandedDiagnosticText),
-        ).toBe(false);
-      }
     },
   );
 

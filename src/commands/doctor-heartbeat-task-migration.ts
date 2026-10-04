@@ -1,23 +1,18 @@
 /** Doctor-owned migration from heartbeat scratch `tasks:` blocks into cron jobs. */
-import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { parseDurationMs } from "../cli/parse-duration.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   readDefaultProactiveJobReceiptInDatabase,
   recordConvertedProactiveJobInDatabase,
 } from "../cron/proactive-job-receipt.js";
-import { computeJobNextRunAtMs } from "../cron/service/jobs-scheduling.js";
+import type { CronJobScratchState } from "../cron/scratch-contract.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { cronStoreKey } from "../cron/store/key.js";
 import {
-  assertCronStoreCanPersist,
   loadedCronStoreFromRows,
   loadCronRows,
   upsertCronJobRow,
@@ -27,11 +22,8 @@ import {
   loadCronRuntimeAuthorities,
   replaceCronRuntimeAuthorityRows,
 } from "../cron/store/runtime-authority-store.js";
-import { getCronStoreKysely } from "../cron/store/schema.js";
-import type { CronStoredJob as CronJob } from "../cron/types.js";
 import type { HealthFinding } from "../flows/health-checks.js";
 import { formatErrorMessage as errorMessage } from "../infra/errors.js";
-import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -40,10 +32,17 @@ import { shortenHomePath } from "../utils.js";
 import { ensureHeartbeatMonitorJobs } from "./doctor-heartbeat-cadence-migration.js";
 import { resolveHeartbeatConfig } from "./doctor-heartbeat-legacy.js";
 import { resolveHeartbeatSession } from "./doctor-heartbeat-session.js";
+import { isHeartbeatTaskCronJob } from "./doctor-heartbeat-task-identity.js";
 import {
-  heartbeatTaskDeclarationKey,
-  isHeartbeatTaskCronJob,
-} from "./doctor-heartbeat-task-identity.js";
+  commitHeartbeatTaskMigrationInDatabase,
+  convertStoredHeartbeatTask,
+  loadHeartbeatTaskPlanningSnapshot,
+  planHeartbeatTaskMigration,
+  validateHeartbeatTasks,
+  type AgentTaskMigrationPlan,
+  type CronPlanningSnapshot,
+  type MigrationCommitResult,
+} from "./doctor-heartbeat-task-migration.kernel.js";
 import { readLegacyHeartbeatScratch } from "./doctor-heartbeat-task-scratch.js";
 import { analyzeLegacyHeartbeatTasks, type LegacyHeartbeatTask } from "./heartbeat-task-legacy.js";
 
@@ -54,36 +53,6 @@ function resolveHeartbeatTaskMigrationAgents(cfg: OpenClawConfig) {
     agentId,
     heartbeat: resolveHeartbeatConfig(cfg, agentId),
   }));
-}
-
-type ValidatedHeartbeatTask = {
-  task: LegacyHeartbeatTask;
-  intervalMs: number;
-  occurrenceIndex: number;
-};
-
-function validateTasks(
-  tasks: readonly LegacyHeartbeatTask[],
-  declaredEntryCount: number,
-): ValidatedHeartbeatTask[] {
-  if (tasks.length === 0) {
-    throw new Error("tasks: block has no complete name/interval/prompt entries");
-  }
-  if (tasks.length !== declaredEntryCount) {
-    throw new Error("tasks: block contains an incomplete name/interval/prompt entry");
-  }
-  const occurrenceCounts = new Map<string, number>();
-  const validated: ValidatedHeartbeatTask[] = [];
-  for (const task of tasks) {
-    const intervalMs = parseDurationMs(task.interval, { defaultUnit: "m" });
-    if (intervalMs <= 0) {
-      throw new Error(`task ${JSON.stringify(task.name)} interval must be greater than zero`);
-    }
-    const occurrenceIndex = occurrenceCounts.get(task.name) ?? 0;
-    occurrenceCounts.set(task.name, occurrenceIndex + 1);
-    validated.push({ task, intervalMs, occurrenceIndex });
-  }
-  return validated;
 }
 
 /** Reports task blocks still owned by heartbeat scratch without changing them. */
@@ -122,7 +91,7 @@ export async function collectHeartbeatTaskMigrationFindings(
       continue;
     }
     try {
-      validateTasks(document.tasks, document.taskEntryCount);
+      validateHeartbeatTasks(document.tasks, document.taskEntryCount);
       findings.push({
         ...MIGRATION_FINDING_DEFAULTS,
         path: storePath,
@@ -142,113 +111,6 @@ export async function collectHeartbeatTaskMigrationFindings(
     }
   }
   return findings;
-}
-
-type TaskJobInput = {
-  agentId: string;
-  task: LegacyHeartbeatTask;
-  intervalMs: number;
-  lastRunAtMs?: number;
-  existing?: CronJob;
-  nowMs: number;
-  monitor: CronJob;
-};
-
-function taskPayload(monitor: CronJob, message: string) {
-  if (monitor.payload.kind !== "agentTurn") {
-    throw new Error(`Automation ${monitor.id} has not completed heartbeat conversion`);
-  }
-  const { skipIfScratchEmpty: _skipIfScratchEmpty, ...payload } = monitor.payload;
-  return { ...payload, message };
-}
-
-function taskJobInput(params: TaskJobInput) {
-  const nextDueMs =
-    params.lastRunAtMs === undefined || params.lastRunAtMs + params.intervalMs <= params.nowMs
-      ? params.nowMs + 1
-      : params.lastRunAtMs + params.intervalMs;
-  return {
-    displayName: truncateUtf16Safe(`Heartbeat task: ${params.task.name}`, 200),
-    name: params.task.name,
-    description: "Migrated from heartbeat monitor scratch by openclaw doctor.",
-    agentId: params.agentId,
-    enabled: params.monitor.enabled,
-    schedule: {
-      kind: "every" as const,
-      everyMs: params.intervalMs,
-      anchorMs: nextDueMs,
-    },
-    payload: taskPayload(params.monitor, params.task.prompt),
-    sessionTarget: params.monitor.sessionTarget,
-    sessionKey: params.monitor.sessionKey,
-    activeHours: params.monitor.activeHours,
-    idleOnly: params.monitor.idleOnly,
-    delivery: params.monitor.delivery,
-    wakeMode: "now" as const,
-    ...(params.lastRunAtMs === undefined ? {} : { state: { lastRunAtMs: params.lastRunAtMs } }),
-  };
-}
-
-type TaskJobPlan = {
-  declarationKey: string;
-  previous?: CronJob;
-  job: CronJob;
-  sortOrder: number;
-};
-
-type AgentTaskMigrationPlan = {
-  monitor: CronJob;
-  scratchRevision: number;
-  sourceSha256?: string;
-  strippedContent: string;
-  jobs: TaskJobPlan[];
-};
-
-type CronPlanningSnapshot = {
-  jobs: CronJob[];
-  sortOrderByJobId: Map<string, number>;
-  nextSortOrder: number;
-};
-
-type MigrationCommitResult =
-  | { ok: true; currentRevision: number }
-  | { ok: false; reason: "job-conflict" | "revision-conflict" };
-
-function convergeTaskJob(params: TaskJobInput): CronJob {
-  if (params.existing) {
-    return convertStoredTask(params.existing, params.monitor, params.nowMs);
-  }
-  const { state, ...fields } = taskJobInput(params);
-  const job: CronJob = {
-    id: randomUUID(),
-    ...fields,
-    createdAtMs: params.nowMs,
-    updatedAtMs: params.nowMs,
-    state: { ...state },
-  };
-  job.state.nextRunAtMs = computeJobNextRunAtMs(job, params.nowMs);
-  return job;
-}
-
-function convertStoredTask(previous: CronJob, monitor: CronJob, nowMs: number): CronJob {
-  if (!isHeartbeatTaskCronJob(previous)) {
-    throw new Error(`Job ${previous.id} is not a legacy task`);
-  }
-  const { text, kind: _kind, ...toolPolicy } = previous.payload;
-  const job: CronJob = {
-    ...structuredClone(previous),
-    payload: { ...taskPayload(monitor, text), ...toolPolicy },
-    enabled: previous.enabled && monitor.enabled,
-    sessionTarget: monitor.sessionTarget,
-    sessionKey: monitor.sessionKey,
-    activeHours: monitor.activeHours,
-    idleOnly: monitor.idleOnly,
-    delivery: previous.delivery ?? monitor.delivery,
-    wakeMode: "now",
-    updatedAtMs: nowMs,
-  };
-  delete job.declarationKey;
-  return job;
 }
 
 /** Converts rows from earlier Doctors even when their source scratch block is already gone. */
@@ -298,7 +160,7 @@ export async function migrateStoredHeartbeatTaskJobs(
             `Legacy task ${job.id} is running; stop the Gateway before Doctor cutover.`,
           );
         }
-        const convertedJob = convertStoredTask(job, monitor, Date.now());
+        const convertedJob = convertStoredHeartbeatTask(job, monitor, Date.now());
         upsertCronJobRow(
           db,
           cronStoreKey(storePath),
@@ -325,129 +187,7 @@ async function loadCronPlanningSnapshot(
   storePath: string,
   env: NodeJS.ProcessEnv,
 ): Promise<CronPlanningSnapshot> {
-  const rows = loadCronRows(openOpenClawStateDatabase({ env }).db, cronStoreKey(storePath));
-  const sortOrderByJobId = new Map(rows.map((row) => [row.job_id, row.sort_order] as const));
-  return {
-    jobs: loadedCronStoreFromRows(rows).store.jobs,
-    sortOrderByJobId,
-    nextSortOrder: rows.reduce((max, row) => Math.max(max, row.sort_order + 1), 0),
-  };
-}
-
-function reserveSortOrder(snapshot: CronPlanningSnapshot, existing?: CronJob): number {
-  const persisted = existing ? snapshot.sortOrderByJobId.get(existing.id) : undefined;
-  if (persisted !== undefined) {
-    return persisted;
-  }
-  const sortOrder = snapshot.nextSortOrder;
-  snapshot.nextSortOrder += 1;
-  return sortOrder;
-}
-
-function readScratchRevision(db: DatabaseSync, storeKey: string, jobId: string): number {
-  return (
-    executeSqliteQuerySync(
-      db,
-      getCronStoreKysely(db)
-        .selectFrom("cron_job_scratch")
-        .select("revision")
-        .where("store_key", "=", storeKey)
-        .where("job_id", "=", jobId),
-    ).rows[0]?.revision ?? 0
-  );
-}
-
-function commitAgentTaskMigration(params: {
-  storePath: string;
-  env: NodeJS.ProcessEnv;
-  nowMs: number;
-  plan: AgentTaskMigrationPlan;
-}): MigrationCommitResult {
-  const storeKey = cronStoreKey(params.storePath);
-  return runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      if (
-        readScratchRevision(db, storeKey, params.plan.monitor.id) !== params.plan.scratchRevision
-      ) {
-        return { ok: false, reason: "revision-conflict" } as const;
-      }
-
-      const rows = loadCronRows(db, storeKey);
-      const jobsById = new Map(
-        loadedCronStoreFromRows(rows).store.jobs.map((job) => [job.id, job] as const),
-      );
-      const monitor = jobsById.get(params.plan.monitor.id);
-      const receipt = monitor?.agentId
-        ? readDefaultProactiveJobReceiptInDatabase(db, params.storePath, monitor.agentId)
-        : undefined;
-      if (
-        !monitor?.agentId ||
-        receipt?.phase !== "pending" ||
-        receipt.jobId !== monitor.id ||
-        !isDeepStrictEqual(monitor, params.plan.monitor) ||
-        monitor.state.runningAtMs !== undefined
-      ) {
-        return { ok: false, reason: "job-conflict" } as const;
-      }
-      for (const jobPlan of params.plan.jobs) {
-        const matchingRows = rows.filter((row) => row.declaration_key === jobPlan.declarationKey);
-        if (jobPlan.previous) {
-          const current = jobsById.get(jobPlan.previous.id);
-          if (
-            matchingRows.length !== 1 ||
-            !current ||
-            current.state.runningAtMs !== undefined ||
-            !isDeepStrictEqual(current, jobPlan.previous)
-          ) {
-            return { ok: false, reason: "job-conflict" } as const;
-          }
-        } else if (matchingRows.length > 0 || rows.some((row) => row.job_id === jobPlan.job.id)) {
-          return { ok: false, reason: "job-conflict" } as const;
-        }
-      }
-
-      loadCronRuntimeAuthorities({ db, storeKey, jobs: [...jobsById.values()] });
-      for (const jobPlan of params.plan.jobs) {
-        const current = jobsById.get(jobPlan.job.id);
-        jobPlan.job.runtimeAuthority = current?.runtimeAuthority;
-        jobPlan.job.runtimeAuthorityRecoveryRequired = current?.runtimeAuthorityRecoveryRequired;
-        if (!jobPlan.previous || !isDeepStrictEqual(jobPlan.previous, jobPlan.job)) {
-          upsertCronJobRow(db, storeKey, jobPlan.job, jobPlan.sortOrder, {
-            preserveRuntimeState: true,
-          });
-          replaceCronRuntimeAuthorityRows({ db, storeKey, jobs: [jobPlan.job] });
-        }
-      }
-
-      for (const { job } of params.plan.jobs) {
-        recordConvertedProactiveJobInDatabase(db, params.storePath, monitor.agentId, job.id);
-      }
-
-      const updated = executeSqliteQuerySync(
-        db,
-        getCronStoreKysely(db)
-          .updateTable("cron_job_scratch")
-          .set({
-            content: params.plan.strippedContent,
-            revision: params.plan.scratchRevision + 1,
-            source_sha256: params.plan.sourceSha256 ?? null,
-            updated_at_ms: params.nowMs,
-          })
-          .where("store_key", "=", storeKey)
-          .where("job_id", "=", params.plan.monitor.id)
-          .where("revision", "=", params.plan.scratchRevision),
-      );
-      if (updated.numAffectedRows !== 1n) {
-        throw new Error("scratch revision changed inside task migration transaction");
-      }
-      // Like cadence materialization, doctor only commits durable rows. A live
-      // gateway reloads the cron store through its normal reload path and arms
-      // these persisted nextRunAtMs values; doctor never owns its timer.
-      return { ok: true, currentRevision: params.plan.scratchRevision + 1 } as const;
-    },
-    { env: params.env },
-    { operationLabel: "doctor.heartbeat-task-migration" },
-  );
+  return loadHeartbeatTaskPlanningSnapshot(openOpenClawStateDatabase({ env }).db, storePath);
 }
 
 async function clearLegacyTaskTimestamps(params: {
@@ -501,9 +241,8 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
   const candidates: Array<{
     agent: ReturnType<typeof resolveHeartbeatTaskMigrationAgents>[number];
     document: ReturnType<typeof analyzeLegacyHeartbeatTasks>;
-    monitor: NonNullable<ReturnType<typeof readLegacyHeartbeatScratch>>;
-    scratchRevision: number;
-    validatedTasks: ValidatedHeartbeatTask[];
+    jobId: string;
+    scratch: NonNullable<CronJobScratchState["scratch"]>;
   }> = [];
   for (const agent of resolveHeartbeatTaskMigrationAgents(params.cfg)) {
     let monitor: ReturnType<typeof readLegacyHeartbeatScratch>;
@@ -524,9 +263,8 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
       continue;
     }
     const tasks = document.tasks;
-    let validatedTasks: ValidatedHeartbeatTask[];
     try {
-      validatedTasks = validateTasks(tasks, document.taskEntryCount);
+      validateHeartbeatTasks(tasks, document.taskEntryCount);
     } catch (error) {
       warnings.push(
         `Agent "${agent.agentId}" heartbeat tasks were not migrated: ${errorMessage(error)}.`,
@@ -543,9 +281,8 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
     candidates.push({
       agent,
       document,
-      monitor,
-      scratchRevision: scratch.revision,
-      validatedTasks,
+      jobId: monitor.jobId,
+      scratch,
     });
   }
 
@@ -568,7 +305,7 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
   }
 
   for (const candidate of candidates) {
-    const { agent, document, monitor, scratchRevision, validatedTasks } = candidate;
+    const { agent, document, jobId, scratch } = candidate;
     const session = resolveHeartbeatSession(
       params.cfg,
       agent.agentId,
@@ -576,80 +313,30 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
       undefined,
       env,
     );
-    const plannedMonitor = snapshot.jobs.find((job) => job.id === monitor.jobId);
-    if (!plannedMonitor || plannedMonitor.agentId !== agent.agentId) {
-      warnings.push(
-        `Agent "${agent.agentId}" automation changed during task planning; scratch was left unchanged.`,
-      );
-      continue;
-    }
     const legacyState = session.entry?.heartbeatTaskState ?? {};
-    const jobPlans: TaskJobPlan[] = [];
-    let blocked = false;
-    for (const { task, intervalMs, occurrenceIndex } of validatedTasks) {
-      const declarationKey = heartbeatTaskDeclarationKey(agent.agentId, task.name, occurrenceIndex);
-      const matches = snapshot.jobs.filter((job) => job.declarationKey === declarationKey);
-      const existing = matches[0];
-      if (
-        matches.length > 1 ||
-        (existing &&
-          (!isHeartbeatTaskCronJob(existing) ||
-            existing.agentId !== agent.agentId ||
-            existing.name !== task.name))
-      ) {
-        warnings.push(
-          `Agent "${agent.agentId}" task ${JSON.stringify(task.name)} collides with an incompatible cron declaration; scratch was left unchanged.`,
-        );
-        blocked = true;
-        break;
-      }
-      const legacyLastRun = legacyState[task.name];
-      const lastRunAtMs =
-        typeof legacyLastRun === "number" && Number.isFinite(legacyLastRun)
-          ? legacyLastRun
-          : undefined;
-      const job = convergeTaskJob({
-        agentId: agent.agentId,
-        task,
-        intervalMs,
-        lastRunAtMs,
-        existing,
-        nowMs,
-        monitor: plannedMonitor,
-      });
-      const sortOrder = reserveSortOrder(snapshot, existing);
-      jobPlans.push({
-        declarationKey,
-        ...(existing ? { previous: structuredClone(existing) } : {}),
-        job,
-        sortOrder,
-      });
-    }
-    if (blocked) {
-      continue;
-    }
-
+    let plan: AgentTaskMigrationPlan;
     try {
-      assertCronStoreCanPersist({ version: 1, jobs: jobPlans.map((plan) => plan.job) });
+      plan = planHeartbeatTaskMigration({
+        snapshot,
+        agentId: agent.agentId,
+        jobId,
+        scratch,
+        legacyTaskState: legacyState,
+        nowMs,
+      });
     } catch (error) {
       warnings.push(
         `Agent "${agent.agentId}" task jobs could not be planned: ${errorMessage(error)}. Scratch was left unchanged.`,
       );
       continue;
     }
-
-    const plan: AgentTaskMigrationPlan = {
-      monitor: plannedMonitor,
-      scratchRevision,
-      ...(monitor.state.scratch?.sourceSha256
-        ? { sourceSha256: monitor.state.scratch.sourceSha256 }
-        : {}),
-      strippedContent: document.strippedContent,
-      jobs: jobPlans,
-    };
     let committed: MigrationCommitResult;
     try {
-      committed = commitAgentTaskMigration({ storePath, env, nowMs, plan });
+      committed = runOpenClawStateWriteTransaction(
+        ({ db }) => commitHeartbeatTaskMigrationInDatabase({ db, storePath, nowMs, plan }),
+        { env },
+        { operationLabel: "doctor.heartbeat-task-migration" },
+      );
     } catch (error) {
       warnings.push(
         `Agent "${agent.agentId}" task migration could not be committed: ${errorMessage(error)}. Scratch and cron jobs were left unchanged.`,
@@ -665,7 +352,7 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
       continue;
     }
 
-    for (const jobPlan of jobPlans) {
+    for (const jobPlan of plan.jobs) {
       const index = snapshot.jobs.findIndex((job) => job.id === jobPlan.job.id);
       if (index >= 0) {
         snapshot.jobs[index] = jobPlan.job;

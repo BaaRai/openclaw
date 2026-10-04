@@ -197,8 +197,8 @@ describe("renderDebug", () => {
 
   it.each<{
     label: string;
-    lane: DebugProps["lanes"][number];
-    dynamic: DebugProps["dynamic"];
+    lane: Parameters<typeof renderDebug>[0]["lanes"][number];
+    dynamic: Parameters<typeof renderDebug>[0]["dynamic"];
     text: string;
     saturated: boolean;
     queued: boolean;

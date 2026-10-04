@@ -2,12 +2,15 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { BackupSqliteSnapshotFact } from "../commands/backup-resource-inventory.js";
 import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
+import type { ExistingAgentDatabaseTarget } from "../infra/session-sqlite-migration-readers.js";
 import type { RuntimeEnv } from "../runtime.js";
 
-async function hasPendingHeartbeatMigration(): Promise<boolean> {
+async function hasPendingHeartbeatMigration(
+  targets: readonly ExistingAgentDatabaseTarget[],
+): Promise<boolean> {
   const [
     { createConfigIO },
-    { projectRetiredHeartbeatConfig },
+    { tryProjectRetiredHeartbeatConfig },
     { hasPendingHeartbeatCadenceMigration },
     { collectHeartbeatScratchMigrationFindings },
     { hasPendingHeartbeatOutcomes },
@@ -24,11 +27,15 @@ async function hasPendingHeartbeatMigration(): Promise<boolean> {
     observe: false,
     pluginValidation: "core-only",
   }).readConfigFileSnapshot();
+  const projected = tryProjectRetiredHeartbeatConfig(sourceConfig);
+  if (!projected) {
+    return false;
+  }
   return (
-    !isDeepStrictEqual(projectRetiredHeartbeatConfig(sourceConfig), sourceConfig) ||
+    !isDeepStrictEqual(projected, sourceConfig) ||
     hasPendingHeartbeatCadenceMigration(sourceConfig, env) ||
     (await collectHeartbeatScratchMigrationFindings(sourceConfig, env)).length > 0 ||
-    hasPendingHeartbeatOutcomes(sourceConfig, env)
+    hasPendingHeartbeatOutcomes(targets, env)
   );
 }
 
@@ -73,27 +80,32 @@ export async function prepareDoctorHealthDatabaseBackups(params: {
   const { normalizeAgentId } = await import("../routing/session-key.js");
   const samePath = createOpenClawAgentDatabasePathMatcher();
   const discovery = schemas.agentDatabaseMigrationDiscovery?.discovery;
-  const databasePaths = discovery?.targets
-    .filter(
-      (database) =>
-        !schemas.agentRefusals?.some(
-          (refusal) =>
-            normalizeAgentId(refusal.agentId) === normalizeAgentId(database.agentId) &&
-            refusal.paths.some((pathname) => samePath(pathname, database.path)),
-        ) &&
-        !schemas.indeterminate.some(
-          (failure) =>
-            failure.kind === "agent" &&
-            (failure.path === database.path ||
-              discovery.sourceIdentities.get(failure.path)?.realPath === database.realPath),
-        ),
-    )
-    .map((database) => database.path);
+  const databaseTargets = discovery?.targets.filter(
+    (database) =>
+      !schemas.agentRefusals?.some(
+        (refusal) =>
+          normalizeAgentId(refusal.agentId) === normalizeAgentId(database.agentId) &&
+          refusal.paths.some((pathname) => samePath(pathname, database.path)),
+      ) &&
+      !schemas.indeterminate.some(
+        (failure) =>
+          failure.kind === "agent" &&
+          (failure.path === database.path ||
+            discovery.sourceIdentities.get(failure.path)?.realPath === database.realPath),
+      ),
+  );
+  const databasePaths = databaseTargets?.map((database) => database.path);
   // Snapshot reuse must cover current-schema stores in the same rollback group too.
   const backupInventory =
     Boolean(schemas.pendingMigrations?.length) ||
     params.automaticHeartbeatRepair ||
-    (await hasPendingHeartbeatMigration());
+    (await hasPendingHeartbeatMigration(
+      databaseTargets?.map((database) => ({
+        agentId: database.agentId,
+        storePath: database.path,
+        sqlitePath: database.path,
+      })) ?? [],
+    ));
   const backups = await backupDoctorMigrationDatabases({
     env: process.env,
     databasePaths: databasePaths ?? [],

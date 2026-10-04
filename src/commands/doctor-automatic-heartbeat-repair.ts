@@ -9,7 +9,10 @@ import {
 } from "../config/validation.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { assertPreflightConfigUnchanged } from "./config-preflight-snapshot.js";
-import { projectRetiredHeartbeatConfig } from "./doctor-heartbeat-legacy.js";
+import {
+  projectRetiredHeartbeatConfig,
+  tryProjectRetiredHeartbeatConfig,
+} from "./doctor-heartbeat-legacy.js";
 import type { DoctorOptions } from "./doctor.types.js";
 import {
   canPlanAutomaticConfigRepair,
@@ -50,14 +53,8 @@ export async function projectHeartbeatConfigForUpdateAdmission(
   ) {
     return undefined;
   }
-  let config: OpenClawConfig;
-  try {
-    config = projectRetiredHeartbeatConfig(snapshot.sourceConfig);
-  } catch {
-    // Invalid legacy values must produce the normal redacted config refusal.
-    return undefined;
-  }
-  if (isDeepStrictEqual(config, snapshot.sourceConfig)) {
+  const config = tryProjectRetiredHeartbeatConfig(snapshot.sourceConfig);
+  if (!config || isDeepStrictEqual(config, snapshot.sourceConfig)) {
     return undefined;
   }
   return projectAutomaticConfigRepair(
@@ -90,7 +87,10 @@ export async function prepareAutomaticHeartbeatRepair(
   ) {
     return undefined;
   }
-  const config = projectRetiredHeartbeatConfig(snapshot.sourceConfig);
+  const config = tryProjectRetiredHeartbeatConfig(snapshot.sourceConfig);
+  if (!config) {
+    return undefined;
+  }
   if (isDeepStrictEqual(config, snapshot.sourceConfig)) {
     const { hasPendingHeartbeatCadenceMigration } =
       await import("./doctor-heartbeat-cadence-migration.js");

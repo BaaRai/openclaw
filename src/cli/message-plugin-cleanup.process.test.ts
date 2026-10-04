@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { cliRecoveryEntrypoints } from "./cli-entrypoint.test-support.js";
-import { runCliProcessChild } from "./cli-process-child.test-helpers.js";
+import {
+  runCliProcessChild,
+  waitForCliProcessStderrMarker,
+} from "./cli-process-child.test-helpers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -14,7 +17,7 @@ describe("message CLI plugin cleanup", () => {
     { name: "successful text", fail: false, json: false, pending: false },
     { name: "failed JSON", fail: true, json: true, pending: false },
     { name: "failed text", fail: true, json: false, pending: false },
-    { name: "stalled cleanup", fail: false, json: true, pending: true },
+    { name: "cleanup beyond its reporting grace", fail: false, json: true, pending: true },
   ])("runs owned shutdown hooks after $name output", async ({ fail, json, pending }) => {
     const root = tempDirs.make("openclaw-message-cleanup-");
     const pluginDir = path.join(root, "plugin");
@@ -69,7 +72,17 @@ export default { id: plugin.id, register(api) {
   api.registerChannel({ plugin });
   api.on("gateway_stop", () => {
     fs.appendFileSync(${JSON.stringify(marker)}, "stopped\\n");
-    ${pending ? "return new Promise(() => {});" : "return Promise.resolve();"}
+    ${
+      pending
+        ? `return new Promise((resolve) => {
+      process.stdin.once("data", () => {
+        fs.appendFileSync(${JSON.stringify(marker)}, "settled\\n");
+        resolve();
+      });
+      process.stdin.resume();
+    });`
+        : "return Promise.resolve();"
+    }
   });
 } };`,
     );
@@ -114,11 +127,27 @@ export default { id: plugin.id, register(api) {
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
         NO_COLOR: "1",
       },
+      interact: pending
+        ? async (child) => {
+            try {
+              await waitForCliProcessStderrMarker(
+                child,
+                "CLI cleanup timed out: plugin-registration-resources after 5000ms",
+              );
+              expect(child.exitCode).toBeNull();
+              await expect(fs.readFile(marker, "utf8")).resolves.toBe("stopped\n");
+            } finally {
+              child.stdin.end("release\n");
+            }
+          }
+        : undefined,
     });
 
     expect(result.signal, result.stderr).toBeNull();
     expect(result.code, result.stderr).toBe(fail ? 1 : 0);
-    await expect(fs.readFile(marker, "utf8")).resolves.toBe("stopped\n");
+    await expect(fs.readFile(marker, "utf8")).resolves.toBe(
+      pending ? "stopped\nsettled\n" : "stopped\n",
+    );
     if (json) {
       expect(JSON.parse(result.stdout)).toMatchObject(
         fail ? { ok: false, error: { message: "synthetic target failure" } } : { dryRun: true },

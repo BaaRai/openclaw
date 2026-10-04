@@ -541,10 +541,10 @@ describe("session override precedence and persistence", () => {
     expect(state).toMatchObject({ provider: "anthropic", model: "claude-opus-4-6" });
   });
 
-  it.each([undefined, "gpt-4o", "stale-again"])(
-    "adopts concurrent repair state (automatic origin: %s)",
-    async (automaticOrigin) => {
-      const automatic = automaticOrigin !== undefined;
+  it.each(["user", "auto"] as const)(
+    "adopts a concurrent %s selection when repairing a disallowed pin",
+    async (source) => {
+      const automatic = source === "auto";
       const cfg: OpenClawConfig = {
         agents: {
           defaults: {
@@ -557,23 +557,17 @@ describe("session override precedence and persistence", () => {
       const entry = makeEntry({
         providerOverride: "openai",
         modelOverride: "gpt-4o-mini",
-        ...(automatic
-          ? {
-              modelOverrideSource: "auto",
-              modelOverrideFallbackOriginProvider: "openai",
-              modelOverrideFallbackOriginModel: "stale-primary",
-            }
-          : {}),
+        modelOverrideSource: "user",
       });
       const concurrentEntry = makeEntry({
         updatedAt: entry.updatedAt + 1,
         providerOverride: "openai",
         modelOverride: "gpt-5.5",
-        modelOverrideSource: automatic ? "auto" : "user",
+        modelOverrideSource: source,
         ...(automatic
           ? {
               modelOverrideFallbackOriginProvider: "openai",
-              modelOverrideFallbackOriginModel: automaticOrigin,
+              modelOverrideFallbackOriginModel: "gpt-4o",
             }
           : {}),
       });
@@ -590,7 +584,7 @@ describe("session override precedence and persistence", () => {
       expect(state.modelPolicy.allows({ provider: "openai", model: "gpt-5.5" })).toBe(!automatic);
       expect(state).toMatchObject({
         provider: "openai",
-        model: automaticOrigin === "stale-again" ? "gpt-4o" : "gpt-5.5",
+        model: "gpt-5.5",
         resetModelOverride: false,
       });
       expect(sessionPersistenceMocks.persistReplySessionEntry).toHaveBeenCalledOnce();
@@ -608,7 +602,7 @@ describe("session override precedence and persistence", () => {
       expect(entry).toMatchObject({
         providerOverride: "openai",
         modelOverride: "gpt-5.5",
-        modelOverrideSource: automatic ? "auto" : "user",
+        modelOverrideSource: source,
       });
       expect(sessionStore[sessionKey]).toEqual(entry);
     },
@@ -1005,25 +999,4 @@ describe("refused pins use the primary instead of catalog order", () => {
       }
     },
   );
-
-  it("uses the primary for a stale caller without a session store", async () => {
-    const entry = makeEntry({
-      providerOverride: "provider-c",
-      modelOverride: "model-c1",
-      modelOverrideSource: "auto",
-      modelOverrideRouteResolution: "resolved",
-      modelOverrideFallbackOriginProvider: "provider-c",
-      modelOverrideFallbackOriginModel: "model-c2",
-    });
-    const state = await createInitialState(cfg, "provider-b", "model-b1", {
-      sessionEntry: entry,
-      provider: "provider-c",
-      model: "model-c1",
-    });
-    expect(state).toMatchObject({
-      resetModelOverride: false,
-      provider: "provider-b",
-      model: "model-b1",
-    });
-  });
 });

@@ -1,5 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { serialize } from "node:v8";
+import { assertAgentDeletionAllowsMutation } from "../agents/agent-lifecycle-registry.js";
+import {
+  commitHeartbeatTaskMigrationInDatabase,
+  loadHeartbeatTaskPlanningSnapshot,
+  planHeartbeatTaskMigration,
+} from "../commands/doctor-heartbeat-task-migration.kernel.js";
 import { analyzeLegacyHeartbeatTasks } from "../commands/heartbeat-task-legacy.js";
 import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
 import { recordDefaultProactiveJobInDatabase } from "../cron/proactive-job-receipt.kernel.js";
@@ -7,6 +13,7 @@ import { hashCronScratchSource } from "../cron/scratch-store.js";
 import { writeCronJobScratchInDatabase } from "../cron/scratch-write.kernel.js";
 import { computeJobNextRunAtMs } from "../cron/service/jobs-scheduling.js";
 import { cronStoreKey } from "../cron/store/key.js";
+import { prepareCronReceiptAuthorityPublication } from "../cron/store/receipt-authority-publication.js";
 import { loadCronRows, upsertCronJobRow } from "../cron/store/row-codec.js";
 import type { CronStoredJob } from "../cron/types.js";
 import {
@@ -21,6 +28,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { verifyOpenClawStateLeaseOwnership } from "../state/openclaw-state-lease-storage.js";
+import { reconstructClawAutomationInstallUpdate } from "./automation-install-intent.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
   CLAW_PORTABLE_HEARTBEAT_ID,
@@ -48,6 +56,7 @@ export function mutatePortableHeartbeatInWorker(
     ({ db }) => {
       const assertRemovalAuthority = () => {
         if (input.kind !== "removeRef") {
+          assertAgentDeletionAllowsMutation(database, input.agentId);
           return;
         }
         const { deletion } = input;
@@ -79,7 +88,7 @@ export function mutatePortableHeartbeatInWorker(
       };
       assertRemovalAuthority();
       const storeKey = cronStoreKey(input.storePath);
-      const current = readPortableHeartbeatStateInDatabase(db, input.agentId, input.storePath);
+      let current = readPortableHeartbeatStateInDatabase(db, input.agentId, input.storePath);
       if (
         ("expected" in input && input.expected && input.expected.storePath !== input.storePath) ||
         (input.kind === "rollback" && input.previous.storePath !== input.storePath)
@@ -190,15 +199,29 @@ export function mutatePortableHeartbeatInWorker(
             nativeOptions,
           );
         }
-        if (input.install) {
-          if (input.install.plan.agent.finalId !== input.agentId) {
+        let install = input.install;
+        if (input.gatewayInstall) {
+          if (install) {
+            throw new Error("Portable automation has competing installation intents.");
+          }
+          const currentInstall = readClawInstallRecordFromDatabase(db, input.agentId);
+          if (!currentInstall) {
+            throw new Error("Portable automation install lost its Claw provenance.");
+          }
+          install = reconstructClawAutomationInstallUpdate({
+            ...input.gatewayInstall,
+            current: currentInstall,
+          });
+        }
+        if (install) {
+          if (install.plan.agent.finalId !== input.agentId) {
             throw new Error("Portable automation install targets a different agent.");
           }
-          installRecord = updateClawInstallRecord(input.install.plan, {
+          installRecord = updateClawInstallRecord(install.plan, {
             ...nativeOptions,
             nowMs: input.nowMs,
-            expectedClaw: input.install.expectedClaw,
-            agentConfigDigest: input.install.agentConfigDigest,
+            expectedClaw: install.expectedClaw,
+            agentConfigDigest: install.agentConfigDigest,
           });
         }
       } else if (input.kind === "removeRef") {
@@ -227,12 +250,33 @@ export function mutatePortableHeartbeatInWorker(
             current.ref.schedulerJobId !== input.jobId ||
             !current.scratch.scratch ||
             current.ref.job.configRevision !== resolveCronJobConfigRevision(current.job) ||
-            current.scratch.scratch.sourceSha256 !== input.sourceScratchDigest ||
-            analyzeLegacyHeartbeatTasks(current.scratch.scratch.content).hasTasksBlock
+            current.scratch.scratch.sourceSha256 !== input.sourceScratchDigest
           ) {
             throw new Error(
               "Portable task conversion changed or remains incomplete; source scratch and ownership were retained.",
             );
+          }
+          if (analyzeLegacyHeartbeatTasks(current.scratch.scratch.content).hasTasksBlock) {
+            const plan = planHeartbeatTaskMigration({
+              snapshot: loadHeartbeatTaskPlanningSnapshot(db, input.storePath),
+              agentId: input.agentId,
+              jobId: input.jobId,
+              scratch: current.scratch.scratch,
+              nowMs: input.nowMs,
+            });
+            const converted = commitHeartbeatTaskMigrationInDatabase({
+              db,
+              storePath: input.storePath,
+              nowMs: input.nowMs,
+              plan,
+            });
+            if (!converted.ok) {
+              throw new Error(`Portable task conversion lost its ${converted.reason} owner.`);
+            }
+            current = readPortableHeartbeatStateInDatabase(db, input.agentId, input.storePath);
+            if (!current.ref || !current.receipt || !current.scratch.scratch) {
+              throw new Error("Portable task conversion lost its provisioning state.");
+            }
           }
           upsertClawCronRef(
             {
@@ -318,7 +362,10 @@ export function mutatePortableHeartbeatInWorker(
         ...(installRecord ? { installRecord } : {}),
       };
       const bytes = ownedWorkerBytes(serialize(result));
-      deferSqliteWorkerCommitReceipt(db, { nonce: input.nonce });
+      deferSqliteWorkerCommitReceipt(db, {
+        nonce: input.nonce,
+        receiptAuthority: prepareCronReceiptAuthorityPublication(db),
+      });
       requestSqliteWorkerOperationAdmission(
         { stage: "commit", facts: { nonce: input.nonce, bytes } },
         [bytes.buffer],

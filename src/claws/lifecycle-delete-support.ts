@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { statRegularFileSync } from "@openclaw/fs-safe/advanced";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { root as fsSafeRoot } from "@openclaw/fs-safe/root";
@@ -32,15 +31,8 @@ import { pruneAgentConfig } from "../commands/agents.config.js";
 import { moveToTrash } from "../commands/cleanup-utils.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveCronJobConfigRevision } from "../cron/config-revision.js";
-import { loadedCronStoreFromRows } from "../cron/store/row-codec.js";
-import type { CronJobRow } from "../cron/store/schema.js";
 import { isSystemMonitorDeclaration } from "../cron/system-owned-declaration.js";
-import {
-  compileSqliteQueryBindings,
-  executeSqliteQuerySync,
-  getNodeSqliteKysely,
-} from "../infra/kysely-sync.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { unregisterOpenClawAgentDatabases } from "../state/openclaw-agent-db-registry.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
@@ -53,15 +45,13 @@ import {
 } from "../state/openclaw-state-db.js";
 import { digestClawBytes } from "./digest.js";
 import type { ClawMonitorCleanupGateway, ClawMonitorSnapshot } from "./monitor-cleanup-contract.js";
+import { readAttachedCronJobsInDatabase } from "./monitor-cleanup-read.kernel.js";
 import type { AttachedCronJob } from "./monitor-cleanup.read.types.js";
 import { deleteCachedClawInstallSchemaVersion } from "./provenance-runtime-read.js";
 import type { PersistedClawInstall } from "./provenance.js";
 import type { PersistedClawWorkspaceFile } from "./workspace.js";
 
-type ClawRemovalDatabase = Pick<
-  DB,
-  "claw_workspace_files" | "claw_package_refs" | "claw_installs" | "cron_jobs"
->;
+type ClawRemovalDatabase = Pick<DB, "claw_workspace_files" | "claw_package_refs" | "claw_installs">;
 
 export class ClawRemoveError extends Error {
   constructor(
@@ -136,40 +126,6 @@ function readAttachedCronJobs(
   options: OpenClawStateDatabaseOptions,
 ): AttachedCronJob[] {
   return readAttachedCronJobsInDatabase(openOpenClawStateDatabase(options).db, agentId);
-}
-
-export function readAttachedCronJobsInDatabase(
-  db: DatabaseSync,
-  agentId: string,
-): AttachedCronJob[] {
-  const { compiled, bind } = compileSqliteQueryBindings<string>((parameter) => {
-    const boundAgentId = parameter((value) => value);
-    return getNodeSqliteKysely<ClawRemovalDatabase>(db)
-      .selectFrom("cron_jobs")
-      .selectAll()
-      .where((eb) =>
-        eb.or([eb("agent_id", "=", boundAgentId), eb("owner_agent_id", "=", boundAgentId)]),
-      )
-      .orderBy("job_id")
-      .orderBy("store_key");
-  });
-  const rows =
-    db /* sqlite-allow-raw: preserve native inventory errors outside the write-transaction owner. */
-      .prepare(compiled.sql)
-      .all(...bind(agentId)) as CronJobRow[];
-  return rows.map((row) => {
-    const job = loadedCronStoreFromRows([row]).store.jobs[0];
-    return {
-      id: row.job_id,
-      name: row.name,
-      enabled: row.enabled === 1,
-      agentId: row.agent_id,
-      ownerAgentId: row.owner_agent_id,
-      storeKey: row.store_key,
-      declarationKey: row.declaration_key,
-      revision: job ? resolveCronJobConfigRevision(job) : undefined,
-    };
-  });
 }
 
 /** Offline preview keeps local blockers; only a serving owner can make a monitor removable. */
