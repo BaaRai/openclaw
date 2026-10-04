@@ -24,6 +24,7 @@ const customLoggingPattern = vi.hoisted(() => ({ value: "" }));
 const githubGrant = vi.hoisted(() => ({
   prepare: vi.fn(),
 }));
+// mock-isolation: Relay tests supply grants without accessing Gateway identities or credential renewal.
 vi.mock("openclaw/plugin-sdk/github-worker-runtime", () => ({
   prepareWorkerGitHubBindingGrant: githubGrant.prepare,
 }));

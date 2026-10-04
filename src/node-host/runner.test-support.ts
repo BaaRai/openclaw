@@ -149,6 +149,7 @@ vi.mock("./config.js", () => ({
   loadNodeHostConfig: mocks.loadNodeHostConfig,
 }));
 
+// mock-isolation: Runner fixtures own command discovery and watchers without activating bundled plugins.
 vi.mock("./plugin-node-host.js", () => ({
   ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
   notifyRegisteredNodeHostCommandDisconnect: vi.fn(async () => {}),

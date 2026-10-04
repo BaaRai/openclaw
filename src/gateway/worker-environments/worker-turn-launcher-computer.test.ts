@@ -49,6 +49,7 @@ import {
 } from "./worker-turn-launcher.test-support.js";
 
 const prepareGitHubBinding = vi.hoisted(() => vi.fn());
+// mock-isolation: Launch tests own grant preparation and revocation without real GitHub credentials.
 vi.mock("./worker-github-binding.js", () => ({
   prepareWorkerGitHubBindingGrant: prepareGitHubBinding,
   revokeWorkerGitHubBindingGrant: async (grant: WorkerGitHubBindingGrant | undefined) => {

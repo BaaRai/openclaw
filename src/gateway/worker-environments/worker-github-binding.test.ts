@@ -63,6 +63,7 @@ vi.mock("../../state/session-repository-workspaces.js", () => ({
     }),
   }),
 }));
+// mock-isolation: Grant tests control OAuth expiry without reading the persistent credential store.
 vi.mock("../../agents/github-oauth-records.js", () => ({ inspectGitHubOAuthRecord: mocks.oauth }));
 vi.mock("../../process/exec.js", () => ({ runCommandBuffered: mocks.nativeToken }));
 

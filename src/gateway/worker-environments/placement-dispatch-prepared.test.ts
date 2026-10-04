@@ -42,6 +42,7 @@ import { captureWorkspaceManifest } from "./workspace-manifest-worker.js";
 import { serializeWorkerWorkspaceManifest } from "./workspace-manifest.js";
 import { requireWorkspaceResultGit } from "./workspace-result-git.js";
 
+// mock-isolation: Placement reservation tests supply credentials without the managed GitHub lifecycle.
 vi.mock("./worker-github-binding.js", () => ({
   prepareWorkerGitHubBinding: vi.fn(),
   prepareWorkerGitHubBindingGrant: vi.fn(),
