@@ -27,11 +27,7 @@ import {
   getRuntimeConfigSourceSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import {
-  drainSystemEventEntries,
-  peekSystemEventEntries,
-} from "openclaw/plugin-sdk/system-event-runtime";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   disableCodexPluginThreadConfig,
   resolveCodexAppServerExecutionCwd,
@@ -700,43 +696,43 @@ describe("Codex app-server dynamic tool build", () => {
     expect(result.details).toMatchObject(testCase.expected);
   });
 
-  it("marks a command started by a conversation's completion turn as the conversation's own", async () => {
-    const workspaceDir = path.join(tempDir, "continuation-workspace");
-    await fs.mkdir(workspaceDir, { recursive: true });
-    const params = createParams(path.join(tempDir, "continuation.jsonl"), workspaceDir);
-    params.disableTools = false;
-    const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
-    params.sessionKey = sessionKey;
-    params.trigger = "heartbeat";
-    params.continuesConversation = true;
+  it("preserves an internal event's originating conversation in public host tool construction", async () => {
+    const workspaceDir = path.join(tempDir, "event-workspace");
+    const params = createParams(path.join(tempDir, "event.jsonl"), workspaceDir);
+    params.sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
+    params.sessionId = "codex-event-session";
+    params.trigger = "event";
+    params.messageProvider = "telegram";
+    params.agentAccountId = "work";
+    params.messageTo = "telegram:-100155462274:topic:42";
+    params.messageThreadId = "42";
+    params.currentChannelId = "telegram:-100155462274:topic:42";
+    params.currentThreadTs = "42";
     params.execOverrides = { host: "gateway", mode: "full" };
-    params.runtimePlan = createCodexRuntimePlanFixture();
-    setCodexTestToolFactory(params, (options) =>
-      createOpenClawCodingTools(options).filter((tool) => ["exec", "process"].includes(tool.name)),
-    );
+    const factory = vi.fn((_options: Parameters<typeof createOpenClawCodingTools>[0]) => [
+      createRuntimeDynamicTool("exec"),
+    ]);
+    setCodexTestToolFactory(params, factory);
 
     const tools = await buildDynamicToolsForTest(params, workspaceDir, {
       nativeToolSurfaceEnabled: false,
     });
-    const exec = expectDefined(
-      tools.find((tool) => tool.name === "exec"),
-      "OpenClaw exec",
-    );
-    onTestFinished(() => {
-      drainSystemEventEntries(sessionKey);
-    });
-    await exec.execute("continuation-exec", { command: "echo codex-chain-ok", background: true });
 
-    await vi.waitFor(
-      () =>
-        expect(peekSystemEventEntries(sessionKey)).toEqual([
-          expect.objectContaining({
-            text: expect.stringContaining("codex-chain-ok"),
-            fromConversationTurn: true,
-          }),
-        ]),
-      { timeout: 10_000 },
+    expect(factory).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        agentId: "main",
+        sessionKey: "agent:main:telegram:group:-100155462274:topic:42",
+        sessionId: "codex-event-session",
+        trigger: "event",
+        messageProvider: "telegram",
+        agentAccountId: "work",
+        messageTo: "telegram:-100155462274:topic:42",
+        messageThreadId: "42",
+        currentChannelId: "telegram:-100155462274:topic:42",
+        currentThreadTs: "42",
+      }),
     );
+    expect(tools.map((tool) => tool.name)).toContain("exec");
   });
 
   it.each<{
