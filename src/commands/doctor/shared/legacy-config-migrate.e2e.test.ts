@@ -348,19 +348,19 @@ describe("legacy config migration end to end", () => {
     const { retireHeartbeatWithDoctor } = await import("../../doctor-heartbeat-retirement.js");
     const { result, retired } = await withOpenClawTestState({}, async (state) => {
       const sourceBefore = JSON.stringify(raw);
-      const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
-      expect(result.partiallyValid).toBe(true);
-      if (!result.config) {
+      const migration = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+      expect(migration.partiallyValid).toBe(true);
+      if (!migration.config) {
         throw new Error("Expected a migrated config awaiting durable heartbeat retirement.");
       }
-      expect(result.config.channels?.defaults?.heartbeatVisibility).toEqual({ showOk: true });
-      const migratedBefore = JSON.stringify(result.config);
-      const retired = await retireHeartbeatWithDoctor(result.config, state.env);
+      expect(migration.config.channels?.defaults?.heartbeatVisibility).toEqual({ showOk: true });
+      const migratedBefore = JSON.stringify(migration.config);
+      const retiredConfig = await retireHeartbeatWithDoctor(migration.config, state.env);
       expect(JSON.stringify(raw)).toBe(sourceBefore);
-      expect(JSON.stringify(result.config)).toBe(migratedBefore);
-      expect(retired).not.toHaveProperty("channels.defaults.heartbeatVisibility");
-      expect(await retireHeartbeatWithDoctor(retired, state.env)).toEqual(retired);
-      return { result, retired };
+      expect(JSON.stringify(migration.config)).toBe(migratedBefore);
+      expect(retiredConfig).not.toHaveProperty("channels.defaults.heartbeatVisibility");
+      expect(await retireHeartbeatWithDoctor(retiredConfig, state.env)).toEqual(retiredConfig);
+      return { result: migration, retired: retiredConfig };
     });
 
     expect(result.config).toMatchObject({

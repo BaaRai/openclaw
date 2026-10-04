@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseDocument } from "yaml";
 import { createOpenClawTestInstance } from "../../test/helpers/openclaw-test-instance.js";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -390,7 +391,7 @@ describe("claws lifecycle cli e2e", () => {
     );
   });
 
-  it("exports an installed agent as a self-contained grouped package", async () => {
+  it("exports, reimports, updates, and removes a Claw under serving Gateway custody", async () => {
     const instance = await createOpenClawTestInstance({
       name: "claws-lifecycle-export",
       env: {
@@ -409,6 +410,8 @@ describe("claws lifecycle cli e2e", () => {
           return result;
         };
         const source = "src/claws/fixtures/workspace-agent.claw.json";
+        const gatewayPid = instance.child?.pid;
+        expect(gatewayPid).toBeTypeOf("number");
         const addPreview = await run(["claws", "add", source, "--dry-run", "--json"]);
         const addPlan = parseJson(addPreview.stdout) as { planIntegrity: string };
         await run([
@@ -485,6 +488,115 @@ describe("claws lifecycle cli e2e", () => {
             expect.objectContaining({ path: "reference/policy.md" }),
           ],
         });
+
+        const copyStatus = parseJson(
+          (await run(["claws", "status", "workspace-copy", "--json"])).stdout,
+        ) as { records: [{ portableHeartbeat: { schedulerJobId: string } }] };
+        expect(copyStatus.records).toMatchObject([
+          { portableHeartbeat: { schedulerJobId: expect.any(String), state: "present" } },
+        ]);
+        const jobId = copyStatus.records[0].portableHeartbeat.schedulerJobId;
+        const originalJob = parseJson(
+          (await run(["automations", "get", jobId, "--json"])).stdout,
+        ) as { createdAtMs: number; schedule: { anchorMs: number } };
+        expect(originalJob).toMatchObject({
+          id: jobId,
+          agentId: "workspace-copy",
+          enabled: true,
+          schedule: { kind: "every", everyMs: 1_800_000 },
+        });
+
+        const profilePath = join(outputDirectory, "profiles", "openclaw.yml");
+        const profile = parseDocument(await readFile(profilePath, "utf8"));
+        expect(profile.errors).toEqual([]);
+        expect(profile.getIn(["agent", "heartbeat", "every"])).toBe("30m");
+        profile.setIn(["agent", "heartbeat", "every"], "37m");
+        await writeFile(profilePath, String(profile), "utf8");
+        const updatePreview = await run([
+          "claws",
+          "update",
+          "workspace-copy",
+          "--dry-run",
+          "--json",
+        ]);
+        const updatePlan = parseJson(updatePreview.stdout) as { planIntegrity: string };
+        expect(updatePlan).toMatchObject({
+          blockers: [],
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "cronJob",
+              action: "change",
+              target: jobId,
+              blocked: false,
+            }),
+          ]),
+        });
+        const updated = await run([
+          "claws",
+          "update",
+          "workspace-copy",
+          "--yes",
+          "--plan-integrity",
+          updatePlan.planIntegrity,
+          "--json",
+        ]);
+        expect(parseJson(updated.stdout)).toMatchObject({
+          status: "complete",
+          agentId: "workspace-copy",
+        });
+        expect(
+          parseJson((await run(["automations", "get", jobId, "--json"])).stdout),
+        ).toMatchObject({
+          id: jobId,
+          agentId: "workspace-copy",
+          enabled: true,
+          createdAtMs: originalJob.createdAtMs,
+          schedule: { kind: "every", everyMs: 2_220_000, anchorMs: originalJob.schedule.anchorMs },
+        });
+
+        const removePreview = await run([
+          "claws",
+          "remove",
+          "workspace-copy",
+          "--dry-run",
+          "--json",
+        ]);
+        const removePlan = parseJson(removePreview.stdout) as { planIntegrity: string };
+        expect(removePlan).toMatchObject({
+          blockers: [],
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "cronJob",
+              action: "remove",
+              target: jobId,
+              blocked: false,
+            }),
+          ]),
+        });
+        const removed = await run([
+          "claws",
+          "remove",
+          "workspace-copy",
+          "--yes",
+          "--plan-integrity",
+          removePlan.planIntegrity,
+          "--json",
+        ]);
+        expect(parseJson(removed.stdout)).toMatchObject({
+          status: "complete",
+          agentId: "workspace-copy",
+          agentRemoved: true,
+        });
+        const remaining = parseJson(
+          (await run(["automations", "list", "--all", "--json"])).stdout,
+        ) as {
+          jobs: Array<{ id: string; agentId?: string }>;
+        };
+        expect(remaining.jobs.map((job) => job.id)).not.toContain(jobId);
+        expect(remaining.jobs).toEqual(
+          expect.arrayContaining([expect.objectContaining({ agentId: "workspace-agent" })]),
+        );
+        expect(instance.child).toMatchObject({ pid: gatewayPid, exitCode: null, signalCode: null });
       },
       () => instance.cleanup(),
     );

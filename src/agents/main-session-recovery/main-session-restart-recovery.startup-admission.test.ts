@@ -20,6 +20,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
 import { scheduleRestartAbortedMainSessionRecovery } from "./main-session-restart-recovery-runtime.js";
 
+// mock-isolation: Keep recovery RPC dispatch synthetic while exercising real startup preparation and cancellation.
 vi.mock("../../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({ runId: "resumed-startup-run" })),
 }));

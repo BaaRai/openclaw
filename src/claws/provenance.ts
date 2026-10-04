@@ -37,7 +37,11 @@ import {
   deleteCachedClawInstallSchemaVersion,
 } from "./provenance-runtime-read.js";
 import * as installRecordSchema from "./provenance-schema-version.js";
-import type { ClawInstallStatus, PersistedClawInstall } from "./provenance-types.js";
+import type {
+  ClawInstallRecordUpdate,
+  ClawInstallStatus,
+  PersistedClawInstall,
+} from "./provenance-types.js";
 import type { ClawAddPlan, ResolvedClawPackage } from "./types.js";
 export {
   persistClawMigrationOwnership,
@@ -253,14 +257,6 @@ export function readClawInstallRecords(
 ): PersistedClawInstall[] {
   return readClawInstallRecordsInDatabase(openOpenClawStateDatabase(options).db);
 }
-
-export type ClawInstallRecordUpdate = Pick<
-  ClawAddPlan,
-  "claw" | "manifestSchemaVersion" | "planIntegrity"
-> & {
-  agent: Pick<ClawAddPlan["agent"], "finalId" | "workspace" | "config">;
-  actions: Array<Pick<ClawAddPlan["actions"][number], "kind" | "target" | "digest" | "details">>;
-};
 
 export function updateClawInstallRecord(
   plan: ClawInstallRecordUpdate,

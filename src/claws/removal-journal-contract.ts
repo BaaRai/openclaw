@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readDatabaseFileIdentity } from "../infra/sqlite-worker-identity.js";
 import type { AgentDeletionJournalTransport } from "../state/agent-deletion-journal-transport.js";
 import { clawMonitorCleanupBindingSchema } from "./monitor-cleanup-contract.js";
@@ -78,7 +79,13 @@ export const clawRemovalJournalResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: z.string() }).strict(),
 ]);
 
-export type ClawRemovalJournalRequest = z.infer<typeof clawRemovalJournalRequestSchema>;
+type ClawRemovalJournalRequest = z.infer<typeof clawRemovalJournalRequestSchema>;
+export type ClawRemovalJournalWorkerInput = {
+  nonce: string;
+  request: ClawRemovalJournalRequest;
+  config: OpenClawConfig;
+};
+
 export type ClawRemovalJournalGateway = (
   input: Parameters<AgentDeletionJournalTransport>[0] & {
     expectedInstallDigest: string;

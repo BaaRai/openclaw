@@ -52,8 +52,8 @@ describe("Claw journal original physical source", () => {
   let bootstrap: OpenClawTestState;
   let startupMs: number;
   let stderr = "";
-  const ready = createDeferred<void>();
-  const exited = createDeferred<void>();
+  const ready = createDeferred();
+  const exited = createDeferred();
   const pending = new Map<string, ReturnType<typeof createDeferred<Reply>>>();
   beforeAll(async () => {
     bootstrap = await createOpenClawTestState({ label: "claw-journal-server", applyEnv: false });

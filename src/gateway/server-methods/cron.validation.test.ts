@@ -26,7 +26,7 @@ import { loadCronStore, saveCronStore } from "../../cron/store.js";
 import { cronStoreKey } from "../../cron/store/key.js";
 import { loadCronRows } from "../../cron/store/row-codec.js";
 import type { CronRunRecord } from "../../cron/store/run-history.types.js";
-import type { CronJob } from "../../cron/types.js";
+import type { CronDelivery, CronJob } from "../../cron/types.js";
 import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,

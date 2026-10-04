@@ -85,7 +85,7 @@ export const clawAutomationMutationResultSchema = z
   .strict();
 
 export type ClawAutomationMutationRequest = z.infer<typeof clawAutomationMutationRequestSchema>;
-export type ClawAutomationMutationResult = z.infer<typeof clawAutomationMutationResultSchema>;
+type ClawAutomationMutationResult = z.infer<typeof clawAutomationMutationResultSchema>;
 export type ClawAutomationMutationGateway = (
   request: Omit<ClawAutomationMutationRequest, "binding">,
 ) => Promise<ClawAutomationMutationResult>;

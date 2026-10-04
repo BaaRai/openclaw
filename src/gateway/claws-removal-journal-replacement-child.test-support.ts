@@ -9,15 +9,14 @@ import { clawsRemovalJournalHandlers } from "./server-methods/claws-removal-jour
 type Observation = { stage: string; elapsedMs: number; nonce?: string };
 let observation: { started: number; stages: Observation[] } | undefined;
 const observedPorts = new WeakSet<MessagePort>();
-const originalOn = MessagePort.prototype.on;
 // Observe transport messages without changing the original listener, decisions, or grants.
 Object.defineProperty(MessagePort.prototype, "on", {
   configurable: true,
   writable: true,
-  value: function (this: MessagePort, ...args: Parameters<typeof originalOn>) {
+  value(this: MessagePort, ...args: Parameters<MessagePort["on"]>) {
     if (args[0] === "message" && !observedPorts.has(this)) {
       observedPorts.add(this);
-      originalOn.call(this, "message", (message: unknown) => {
+      MessagePort.prototype.addListener.call(this, "message", (message: unknown) => {
         if (!observation || !isRecord(message)) {
           return;
         }
@@ -40,7 +39,7 @@ Object.defineProperty(MessagePort.prototype, "on", {
         }
       });
     }
-    return originalOn.apply(this, args);
+    return MessagePort.prototype.addListener.apply(this, args);
   },
 });
 
@@ -48,10 +47,14 @@ let current = true;
 let active: Promise<void> | undefined;
 process.on("disconnect", () => {
   current = false;
-  void (active ?? Promise.resolve()).finally(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    process.exit(0);
-  });
+  void (async () => {
+    try {
+      await active;
+    } finally {
+      await closeOpenClawStateDatabaseAsync();
+      process.exit(0);
+    }
+  })();
 });
 process.on("message", (message: unknown) => {
   if (
@@ -94,7 +97,7 @@ process.on("message", (message: unknown) => {
           cronStorePath: resolveCronJobsStorePathFromConfig(config),
           isConfigReloadSettled: () => true,
         },
-        hasCurrentClientAuthority: () => current && process.connected === true,
+        hasCurrentClientAuthority: () => current && process.connected,
         sessionMutationCommitGuard: () => {
           if (!current || !process.connected) {
             throw new Error("Synthetic caller disconnected");

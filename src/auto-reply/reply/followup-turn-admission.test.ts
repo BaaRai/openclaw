@@ -41,6 +41,7 @@ vi.mock("./queue.js", () => ({
   resolveFollowupAbortSignal: (run: FollowupRun) => run.abortSignal ?? run.queueAbortSignal,
 }));
 
+// mock-isolation: Control session generations across admission awaits without opening real SQLite workers.
 vi.mock(
   "../../config/sessions/session-entry-read-runtime.js",
   (): Pick<

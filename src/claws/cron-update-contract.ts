@@ -1,5 +1,4 @@
-import type { PersistedClawInstall } from "./provenance-types.js";
-import type { ClawInstallRecordUpdate } from "./provenance.js";
+import type { ClawInstallRecordUpdate, PersistedClawInstall } from "./provenance-types.js";
 
 export type ClawCronInstallUpdate = {
   plan: ClawInstallRecordUpdate;

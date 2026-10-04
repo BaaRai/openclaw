@@ -14,7 +14,7 @@ export type AgentDeletionInput = Omit<
 > &
   Partial<Pick<AgentDeletionJournalEntry, "databasePaths" | "cleanupPaths" | "deleteFiles">>;
 
-export type AgentDeletionJournalMutation =
+type AgentDeletionJournalMutation =
   | {
       kind: "begin";
       entry: AgentDeletionInput;

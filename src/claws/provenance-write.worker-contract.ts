@@ -6,7 +6,7 @@ import type {
   PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
 import type { PortableHeartbeatMutation } from "./portable-heartbeat-write.types.js";
-import type { ClawRemovalJournalWorkerInput } from "./removal-journal.kernel.js";
+import type { ClawRemovalJournalWorkerInput } from "./removal-journal-contract.js";
 
 export type ClawProvenanceWriteOperations = {
   "clawProvenance.removalJournal": {

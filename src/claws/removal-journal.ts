@@ -12,8 +12,10 @@ import type {
 import { captureAgentDatabasePreparationDeletionForIdentity } from "../state/agent-database-admission.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import { clawRemovalJournalResultSchema } from "./removal-journal-contract.js";
-import type { ClawRemovalJournalWorkerInput } from "./removal-journal.kernel.js";
+import {
+  clawRemovalJournalResultSchema,
+  type ClawRemovalJournalWorkerInput,
+} from "./removal-journal-contract.js";
 
 /** Only the serving Cron owner publishes a journal mutation; native settlement precedes its reply. */
 export async function mutateClawRemovalJournal(

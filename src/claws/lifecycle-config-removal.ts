@@ -214,15 +214,16 @@ export async function withClawAgentConfigRemoval<T>(
       const { existingJournal, deletion } = params.journalGateway
         ? await (async () => {
             const database = openOpenClawStateDatabase(stateOptions);
-            const { existingJournal, entry } = runSqliteDeferredTransactionSync(database.db, () =>
-              prepareClaim(database),
+            const { existingJournal: priorJournal, entry } = runSqliteDeferredTransactionSync(
+              database.db,
+              () => prepareClaim(database),
             );
-            const deletion = await beginOwned(entry);
-            return { existingJournal, deletion };
+            const ownedDeletion = await beginOwned(entry);
+            return { existingJournal: priorJournal, deletion: ownedDeletion };
           })()
         : await transact((database, begin) => {
-            const { existingJournal, entry } = prepareClaim(database);
-            return { existingJournal, deletion: begin(entry) };
+            const { existingJournal: priorJournal, entry } = prepareClaim(database);
+            return { existingJournal: priorJournal, deletion: begin(entry) };
           });
       let committed = false;
       let monitorEffectsStarted = false;

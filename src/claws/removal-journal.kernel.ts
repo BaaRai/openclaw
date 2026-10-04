@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import { assertAgentSessionStoreDeletionSafe } from "../agents/agent-delete-databases.js";
 import { listAgentEntries, resolveAgentDir } from "../agents/agent-scope-config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareCronReceiptAuthorityPublication } from "../cron/store/receipt-authority-publication.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import {
@@ -28,13 +27,7 @@ import {
   readClawInstallRecordFromDatabase,
   readClawOrphanWorkspaceInDatabase,
 } from "./provenance-read.kernel.js";
-import type { ClawRemovalJournalRequest } from "./removal-journal-contract.js";
-
-export type ClawRemovalJournalWorkerInput = {
-  nonce: string;
-  request: ClawRemovalJournalRequest;
-  config: OpenClawConfig;
-};
+import type { ClawRemovalJournalWorkerInput } from "./removal-journal-contract.js";
 
 export function mutateClawRemovalJournalInWorker(
   database: OpenClawStateDatabase,
