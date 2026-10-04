@@ -23,12 +23,7 @@ import {
   captureAgentRunLifecycleGeneration,
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
-import {
-  claimAgentRunContext,
-  clearAgentRunContext,
-  registerAgentRunContext,
-  releaseAgentRunContext,
-} from "../../infra/agent-run-registry.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -37,7 +32,7 @@ import { progressCardRefreshRunProjection } from "../../sessions/input-provenanc
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import type { PreparedReplyTranscriptStart } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../types.js";
-import { prepareReplyTurnExecution } from "./agent-runner-admission.js";
+import { prepareReplyTurnExecution, prepareReplyTurnRunSource } from "./agent-runner-admission.js";
 import {
   clearRecoveredAutoFallbackPrimaryProbeSelection,
   resolveRunAfterAutoFallbackPrimaryProbeRecheck,
@@ -670,49 +665,15 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
   const runId = params.opts?.runId ?? crypto.randomUUID();
   const executionParams =
     params.opts?.runId === runId ? params : { ...params, opts: { ...params.opts, runId } };
-  const automation = executionParams.followupRun.run.scheduledAutomation;
+  const source = prepareReplyTurnRunSource(executionParams, runId);
   const eventExecution = executionParams.followupRun.run.internalEventExecution;
-  let runContextOwnerToken: string | undefined;
   let terminalRecorded = false;
   try {
     if (eventExecution?.beforeStart) {
       await eventExecution.beforeStart();
     }
     executionParams.replyOperation?.abortSignal.throwIfAborted();
-    automation?.assertCurrent();
-    if (automation) {
-      runContextOwnerToken = claimAgentRunContext(
-        runId,
-        {
-          sessionKey: executionParams.sessionKey ?? executionParams.followupRun.run.sessionKey,
-          sessionId: executionParams.followupRun.run.sessionId,
-          agentId: executionParams.followupRun.run.agentId,
-          lifecycleGeneration: captureAgentRunLifecycleGeneration(runId),
-          cronRunsByJobId: new Map([
-            [
-              automation.job.id,
-              {
-                pacingEnabled: automation.job.pacing !== undefined,
-                assertCurrent: () => {
-                  automation.assertCurrent();
-                  if (
-                    !executionParams.replyOperation ||
-                    executionParams.replyOperation.result ||
-                    executionParams.replyOperation.abortSignal.aborted
-                  ) {
-                    throw new Error("Automation reply owner has closed");
-                  }
-                },
-              },
-            ],
-          ]),
-        },
-        { trackOwner: true, ownsContext: true },
-      );
-      if (!runContextOwnerToken) {
-        throw new Error("The scheduled run context already has an exclusive owner");
-      }
-    }
+    source.claim();
     const result = await executeAgentTurnOutcome(executionParams, runId);
     await recordAgentTurnExecutionOutcome(executionParams, result);
     terminalRecorded = true;
@@ -733,6 +694,6 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<AgentTu
     }
     throw error;
   } finally {
-    releaseAgentRunContext(runId, runContextOwnerToken);
+    source.close();
   }
 }

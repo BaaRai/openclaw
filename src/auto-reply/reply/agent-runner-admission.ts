@@ -4,6 +4,8 @@ import { readChannelContextGatewayContextResolver } from "../../channels/message
 import { resolveCronJobConfigRevision } from "../../cron/config-revision.js";
 import { prepareCronRunAdmission } from "../../cron/run-admission.js";
 import { resolveCronAuthenticatedChannelRequester } from "../../cron/tools-allow-provenance.js";
+import { captureAgentRunLifecycleGeneration } from "../../infra/agent-events.js";
+import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
 import {
@@ -132,4 +134,51 @@ export function prepareReplyTurnExecution(params: AgentTurnParams, runId: string
     closeAdmission();
     throw error;
   }
+}
+
+/** Retains the scheduled run's registry claim through terminal settlement. */
+export function prepareReplyTurnRunSource(params: AgentTurnParams, runId: string) {
+  const automation = params.followupRun.run.scheduledAutomation;
+  let runContextOwnerToken: string | undefined;
+  return {
+    claim() {
+      automation?.assertCurrent();
+      if (automation) {
+        runContextOwnerToken = claimAgentRunContext(
+          runId,
+          {
+            sessionKey: params.sessionKey ?? params.followupRun.run.sessionKey,
+            sessionId: params.followupRun.run.sessionId,
+            agentId: params.followupRun.run.agentId,
+            lifecycleGeneration: captureAgentRunLifecycleGeneration(runId),
+            cronRunsByJobId: new Map([
+              [
+                automation.job.id,
+                {
+                  pacingEnabled: automation.job.pacing !== undefined,
+                  assertCurrent: () => {
+                    automation.assertCurrent();
+                    if (
+                      !params.replyOperation ||
+                      params.replyOperation.result ||
+                      params.replyOperation.abortSignal.aborted
+                    ) {
+                      throw new Error("Automation reply owner has closed");
+                    }
+                  },
+                },
+              ],
+            ]),
+          },
+          { trackOwner: true, ownsContext: true },
+        );
+        if (!runContextOwnerToken) {
+          throw new Error("The scheduled run context already has an exclusive owner");
+        }
+      }
+    },
+    close() {
+      releaseAgentRunContext(runId, runContextOwnerToken);
+    },
+  };
 }
