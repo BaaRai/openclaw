@@ -3,7 +3,6 @@ import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-se
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import {
   claimMainSessionRecoveryOwner,
-  releaseMainSessionRecoveryOwner,
   type MainSessionRecoveryPendingTarget,
   type MainSessionRecoveryOwnerLease,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
@@ -66,7 +65,10 @@ import {
   lifecycleAdmissionByOperation,
   resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
-import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
+import {
+  releaseReplyRecoveryOwner,
+  waitForRestartRecoveryProgress,
+} from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 
 type ReplyTurnAdmission =
@@ -88,18 +90,6 @@ class QueuedFollowupLifecycleInvalidatedError extends Error {}
 class ReplyOperationChangedDuringAdmissionError extends Error {}
 
 const log = createSubsystemLogger("auto-reply/reply-turn-admission");
-
-async function releaseReplyRecoveryOwner(lease: MainSessionRecoveryOwnerLease | undefined) {
-  try {
-    return await releaseMainSessionRecoveryOwner(lease);
-  } catch (error) {
-    log.warn(`failed to release main-session recovery reply owner: ${formatErrorMessage(error)}`);
-    // The durable owner schedules exact-token retries. A completed reply must
-    // not keep its successor barrier and lifecycle admission until that
-    // background repair wins a contested SQLite write.
-    return undefined;
-  }
-}
 
 /** Runs owner work with its admission marked as the initiating lifecycle context. */
 export async function runWithReplyOperationLifecycleAdmission<T>(
@@ -536,7 +526,7 @@ export async function admitReplyTurn(
           }
         } catch (error) {
           const pendingRecovery = recoveryOwnerLease
-            ? await releaseReplyRecoveryOwner(recoveryOwnerLease)
+            ? await releaseReplyRecoveryOwner(recoveryOwnerLease, log)
             : undefined;
           if (
             error instanceof ReplyRunAlreadyActiveError &&
@@ -617,7 +607,7 @@ export async function admitReplyTurn(
             | Promise<MainSessionRecoveryPendingTarget | undefined>
             | undefined;
           const releaseRecoveryOwner = () =>
-            (recoveryOwnerRelease ??= releaseReplyRecoveryOwner(recoveryOwnerLease));
+            (recoveryOwnerRelease ??= releaseReplyRecoveryOwner(recoveryOwnerLease, log));
           if (recoveryOwnerLease) {
             registerReplyOperationSuccessorBarrier({
               operation,

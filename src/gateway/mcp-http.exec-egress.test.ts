@@ -190,10 +190,12 @@ it("hands off background completion from an internal-event MCP grant to its orig
     {
       sessionId,
       updatedAt: 1,
-      lastChannel: "telegram",
-      lastTo: topic,
-      lastAccountId: "work",
-      lastThreadId: 42,
+      deliveryContext: {
+        channel: "telegram",
+        to: topic,
+        accountId: "work",
+        threadId: 42,
+      },
     },
   );
   const notified = createDeferred<{

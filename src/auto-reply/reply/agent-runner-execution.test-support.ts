@@ -29,6 +29,7 @@ import type {
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import type { FollowupRun } from "./queue.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
+import type { ScheduledSessionAutomation } from "./session-event-contract.js";
 import type { TypingSignaler } from "./typing-mode.js";
 
 type RunEntryParams = Parameters<typeof runEmbeddedAgentEntry<EmbeddedAgentRunResult>>[0];
@@ -729,4 +730,23 @@ export async function setupAgentRunnerExecutionTestState() {
   });
 
   return state;
+}
+
+export function createScheduledAutomation(): ScheduledSessionAutomation {
+  return {
+    admissionSource: "operator-schedule",
+    job: {
+      id: "scheduled-target-test",
+      name: "Scheduled target test",
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "main",
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "Check for updates" },
+      state: {},
+    },
+    assertCurrent: vi.fn(),
+  };
 }
