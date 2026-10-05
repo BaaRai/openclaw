@@ -8,6 +8,7 @@ import {
 import * as sessionEventHandoff from "../auto-reply/reply/session-event-handoff.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import * as cronSessionRun from "../cron/session-run.js";
 import { saveCronStore } from "../cron/store.js";
 import type { CronJob } from "../cron/types.js";
 import { peekSystemEvents, prepareAutomationSystemEvents } from "../infra/system-events.js";
@@ -21,6 +22,163 @@ export function installDeferredCronWakeTests(
     creatorKey: string;
   }>,
 ) {
+  test.for([
+    "idle",
+    "running-at",
+    "running-recurring",
+    "force-preserved-at",
+    "starts-during-admission",
+  ] as const)(
+    "binds a deferred Hook to the earliest viable occurrence (%s)",
+    async (scenario, testContext) => {
+      const { cronState, job, sessionKey } = await createDeferredWakeReceiver();
+      const now = Date.now();
+      const oneShot = scenario !== "idle" && scenario !== "running-recurring";
+      await cronState.cron.update(job.id, {
+        schedule: oneShot
+          ? {
+              kind: "at",
+              at: new Date(
+                scenario === "force-preserved-at" ? now + 14_400_000 : now - 1,
+              ).toISOString(),
+            }
+          : { kind: "every", everyMs: 14_400_000, anchorMs: now },
+        delivery: { mode: "none" },
+      });
+      const alternatives: CronJob[] = [];
+      for (const name of ["First stored alternative", "Second stored alternative"]) {
+        alternatives.push(
+          await cronState.cron.add({
+            name,
+            agentId: "main",
+            enabled: true,
+            schedule: { kind: "at", at: new Date(now + 3_600_000).toISOString() },
+            sessionTarget: "main",
+            wakeMode: "now",
+            payload: { kind: "agentTurn", message: "Review pending notices." },
+            delivery: { mode: "none" },
+          }),
+        );
+      }
+      const expectedReceiverId = alternatives.map((entry) => entry.id).sort()[0];
+      const deferHookWake = cronState.deferHookWake;
+      assert(deferHookWake);
+      const expectedTarget = await sessionEventHandoff.captureSessionEventTargetForHost(
+        "main",
+        sessionKey,
+      );
+      const request = {
+        text: "Future receiver notice.",
+        agentId: "main",
+        expectedTarget,
+        commitGuard: () => {},
+      };
+      const entered = createDeferred();
+      const release = createDeferred();
+      const runner = vi
+        .spyOn(cronSessionRun, "runCronSessionTurn")
+        .mockImplementationOnce(async (params) => {
+          // The scheduler has already activated its receipt and selected this turn's notices.
+          expect(params.sessionPreparation?.notices.events).toEqual([]);
+          entered.resolve();
+          await release.promise;
+          params.assertCurrent();
+          return {
+            status: "ok",
+            executionStarted: true,
+            delivered: false,
+            deliveryAttempted: false,
+          };
+        });
+      let running: ReturnType<typeof cronState.cron.run> | undefined;
+      const startRun = async () => {
+        running = cronState.cron.run(
+          job.id,
+          oneShot && scenario !== "force-preserved-at" ? "due" : "force",
+        );
+        await withinTest(
+          awaitGateBeforeSettlement(entered.promise, running, "Receiver did not start"),
+          testContext.signal,
+        );
+      };
+      const prepared = createDeferred();
+      const resume = createDeferred();
+      let restoreTarget: (() => void) | undefined;
+      let pending: ReturnType<typeof deferHookWake> | undefined;
+      try {
+        if (scenario === "starts-during-admission") {
+          const prepareTarget = sessionEventHandoff.prepareSessionEventTargetForHost;
+          const targetGate = vi
+            .spyOn(sessionEventHandoff, "prepareSessionEventTargetForHost")
+            .mockImplementationOnce(async (target) => {
+              const lease = await prepareTarget(target);
+              prepared.resolve();
+              await resume.promise;
+              return lease;
+            });
+          restoreTarget = () => targetGate.mockRestore();
+          pending = deferHookWake(request);
+          await withinTest(
+            awaitGateBeforeSettlement(prepared.promise, pending, "Wake did not prepare its target"),
+            testContext.signal,
+          );
+          await startRun();
+          resume.resolve();
+          await expect(pending).rejects.toThrow("Scheduled wake receiver changed during admission");
+          expect(peekSystemEvents(sessionKey)).toEqual([]);
+        } else {
+          if (scenario !== "idle") {
+            await startRun();
+          }
+          await expect(deferHookWake(request)).resolves.toEqual({
+            ok: true,
+            eventOutcome: "queued",
+          });
+          for (const receiver of [job, ...alternatives]) {
+            const notices = await prepareAutomationSystemEvents(sessionKey, receiver.id);
+            try {
+              expect(notices.events.map((event) => event.text)).toEqual(
+                receiver.id === expectedReceiverId ? [request.text] : [],
+              );
+              notices.start();
+            } finally {
+              notices.release();
+            }
+          }
+          for (const receiver of alternatives) {
+            await cronState.cron.remove(receiver.id);
+          }
+          const result = await deferHookWake(request);
+          expect(result).toMatchObject(
+            scenario === "running-at" ? { ok: false } : { ok: true, eventOutcome: "queued" },
+          );
+          const remaining = await prepareAutomationSystemEvents(sessionKey, job.id);
+          try {
+            expect(remaining.events.map((event) => event.text)).toEqual(
+              scenario === "running-at" ? [] : [request.text],
+            );
+            remaining.start();
+          } finally {
+            remaining.release();
+          }
+        }
+      } finally {
+        resume.resolve();
+        release.resolve();
+        await Promise.allSettled([pending, running]);
+        restoreTarget?.();
+        runner.mockRestore();
+      }
+      if (running) {
+        await expect(running).resolves.toMatchObject({ ok: true, ran: true });
+      }
+      if (scenario === "running-at" || scenario === "starts-during-admission") {
+        expect(cronState.cron.getJob(job.id)).toBeUndefined();
+      }
+      expect(peekSystemEvents(sessionKey)).toEqual([]);
+    },
+  );
+
   test("keeps a captured Hook notice with its mapped receiver and revalidates queued admission", async (testContext) => {
     const { cronState, sessionKey, creatorKey } = await createDeferredWakeReceiver();
     const receiver = await cronState.cron.add({

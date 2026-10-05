@@ -8,7 +8,10 @@ import {
 } from "../agents/agent-lifecycle-registry.js";
 import { listAgentEntries } from "../agents/agent-scope.js";
 import { applyClawAddPlan } from "../claws/add.js";
-import { clawAutomationMutationResultSchema } from "../claws/automation-mutation-contract.js";
+import {
+  clawAutomationMutationResultSchema,
+  type ClawAutomationMutationGateway,
+} from "../claws/automation-mutation-contract.js";
 import type { ClawRemoveApplyOptions } from "../claws/lifecycle-remove-contract.js";
 import { applyClawRemovePlan, buildClawRemovePlan } from "../claws/lifecycle-state.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
@@ -154,6 +157,28 @@ export function useClawMonitorFixture() {
     cleanups.push(async () => {
       cron.stop();
     });
+    let reloadSettled = true;
+    const context = {
+      cron,
+      cronStorePath: storePath,
+      getRuntimeConfig: () => config,
+      isConfigReloadSettled: () => reloadSettled,
+    };
+    const mutateAutomation: ClawAutomationMutationGateway = async (request) => {
+      let response: { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] } | undefined;
+      await clawsAutomationHandlers["claws.automations.mutate"]({
+        params: { ...request, binding: resolveClawMonitorCleanupBinding(storePath) },
+        context,
+        hasCurrentClientAuthority: () => true,
+        respond: (ok, payload, error) => {
+          response = { ok, payload, error };
+        },
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error?.message ?? "Automation mutation did not respond");
+      }
+      return clawAutomationMutationResultSchema.parse(response.payload);
+    };
     const installed = await applyClawAddPlan(addPlan, {
       consentPlanIntegrity: addPlan.planIntegrity,
       commitConfig: async (transform) => {
@@ -162,27 +187,7 @@ export function useClawMonitorFixture() {
         resetConfigRuntimeState();
       },
       cronGateway: {
-        mutateAutomation: async (request) => {
-          let response:
-            | { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] }
-            | undefined;
-          await clawsAutomationHandlers["claws.automations.mutate"]({
-            params: { ...request, binding: resolveClawMonitorCleanupBinding(storePath) },
-            context: {
-              cronStorePath: storePath,
-              getRuntimeConfig: () => config,
-              isConfigReloadSettled: () => true,
-            },
-            hasCurrentClientAuthority: () => true,
-            respond: (ok, payload, error) => {
-              response = { ok, payload, error };
-            },
-          });
-          if (!response?.ok) {
-            throw new Error(response?.error?.message ?? "Automation mutation did not respond");
-          }
-          return clawAutomationMutationResultSchema.parse(response.payload);
-        },
+        mutateAutomation,
         get: async (id) => {
           const job = await cron.readJob(id);
           return job ? cronJobReadView(job) : undefined;
@@ -216,13 +221,6 @@ export function useClawMonitorFixture() {
       }
     });
     cleanups.push(async () => unsubscribe());
-    let reloadSettled = true;
-    const context = {
-      cron,
-      cronStorePath: storePath,
-      getRuntimeConfig: () => config,
-      isConfigReloadSettled: () => reloadSettled,
-    };
     const invoke = async (params: Record<string, unknown>) => {
       let response: unknown;
       let failure: string | undefined;
@@ -271,6 +269,7 @@ export function useClawMonitorFixture() {
         config,
         monitorGateway: gateway,
         cronGateway: {
+          mutateAutomation,
           list: async () => ({
             jobs: (await cron.list({ includeDisabled: true })).map(cronJobReadView),
           }),

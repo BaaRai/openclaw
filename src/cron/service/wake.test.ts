@@ -10,6 +10,7 @@ function createState(jobs: CronJob[] = []) {
       store: { version: 1, jobs },
       stopped: false,
       deps: {
+        nowMs: () => 10_000,
         cronEnabled: true,
         enqueueSessionEvent,
         deferSessionEvent,

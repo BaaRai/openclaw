@@ -31,14 +31,7 @@ import { waitForSessionParticipantRecording } from "../../../sessions/session-pa
 import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
-import {
-  findAcpUnsupportedInheritedToolAllow,
-  findAcpUnsupportedInheritedToolDeny,
-  formatAcpInheritedToolAllowError,
-  formatAcpInheritedToolDenyError,
-  inheritedToolAllowPatch,
-  inheritedToolDenyPatch,
-} from "../../inherited-tool-deny.js";
+import { inheritedToolAllowPatch, inheritedToolDenyPatch } from "../../inherited-tool-deny.js";
 import { runSpawnPipeline, type SpawnBackendAdapter } from "../../spawn-pipeline.js";
 import {
   mintSpawnSessionKey,
@@ -197,6 +190,8 @@ export async function spawnAcpDirect(
     requesterSessionKey: ctx.agentSessionKey,
     requesterSandboxed: ctx.sandboxed,
     sandbox: params.sandbox,
+    inheritedToolAllowlist: ctx.inheritedToolAllowlist,
+    inheritedToolDenylist: ctx.inheritedToolDenylist,
   });
   if (runtimePolicyError) {
     return {
@@ -205,27 +200,6 @@ export async function spawnAcpDirect(
       error: runtimePolicyError,
     };
   }
-  const acpUnsupportedInheritedTool = findAcpUnsupportedInheritedToolDeny(
-    ctx.inheritedToolDenylist,
-  );
-  if (acpUnsupportedInheritedTool) {
-    return {
-      status: "forbidden",
-      errorCode: "runtime_policy",
-      error: formatAcpInheritedToolDenyError(acpUnsupportedInheritedTool),
-    };
-  }
-  const acpUnsupportedInheritedAllow = findAcpUnsupportedInheritedToolAllow(
-    ctx.inheritedToolAllowlist,
-  );
-  if (acpUnsupportedInheritedAllow) {
-    return {
-      status: "forbidden",
-      errorCode: "runtime_policy",
-      error: formatAcpInheritedToolAllowError(acpUnsupportedInheritedAllow),
-    };
-  }
-
   const spawnMode = resolveSpawnMode({
     requestedMode: params.mode,
     threadRequested: requestThreadBinding,

@@ -16,10 +16,7 @@ import type { CliDeps } from "../../cli/deps.types.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import { canonicalizeMainSessionAlias, resolveAgentMainSessionKey } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type {
-  CronAgentAdmissionDisposition,
-  RunCronAgentTurnResult,
-} from "../../cron/isolated-agent/run.types.js";
+import type { RunCronAgentTurnResult } from "../../cron/isolated-agent/run.types.js";
 import { resolveCronAgentSessionKey } from "../../cron/isolated-agent/session-key.js";
 import type { CronExecutionIdentityAdmission } from "../../cron/service/state.js";
 import type { DeferredHookWake } from "../../cron/service/wake.js";
@@ -49,18 +46,16 @@ import {
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "../server-constants.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createPluginHookDispatcher } from "./hooks-plugin-dispatch.js";
-import { HookWakeUnavailableError } from "./hooks-request-handler-response.js";
+import {
+  createHookAdmissionFailure,
+  HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR,
+  HookWakeUnavailableError,
+} from "./hooks-request-handler-response.js";
 import { createHooksRequestHandler, type HookClientIpConfig } from "./hooks-request-handler.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 const HOOK_AGENT_START_ADMISSION_TIMEOUT_MS = 15_000;
-const HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR =
-  "hook agent run did not start before admission timeout";
-const HOOK_AGENT_SESSION_CONFLICT_ERROR =
-  "hook agent run was rejected because the target session changed";
-const HOOK_AGENT_PREPARATION_ERROR = "hook agent run failed before entering the agent runner";
-
 type HookEventTarget = {
   eventSessionKey: string;
   agentId: string;
@@ -134,25 +129,6 @@ function sanitizeHookLogMetadata(meta: HookLogMetadata): HookLogMetadata {
           : value,
       ]),
   );
-}
-
-function createHookAdmissionFailure(params: {
-  runId: string;
-  disposition?: CronAgentAdmissionDisposition;
-  statusCode?: 409 | 502 | 503;
-}): HookAgentDispatchResult {
-  const statusCode = params.statusCode ?? (params.disposition === "session-conflict" ? 409 : 502);
-  return {
-    ok: false,
-    statusCode,
-    error:
-      statusCode === 409
-        ? HOOK_AGENT_SESSION_CONFLICT_ERROR
-        : statusCode === 503
-          ? HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR
-          : HOOK_AGENT_PREPARATION_ERROR,
-    runId: params.runId,
-  };
 }
 
 function createSessionKeyedHookDispatchQueue() {

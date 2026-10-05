@@ -1,5 +1,11 @@
 import { isAgentDeletionBlocked } from "../agents/agent-lifecycle-registry.js";
 import { resolveAgentEntry, tryResolveAmbientOwnerAgentId } from "../agents/agent-scope-config.js";
+import type { SessionEventTarget } from "../auto-reply/reply/session-event-contract.js";
+import {
+  assertSessionEventTargetCurrent,
+  captureSessionEventTargetForHost,
+  prepareSessionEventTargetForHost,
+} from "../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../config/io.js";
 import {
   canonicalizeMainSessionAlias,
@@ -9,7 +15,11 @@ import {
 } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobEffectiveAgentId } from "../cron/agent-id.js";
+import type { CronServiceDeps } from "../cron/service/state.js";
+import { resolveCronSessionTargetSessionKey } from "../cron/session-target.js";
 import { resolveMainScopedEventSessionKey } from "../infra/event-session-routing.js";
+import { withSystemEventOwner } from "../infra/system-event-ownership.js";
+import { enqueueAutomationSystemEvent } from "../infra/system-events.js";
 import {
   normalizeAgentId,
   resolveEventSessionKey,
@@ -18,7 +28,7 @@ import {
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { assertAgentDatabaseAdmitted } from "../state/agent-database-admission.js";
 
-/** Resolve scheduler work against the current agent roster and canonical session owner. */
+/** Resolve and admit scheduler events against the current roster and canonical session owner. */
 export function createGatewayCronTargetResolver(env: NodeJS.ProcessEnv) {
   const resolveCronAgent = (requested?: string | null) => {
     const runtimeConfig = getRuntimeConfig();
@@ -119,5 +129,76 @@ export function createGatewayCronTargetResolver(env: NodeJS.ProcessEnv) {
     return { runtimeConfig, agentId, sessionKey };
   };
 
-  return { resolveCronAgent, resolveCronTarget };
+  const deferSessionEvent: NonNullable<CronServiceDeps["deferSessionEvent"]> = (
+    text,
+    job,
+    expectedTarget,
+    assertCurrent,
+    coalescing,
+  ) => {
+    const { agentId, sessionKey } = resolveCronTarget({
+      agentId: job.agentId,
+      sessionKey: resolveCronSessionTargetSessionKey(job.sessionTarget),
+    });
+    if (!agentId || !sessionKey) {
+      throw new Error("Deferred automation has no configured session destination");
+    }
+    const enqueue = (target: SessionEventTarget) => {
+      assertCurrent();
+      if (target.agentId !== agentId || target.sessionKey !== sessionKey) {
+        throw new Error("Deferred automation target does not match its scheduled receiver");
+      }
+      assertSessionEventTargetCurrent(target);
+      const receiver = coalescing && {
+        revision: coalescing.revision,
+        assertCurrent: coalescing.assertCurrent,
+      };
+      const outcome = enqueueAutomationSystemEvent(
+        text,
+        withSystemEventOwner({ sessionKey: target.sessionKey }, target.agentId),
+        {
+          jobId: job.id,
+          assertCurrent: () => assertSessionEventTargetCurrent(target),
+          prepare: () => prepareSessionEventTargetForHost(target),
+          ...(receiver
+            ? {
+                coalescing: {
+                  key: JSON.stringify([
+                    receiver.revision,
+                    target.agentId,
+                    target.sessionKey,
+                    target.storePath,
+                    target.sessionId,
+                    target.lifecycleRevision,
+                    target.generation,
+                  ]),
+                  assertCurrent: () => {
+                    receiver.assertCurrent();
+                    assertSessionEventTargetCurrent(target);
+                  },
+                },
+              }
+            : {}),
+        },
+      );
+      coalescing?.onOutcome(outcome);
+    };
+    const admit = coalescing
+      ? async (target: SessionEventTarget) => {
+          const prepared = await prepareSessionEventTargetForHost(target);
+          try {
+            prepared.assertCurrent();
+            enqueue(target);
+          } finally {
+            prepared.release();
+          }
+        }
+      : enqueue;
+    if (expectedTarget) {
+      return admit(expectedTarget);
+    }
+    return captureSessionEventTargetForHost(agentId, sessionKey, { env }).then(admit);
+  };
+
+  return { resolveCronAgent, resolveCronTarget, deferSessionEvent };
 }

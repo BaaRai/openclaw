@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
-import type { HooksConfig, HookMappingConfig } from "../config/types.hooks.js";
+import type { HooksConfig } from "../config/types.hooks.js";
 import { saveCronJobsStore } from "../cron/store.js";
 import {
   drainSystemEvents,
@@ -18,6 +18,13 @@ import {
 import { CommandLane } from "../process/lanes.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import {
+  agentMapping,
+  HOOK_TOKEN,
+  postHook,
+  requireNonEmptyString,
+  writeHookTransformModule,
+} from "./hooks-test-helpers.js";
 import {
   connectWebchatClient,
   cronIsolatedRun,
@@ -34,7 +41,6 @@ installGatewayTestHooks({ scope: "suite" });
 await import("./server.js");
 
 const resolveMainKey = () => resolveMainSessionKeyFromConfig();
-const HOOK_TOKEN = "hook-secret";
 const HOOKS_MAIN_SESSION_KEY = "agent:hooks:main";
 const enqueueSessionEvent = vi.fn<typeof sessionEvents.enqueueSessionEventForHost>();
 let handoffObserved = createDeferred();
@@ -69,44 +75,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function requireNonEmptyString(value: string | null | undefined, label: string): string {
-  if (!value) {
-    throw new Error(`expected ${label}`);
-  }
-  return value;
-}
-
-async function postHook(
-  port: number,
-  route: string,
-  body: Record<string, unknown> | string,
-  options: { token?: string | null; headers?: Record<string, string>; status?: number } = {},
-): Promise<Response> {
-  const { token = HOOK_TOKEN, headers, status = 200 } = options;
-  const response = await fetch(`http://127.0.0.1:${port}/hooks/${route}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers,
-    },
-    body: typeof body === "string" ? body : JSON.stringify(body),
-  });
-  expect(response.status).toBe(status);
-  return response;
-}
-
 function configureHooks(config: HooksConfig = {}): void {
   testState.hooksConfig = { enabled: true, token: HOOK_TOKEN, ...config };
-}
-
-function agentMapping(route: string, overrides: HookMappingConfig = {}): HookMappingConfig {
-  return {
-    match: { path: route },
-    action: "agent",
-    messageTemplate: "Mapped: {{payload.subject}}",
-    ...overrides,
-  };
 }
 
 function setHookAgentRoster(explicitSole = false): void {
@@ -251,16 +221,6 @@ async function waitForSystemEventTexts(sessionKey: string, timeoutMs = 2_000) {
     })
     .not.toHaveLength(0);
   return peekSystemEventEntries(sessionKey).map((event) => event.text);
-}
-
-async function writeHookTransformModule(moduleName: string, source: string): Promise<void> {
-  const configPath = requireNonEmptyString(
-    process.env.OPENCLAW_CONFIG_PATH,
-    "OPENCLAW_CONFIG_PATH",
-  );
-  const transformsDir = path.join(path.dirname(configPath), "hooks", "transforms");
-  await fs.mkdir(transformsDir, { recursive: true });
-  await fs.writeFile(path.join(transformsDir, moduleName), source, "utf-8");
 }
 
 describe("gateway server hooks", () => {

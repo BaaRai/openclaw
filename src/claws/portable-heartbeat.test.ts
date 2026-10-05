@@ -1,19 +1,10 @@
 import { mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { expectDefined } from "@openclaw/normalization-core/expect";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { withAgentDeletion } from "../agents/agent-lifecycle-registry.js";
-import { resolveAgentDir } from "../agents/agent-scope-config.js";
 import { retireHeartbeatWithDoctor } from "../commands/doctor-heartbeat-retirement.js";
-import { resetConfigRuntimeState } from "../config/config.js";
-import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import * as activeJobs from "../cron/active-jobs.js";
 import { cronJobReadView } from "../cron/job-read-view.js";
-import { readDefaultProactiveJobReceiptInDatabase } from "../cron/proactive-job-receipt.js";
 import { readCronJobScratchState, writeCronJobScratch } from "../cron/scratch-store.js";
 import {
   createNoopLogger,
@@ -23,180 +14,28 @@ import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { cronStoreKey } from "../cron/store/key.js";
 import {
   loadCronRows,
-  loadedCronStoreFromRows,
   upsertCronJobRow,
   deleteCronJobRowInDatabase,
 } from "../cron/store/row-codec.js";
 import { replaceCronRuntimeAuthorityRows } from "../cron/store/runtime-authority-store.js";
-import { clawsAutomationHandlers } from "../gateway/server-methods/claws-automations.js";
-import type { RespondFn } from "../gateway/server-methods/types.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { applyClawAddPlan } from "./add.js";
-import { clawAutomationMutationResultSchema } from "./automation-mutation-contract.js";
-import {
-  CLAW_PORTABLE_HEARTBEAT_ID,
-  deleteClawCronRef,
-  upsertClawCronRef,
-  type ClawCronGateway,
-} from "./cron.js";
-import { digestClawValue } from "./digest.js";
+import { CLAW_PORTABLE_HEARTBEAT_ID, deleteClawCronRef, upsertClawCronRef } from "./cron.js";
 import { exportClawAgent } from "./export.js";
-import { quiescentClawMonitorGateway } from "./lifecycle-remove.test-support.js";
-import { buildClawRemovePlan, applyClawRemovePlan } from "./lifecycle-state.js";
+import { buildClawRemovePlan } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
-import { resolveClawMonitorCleanupBinding } from "./monitor-cleanup-binding.js";
 import { readPortableHeartbeatState } from "./portable-heartbeat-state.js";
-import { portableHeartbeatStateDigest } from "./portable-heartbeat-state.kernel.js";
 import { applyPortableHeartbeatUpdate } from "./portable-heartbeat-update.js";
 import { installPortableHeartbeat, publishPortableHeartbeat } from "./portable-heartbeat.js";
+import { setupPortableHeartbeatFixture } from "./portable-heartbeat.test-support.js";
 import { readClawInstallRecord, updateClawInstallRecord } from "./provenance.js";
-import { parseClawManifest } from "./schema.js";
-import type { ClawOpenClawProfile, ClawSourceIdentity } from "./types.js";
+import type { ClawOpenClawProfile } from "./types.js";
 import { applyClawUpdatePlan } from "./update-apply.js";
 import { buildClawUpdatePlan } from "./update-plan.js";
 import { createClawWorkspaceFiles, readClawWorkspaceFiles } from "./workspace.js";
 
-const temps = useAutoCleanupTempDirTracker((cleanup) => {
-  afterEach(async () => {
-    await closeStateDatabaseForTest();
-    cleanup();
-    resetConfigRuntimeState();
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-  });
-});
-
-async function fixture(
-  heartbeat: ClawOpenClawProfile["agent"]["heartbeat"],
-  scratch?: string,
-  beforeApply?: (plan: Awaited<ReturnType<typeof buildClawAddPlan>>) => Promise<void>,
-  throughGateway = false,
-) {
-  const root = temps.make("claw-portable-heartbeat-");
-  const sourceRoot = join(root, "source");
-  await mkdir(sourceRoot);
-  if (scratch !== undefined) {
-    await writeFile(join(sourceRoot, "HEARTBEAT.md"), scratch);
-  }
-  const parsed = parseClawManifest({
-    schemaVersion: 1,
-    agent: { id: "worker" },
-    workspace: {
-      bootstrapFiles: scratch === undefined ? {} : { "HEARTBEAT.md": { source: "HEARTBEAT.md" } },
-    },
-  });
-  if (!parsed.ok) {
-    throw new Error(JSON.stringify(parsed.diagnostics));
-  }
-  const source: ClawSourceIdentity = {
-    kind: "package",
-    name: "@acme/portable",
-    version: "1.0.0",
-    packageRoot: sourceRoot,
-    manifestPath: join(sourceRoot, "CLAW.md"),
-    integrityKind: "artifact",
-    integrity: `sha256:${"a".repeat(64)}`,
-    byteLength: 100,
-  };
-  const profile: ClawOpenClawProfile = {
-    schemaVersion: 1,
-    agent: heartbeat === undefined ? {} : { heartbeat },
-  };
-  const plan = await buildClawAddPlan({
-    manifest: parsed.manifest,
-    source,
-    openClawProfile: profile,
-    context: { workspace: join(root, "workspace") },
-  });
-  const env = { OPENCLAW_STATE_DIR: join(root, "state") };
-  let config: OpenClawConfig = {};
-  const cronGateway = throughGateway ? gatewayForFixture(env, () => config) : undefined;
-  await beforeApply?.(plan);
-  const install = await applyClawAddPlan(plan, {
-    env,
-    consentPlanIntegrity: plan.planIntegrity,
-    ...(cronGateway ? { cronGateway } : {}),
-    commitConfig: async (transform) => {
-      config = transform(config);
-    },
-  });
-  const storePath = resolveCronJobsStorePathFromConfig(config, env);
-  const db = openOpenClawStateDatabase({ env }).db;
-  const receipt = () => readDefaultProactiveJobReceiptInDatabase(db, storePath, "worker");
-  const jobs = () => loadedCronStoreFromRows(loadCronRows(db, cronStoreKey(storePath))).store.jobs;
-  return {
-    root,
-    source,
-    manifest: parsed.manifest,
-    profile,
-    plan,
-    env,
-    config,
-    install,
-    storePath,
-    db,
-    receipt,
-    jobs,
-    cronGateway,
-  };
-}
-
-function gatewayForFixture(
-  env: { OPENCLAW_STATE_DIR: string },
-  getConfig: () => OpenClawConfig,
-  cron: Parameters<
-    (typeof clawsAutomationHandlers)["claws.automations.mutate"]
-  >[0]["context"]["cron"] = {
-    remove: async () => {
-      throw new Error("Unexpected portable removal");
-    },
-  },
-  guard?: () => void,
-): ClawCronGateway {
-  vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
-  vi.stubEnv("OPENCLAW_CONFIG_PATH", join(env.OPENCLAW_STATE_DIR, "openclaw.json"));
-  const storePath = () => resolveCronJobsStorePathFromConfig(getConfig(), env);
-  return {
-    add: async () => {
-      throw new Error("Unexpected ordinary cron.add");
-    },
-    remove: async () => {
-      throw new Error("Unexpected ordinary cron.remove");
-    },
-    get: async (id) => {
-      const state = await readPortableHeartbeatState("worker", getConfig(), { env });
-      return state.job?.id === id ? cronJobReadView(state.job) : undefined;
-    },
-    list: async () => {
-      const state = await readPortableHeartbeatState("worker", getConfig(), { env });
-      return { jobs: state.job ? [cronJobReadView(state.job)] : [] };
-    },
-    mutateAutomation: async (request) => {
-      let response: { ok: boolean; payload: unknown; error: Parameters<RespondFn>[2] } | undefined;
-      await clawsAutomationHandlers["claws.automations.mutate"]({
-        context: {
-          cron,
-          cronStorePath: storePath(),
-          getRuntimeConfig: getConfig,
-          isConfigReloadSettled: () => true,
-        },
-        params: { ...request, binding: resolveClawMonitorCleanupBinding(storePath()) },
-        hasCurrentClientAuthority: () => true,
-        sessionMutationCommitGuard: guard,
-        respond: (ok, payload, error) => {
-          response = { ok, payload, error };
-        },
-      });
-      if (!response?.ok) {
-        throw new Error(response?.error?.message ?? "Automation mutation did not respond");
-      }
-      return clawAutomationMutationResultSchema.parse(response.payload);
-    },
-  };
-}
+const fixture = setupPortableHeartbeatFixture();
 
 describe("portable heartbeat artifact boundary", () => {
   it("imports 37m as ordinary cadence without runtime heartbeat and exports current exact scratch", async () => {
@@ -745,224 +584,6 @@ describe("portable heartbeat current-state and lifecycle safeguards", () => {
     expect(
       readCronJobScratchState(f.storePath, original!.id, { env: f.env }).scratch?.content,
     ).toBe("original\n");
-  });
-
-  it("refuses changed portable custody before uninstalling only the owned job", async () => {
-    const f = await fixture({ every: "37m" }, "original scratch");
-    const originalReceipt = f.receipt();
-    const own = f.jobs()[0]!;
-    upsertCronJobRow(
-      f.db,
-      cronStoreKey(f.storePath),
-      { ...own, id: "unrelated", agentId: "main" },
-      1,
-    );
-    const configPath = join(f.env.OPENCLAW_STATE_DIR, "openclaw.json");
-    await writeFile(configPath, `${JSON.stringify(f.config)}\n`);
-    vi.stubEnv("OPENCLAW_STATE_DIR", f.env.OPENCLAW_STATE_DIR);
-    vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
-    resetConfigRuntimeState();
-    const service = createStartedCronServiceWithFinishedBarrier({
-      scheduler: createTestGatewayScheduler(),
-      storePath: f.storePath,
-      logger: createNoopLogger(),
-    });
-    try {
-      await service.cron.start();
-      let requestCurrent = true;
-      const gateway = gatewayForFixture(
-        f.env,
-        () => f.config,
-        service.cron,
-        () => {
-          if (!requestCurrent) {
-            throw new Error("Removal request authority revoked at commit");
-          }
-        },
-      );
-      const mutate = expectDefined(gateway.mutateAutomation, "Serving portable mutation");
-      const entry = {
-        agentId: "worker",
-        agentDir: resolveAgentDir(f.config, "worker", f.env),
-        workspaceDir: f.plan.agent.workspace,
-        sessionsDir: resolveSessionTranscriptsDirForAgent("worker", f.env),
-      };
-      const retired = await withAgentDeletion(
-        "worker",
-        async (begin) => {
-          const deletion = await begin(entry);
-          const facts = deletion.captureWorkerWriteAuthority().facts;
-          await deletion.rollback();
-          return facts;
-        },
-        { env: f.env },
-      );
-      await withAgentDeletion(
-        "worker",
-        async (begin) => {
-          const deletion = await begin(entry);
-          try {
-            for (const race of [
-              "definition",
-              "scratch",
-              "ref",
-              "install",
-              "lease",
-              "source",
-              "commit",
-            ] as const) {
-              const expected = await readPortableHeartbeatState("worker", f.config, { env: f.env });
-              const expectedRef = expectDefined(expected.ref, "Portable Claw ownership");
-              const originalInstall = expectDefined(
-                readClawInstallRecord("worker", { env: f.env }),
-                "Claw installation",
-              );
-              let retained = expected;
-              const facts = deletion.captureWorkerWriteAuthority().facts;
-              const remove = service.cron.remove.bind(service.cron);
-              const publishRemoval = vi.spyOn(activeJobs, "noteActiveCronJobRemoval");
-              const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
-              let commitWitnessed = false;
-              const admission = vi
-                .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-                .mockImplementation((admit, attachment) =>
-                  createAdmission((request, grant) => {
-                    if (
-                      race === "commit" &&
-                      request.stage === "commit" &&
-                      isRecord(request.facts) &&
-                      typeof request.facts.nonce === "string"
-                    ) {
-                      requestCurrent = false;
-                      commitWitnessed = true;
-                    }
-                    admit(request, grant);
-                  }, attachment),
-                );
-              const boundary = vi
-                .spyOn(service.cron, "remove")
-                .mockImplementationOnce(async (id, opts) => {
-                  if (race === "definition") {
-                    await service.cron.update(id, { name: "operator edit" });
-                  } else if (race === "scratch") {
-                    await service.cron.writeScratch(id, {
-                      content: "operator scratch",
-                      expectedRevision: expected.scratch.currentRevision,
-                    });
-                  } else if (race === "ref") {
-                    upsertClawCronRef(
-                      { ...expectedRef, updatedAtMs: expectedRef.updatedAtMs + 1 },
-                      { env: f.env },
-                    );
-                  }
-                  retained = await readPortableHeartbeatState("worker", f.config, { env: f.env });
-                  return remove(id, opts);
-                });
-              try {
-                await expect(
-                  mutate({
-                    agentId: "worker",
-                    expectedStateDigest: portableHeartbeatStateDigest(expected),
-                    mutation: {
-                      kind: "remove",
-                      jobId: own.id,
-                      expectedInstallDigest: digestClawValue(
-                        race === "install"
-                          ? { ...originalInstall, updatedAtMs: originalInstall.updatedAtMs - 1 }
-                          : originalInstall,
-                      ),
-                      deletion:
-                        race === "lease"
-                          ? retired
-                          : race === "source"
-                            ? {
-                                ...facts,
-                                sourceIdentity: { ...facts.sourceIdentity, key: "file:0:0" },
-                              }
-                            : facts,
-                    },
-                  }),
-                  race,
-                ).rejects.toThrow(
-                  race === "lease"
-                    ? /lease/iu
-                    : race === "source"
-                      ? /physical database/iu
-                      : race === "commit"
-                        ? /authority revoked at commit/iu
-                        : /changed/iu,
-                );
-                expect(boundary, race).toHaveBeenCalledOnce();
-                expect(publishRemoval, race).not.toHaveBeenCalled();
-                if (race === "commit") {
-                  expect(commitWitnessed).toBe(true);
-                }
-                expect(
-                  await readPortableHeartbeatState("worker", f.config, { env: f.env }),
-                  race,
-                ).toEqual(retained);
-                expect(readClawInstallRecord("worker", { env: f.env }), race).toEqual(
-                  originalInstall,
-                );
-                expect(JSON.parse(await readFile(configPath, "utf8")), race).toEqual(f.config);
-              } finally {
-                requestCurrent = true;
-                boundary.mockRestore();
-                admission.mockRestore();
-                publishRemoval.mockRestore();
-                if (race === "definition" && f.jobs().some((job) => job.id === own.id)) {
-                  await service.cron.update(own.id, { name: own.name });
-                } else if (race === "scratch" && f.jobs().some((job) => job.id === own.id)) {
-                  await service.cron.writeScratch(own.id, {
-                    content: "original scratch",
-                    expectedRevision: retained.scratch.currentRevision,
-                  });
-                } else if (race === "ref") {
-                  upsertClawCronRef(expectedRef, { env: f.env });
-                }
-              }
-            }
-          } finally {
-            await deletion.rollback();
-          }
-        },
-        { env: f.env },
-      );
-      const options = {
-        env: f.env,
-        config: f.config,
-        monitorGateway: quiescentClawMonitorGateway,
-        cronGateway: {
-          ...gateway,
-          get: async (id: string) => service.cron.getJob(id),
-          remove: (id: string) => service.cron.remove(id),
-          list: async () => ({ jobs: await service.cron.list({ includeDisabled: true }) }),
-        },
-      };
-      const plan = await buildClawRemovePlan("worker", options);
-      expect(plan.blockers).toEqual([]);
-      const result = await applyClawRemovePlan(plan, {
-        ...options,
-        consentPlanIntegrity: plan.planIntegrity,
-        trashPath: async () => true,
-      });
-      expect(result.status, JSON.stringify(result)).toBe("complete");
-      const persisted = JSON.parse(await readFile(configPath, "utf8"));
-      expect(persisted.agents.entries).not.toHaveProperty("worker");
-      expect(f.jobs().map((job) => job.id)).toEqual(["unrelated"]);
-      expect(f.receipt()).toEqual(originalReceipt);
-    } finally {
-      service.cron.stop();
-      await service.cron.waitForIdle();
-    }
-  });
-
-  it("blocks uninstall when unrelated work still references the agent", async () => {
-    const f = await fixture({ every: "37m" });
-    upsertCronJobRow(f.db, cronStoreKey(f.storePath), { ...f.jobs()[0]!, id: "operator-job" }, 1);
-    const plan = await buildClawRemovePlan("worker", { env: f.env, config: f.config });
-    expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "agent_job_attached" }));
-    expect(f.jobs()).toHaveLength(2);
   });
 });
 

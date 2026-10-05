@@ -1,14 +1,45 @@
 import type { SessionEventTarget } from "../../auto-reply/reply/session-event-contract.js";
 /** Manual cron wake helper for queueing system events into sessions. */
 import { isSubagentSessionKey, normalizeOptionalAgentId } from "../../routing/session-key.js";
+import { isCronJobActive } from "../active-jobs.js";
 import { CRON_AGENT_SELECTION_REQUIRED_MESSAGE } from "../agent-id.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import type { CronJob } from "../types.js";
+import {
+  computeJobNextRunAtMs,
+  hasScheduledNextRunAtMs,
+  isJobEnabled,
+  isTimeScheduledJob,
+} from "./jobs-scheduling.js";
 import {
   resolveCronNotificationQueueOwner,
   type CronNotificationJob,
   type CronNotificationRouting,
 } from "./notification-intents.js";
+import { resolveForcePreservedOneShotAtMs } from "./one-shot-schedule.js";
 import type { CronServiceState } from "./state.js";
+
+function resolveDeferredReceiverRunAt(job: CronJob, nowMs: number): number | undefined {
+  const next = job.state.nextRunAtMs;
+  if (
+    !isJobEnabled(job) ||
+    job.state.autoDisabled ||
+    !isTimeScheduledJob(job) ||
+    !hasScheduledNextRunAtMs(next)
+  ) {
+    return undefined;
+  }
+  if (typeof job.state.runningAtMs !== "number" && !isCronJobActive(job.id)) {
+    return next;
+  }
+  if (job.schedule.kind === "at") {
+    const preserved = resolveForcePreservedOneShotAtMs(job);
+    return preserved !== undefined && preserved > nowMs ? preserved : undefined;
+  }
+  // Running jobs retain their current slot until settlement; only a later occurrence can receive.
+  const future = computeJobNextRunAtMs(job, nowMs);
+  return hasScheduledNextRunAtMs(future) ? Math.max(next, future) : undefined;
+}
 
 /** Internal Hook adapter; the public Cron facade retains its existing wake contract. */
 export type DeferredHookWake = (opts: {
@@ -128,18 +159,19 @@ export function wake(
       reason: "Captured wake target no longer resolves to its destination",
     } as const;
   }
-  const job = state.store?.jobs.find((candidate) => {
+  const nowMs = state.deps.nowMs();
+  let receiver: { job: CronJob; runAtMs: number } | undefined;
+  for (const candidate of state.store?.jobs ?? []) {
+    const runAtMs = resolveDeferredReceiverRunAt(candidate, nowMs);
     if (
       !target?.agentId ||
       !target.sessionKey ||
-      !candidate.enabled ||
-      candidate.state.autoDisabled ||
       (candidate.payload.kind !== "agentTurn" &&
         !(candidate.sessionTarget === "main" && candidate.payload.kind === "systemEvent")) ||
       !(candidate.sessionTarget === "main" || candidate.sessionTarget.startsWith("session:")) ||
-      !Number.isFinite(candidate.state.nextRunAtMs)
+      runAtMs === undefined
     ) {
-      return false;
+      continue;
     }
     const jobTarget = state.deps.resolveSessionEventTarget?.({
       agentId: candidate.agentId,
@@ -147,8 +179,17 @@ export function wake(
         ? candidate.sessionTarget.slice(8)
         : undefined,
     });
-    return jobTarget?.agentId === target.agentId && jobTarget.sessionKey === target.sessionKey;
-  });
+    if (
+      jobTarget?.agentId === target.agentId &&
+      jobTarget.sessionKey === target.sessionKey &&
+      (!receiver ||
+        runAtMs < receiver.runAtMs ||
+        (runAtMs === receiver.runAtMs && candidate.id < receiver.job.id))
+    ) {
+      receiver = { job: candidate, runAtMs };
+    }
+  }
+  const job = receiver?.job;
   if (!state.deps.cronEnabled || state.stopped || !job || !state.deps.deferSessionEvent) {
     return {
       ok: false,
@@ -164,9 +205,8 @@ export function wake(
       state.lifecycleGeneration !== generation ||
       !state.deps.cronEnabled ||
       state.stopped ||
-      !currentJob?.enabled ||
-      currentJob.state.autoDisabled ||
-      !Number.isFinite(currentJob.state.nextRunAtMs) ||
+      !currentJob ||
+      resolveDeferredReceiverRunAt(currentJob, state.deps.nowMs()) === undefined ||
       resolveCronJobConfigRevision(currentJob) !== revision
     ) {
       throw new Error("Scheduled wake receiver changed during admission; retry the wake");

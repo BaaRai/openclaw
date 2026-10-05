@@ -14,6 +14,7 @@ import {
 import { getSpawnBroker, runWithSpawnBroker } from "../../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../../process/spawn-broker/host.test-support.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
+import { buildAgentPayload } from "../hooks-test-helpers.js";
 
 const enqueueSystemEventMock = vi.fn();
 const deferHookWakeMock = vi.fn<DeferredHookWake>();
@@ -129,28 +130,6 @@ function buildMinimalParams(overrides: { agentStartAdmissionTimeoutMs?: number }
     } as never,
     deferHookWake: deferHookWakeMock,
     ...overrides,
-  };
-}
-
-function buildAgentPayload(name: string, agentId?: string) {
-  return {
-    message: "test message",
-    name,
-    agentId,
-    effectiveAgentId: agentId ?? "main",
-    idempotencyKey: undefined,
-    wakeMode: "now" as const,
-    sessionKey: "session-1",
-    sourcePath: "/hooks/agent",
-    deliver: false,
-    channel: "last" as const,
-    to: undefined,
-    delivery: { mode: "none" as const },
-    model: undefined,
-    thinking: undefined,
-    timeoutSeconds: undefined,
-    allowUnsafeExternalContent: undefined,
-    externalContentSource: undefined,
   };
 }
 
