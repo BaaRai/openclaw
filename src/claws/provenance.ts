@@ -58,7 +58,7 @@ type ClawProvenanceDatabase = Pick<
   "claw_installs" | "claw_package_refs" | "claw_workspace_files"
 >;
 
-function agentOwnedPaths(plan: ClawAddPlan): string[] {
+function agentOwnedPaths(plan: Pick<ClawInstallRecordUpdate, "actions">): string[] {
   return plan.actions.filter((action) => action.kind === "agent").map((action) => action.target);
 }
 
