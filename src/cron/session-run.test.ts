@@ -324,12 +324,14 @@ describe("deferred automation notices through scheduled session execution", () =
       );
       enqueueSystemEvent("Ordinary session notice", { sessionKey: executionSessionKey });
       const unrelatedEntries = peekSystemEventEntries(executionSessionKey);
-      await expect(scheduled.run()).resolves.toMatchObject({
-        status: "skipped",
-        executionStarted: false,
-      });
-      expect(fixture.enqueue).not.toHaveBeenCalled();
+      await expect(scheduled.run()).resolves.toMatchObject(
+        options.emptyScratch
+          ? { status: "skipped", executionStarted: false }
+          : { status: "ok", executionStarted: true },
+      );
+      expect(fixture.enqueue).toHaveBeenCalledTimes(options.emptyScratch ? 0 : 1);
       expect(peekSystemEventEntries(executionSessionKey)).toEqual(unrelatedEntries);
+      fixture.enqueue.mockClear();
       fixture.scratch.mockClear();
       const selected = enqueueNotice("Selected scheduled notice", scheduled.job.id);
       const original = peekSystemEventEntries(executionSessionKey);
