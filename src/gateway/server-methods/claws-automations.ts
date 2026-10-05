@@ -114,7 +114,7 @@ type AutomationMutationOptions = Pick<
   context: Pick<
     GatewayRequestContext,
     "cronStorePath" | "getRuntimeConfig" | "isConfigReloadSettled"
-  >;
+  > & { cron: Pick<GatewayRequestContext["cron"], "remove"> };
 };
 
 export const clawsAutomationHandlers = {
@@ -136,6 +136,7 @@ export const clawsAutomationHandlers = {
       return;
     }
     const input = parsed.data;
+    let removalDispatched = false;
     try {
       const cfg = structuredClone(context.getRuntimeConfig());
       const assertCurrent = () => {
@@ -166,6 +167,27 @@ export const clawsAutomationHandlers = {
         throw new Error("Portable automation changed after planning; rebuild the Claw plan.");
       }
       const intent = input.mutation;
+      if (intent.kind === "remove") {
+        if (current.job?.id !== intent.jobId || portableHeartbeatDrift(current)) {
+          throw new Error("Portable automation changed before removal; rebuild the Claw plan.");
+        }
+        removalDispatched = true;
+        await context.cron.remove(intent.jobId, {
+          commitGuard: assertCurrent,
+          clawPrecondition: {
+            agentId: input.agentId,
+            jobId: intent.jobId,
+            configRevision: resolveCronJobConfigRevision(current.job),
+            expectedStateDigest: input.expectedStateDigest,
+            expectedInstallDigest: intent.expectedInstallDigest,
+            deletion: intent.deletion,
+          },
+        });
+        const after = await readPortableHeartbeatState(input.agentId, cfg, {});
+        assertCurrent();
+        respond(true, { stateDigest: portableHeartbeatStateDigest(after) }, undefined);
+        return;
+      }
       if (
         (intent.kind === "import" || intent.kind === "update") &&
         intent.expectedSettingsRevision !==
@@ -251,7 +273,10 @@ export const clawsAutomationHandlers = {
         false,
         undefined,
         errorShape(ErrorCodes.UNAVAILABLE, String(error), {
-          details: { outcomeUnknown: error instanceof ClawPortableMutationUncertainError },
+          details: {
+            outcomeUnknown:
+              removalDispatched || error instanceof ClawPortableMutationUncertainError,
+          },
         }),
       );
     }

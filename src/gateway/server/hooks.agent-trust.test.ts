@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { DeferredHookWake } from "../../cron/service/wake.js";
 import {
   getActiveGatewayRootWorkCount,
   isGatewaySubordinateWorkAdmissionClosed,
@@ -15,6 +16,7 @@ import { useSpawnBrokerTestFixture } from "../../process/spawn-broker/host.test-
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 
 const enqueueSystemEventMock = vi.fn();
+const deferHookWakeMock = vi.fn<DeferredHookWake>();
 const enqueueRequiredSystemEventEntryMock = vi.fn<
   (text: string) => { id: string; text: string } | undefined
 >((text) => ({ id: "hook-wake", text }));
@@ -49,8 +51,6 @@ const resolveChannelDefaultAccountIdMock = vi.fn(() => "default");
 vi.mock("../../infra/system-events.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/system-events.js")>()),
   enqueueSystemEvent: enqueueSystemEventMock,
-  enqueueSystemEventWithReceipt: (...args: unknown[]) =>
-    enqueueSystemEventMock(...args) ? () => true : null,
   enqueueRequiredSystemEventEntry: enqueueRequiredSystemEventEntryMock,
   consumeSelectedSystemEventEntries: consumeSelectedSystemEventEntriesMock,
 }));
@@ -127,6 +127,7 @@ function buildMinimalParams(overrides: { agentStartAdmissionTimeoutMs?: number }
       info: logHooksInfoMock,
       error: vi.fn(),
     } as never,
+    deferHookWake: deferHookWakeMock,
     ...overrides,
   };
 }
@@ -212,6 +213,10 @@ describe("dispatchAgentHook trust handling", () => {
   beforeEach(() => {
     resetGatewayWorkAdmission();
     vi.clearAllMocks();
+    deferHookWakeMock.mockImplementation(async ({ commitGuard }) => {
+      commitGuard();
+      return { ok: true, eventOutcome: "coalesced" };
+    });
     loadConfigMock.mockImplementation(mainRosterConfig);
     validateExplicitMessageAccountSelectionMock.mockImplementation(
       ({ accountId }: { accountId?: unknown }) => accountId as string | undefined,
@@ -251,7 +256,6 @@ describe("dispatchAgentHook trust handling", () => {
           entries: { main: {}, molty: {} },
         },
       });
-      enqueueSystemEventMock.mockReturnValue(false);
       const result = await dispatchWakeHook({ text: "Mapped wake", mode }, "molty");
       expect(result).toEqual({ eventOutcome: mode === "now" ? "queued" : "coalesced" });
       expect(resolveAgentMainSessionKeyMock).toHaveBeenCalledWith({
@@ -277,17 +281,30 @@ describe("dispatchAgentHook trust handling", () => {
         });
         expect(enqueueSessionEventMock).toHaveBeenCalledTimes(1);
       } else {
-        expect(enqueueSystemEventMock).toHaveBeenCalledWith("Mapped wake", {
-          sessionKey: "agent:molty:main",
+        expect(deferHookWakeMock).toHaveBeenCalledExactlyOnceWith({
+          text: "Mapped wake",
+          agentId: "molty",
+          expectedTarget: {
+            agentId: "molty",
+            sessionKey: "agent:molty:main",
+            sessionId: "accepted-session",
+          },
+          commitGuard: expect.any(Function),
         });
+        expect(enqueueSystemEventMock).not.toHaveBeenCalled();
         expect(enqueueSessionEventMock).not.toHaveBeenCalled();
       }
     },
   );
 
-  it.each([false, true])(
-    "binds a wake before enqueue and rejects revoked hook authority=%s after capture",
-    async (revoked) => {
+  it.each([
+    { mode: "now", revoked: false },
+    { mode: "now", revoked: true },
+    { mode: "next-heartbeat", revoked: false },
+    { mode: "next-heartbeat", revoked: true },
+  ] as const)(
+    "binds a $mode wake and rejects revoked hook authority=$revoked after preparation",
+    async ({ mode, revoked }) => {
       const captureStarted = createDeferred();
       const captureFinished = createDeferred();
       const originalTarget = {
@@ -295,13 +312,22 @@ describe("dispatchAgentHook trust handling", () => {
         sessionKey: "agent:main:main",
         sessionId: "before-replacement",
       };
-      captureSessionEventTargetMock.mockImplementationOnce(async () => {
-        captureStarted.resolve();
-        await captureFinished.promise;
-        return originalTarget;
-      });
+      if (mode === "now") {
+        captureSessionEventTargetMock.mockImplementationOnce(async () => {
+          captureStarted.resolve();
+          await captureFinished.promise;
+          return originalTarget;
+        });
+      } else {
+        deferHookWakeMock.mockImplementationOnce(async ({ commitGuard }) => {
+          captureStarted.resolve();
+          await captureFinished.promise;
+          commitGuard();
+          return { ok: true, eventOutcome: "queued" };
+        });
+      }
       let current = true;
-      const dispatch = dispatchWakeHook({ text: "Bound wake", mode: "now" }, "main", () => current);
+      const dispatch = dispatchWakeHook({ text: "Bound wake", mode }, "main", () => current);
       await captureStarted.promise;
       expect(enqueueRequiredSystemEventEntryMock).not.toHaveBeenCalled();
       expect(enqueueSessionEventMock).not.toHaveBeenCalled();
@@ -312,7 +338,7 @@ describe("dispatchAgentHook trust handling", () => {
       if (revoked) {
         expect(enqueueRequiredSystemEventEntryMock).not.toHaveBeenCalled();
         expect(enqueueSessionEventMock).not.toHaveBeenCalled();
-      } else {
+      } else if (mode === "now") {
         expect(captureSessionEventTargetMock).toHaveBeenCalledExactlyOnceWith(
           "main",
           "agent:main:main",
@@ -325,6 +351,19 @@ describe("dispatchAgentHook trust handling", () => {
             expectedTarget: originalTarget,
           }),
         );
+      } else {
+        expect(enqueueRequiredSystemEventEntryMock).not.toHaveBeenCalled();
+        expect(enqueueSessionEventMock).not.toHaveBeenCalled();
+        expect(deferHookWakeMock).toHaveBeenCalledExactlyOnceWith({
+          text: "Bound wake",
+          agentId: "main",
+          expectedTarget: {
+            agentId: "main",
+            sessionKey: "agent:main:main",
+            sessionId: "accepted-session",
+          },
+          commitGuard: expect.any(Function),
+        });
       }
     },
   );

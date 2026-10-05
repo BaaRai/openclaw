@@ -6,19 +6,23 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readDefaultProactiveJobReceiptInDatabase } from "../cron/proactive-job-receipt.js";
 import { readCronJobScratchState } from "../cron/scratch-store.js";
 import { writeCronScratchFixture } from "../cron/scratch-store.test-support.js";
 import {
   loadCronJobsStore,
   resolveCronJobsStorePath,
   resolveCronJobsStorePathFromConfig,
+  saveCronJobsStore,
 } from "../cron/store.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
 import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 import { ensureHeartbeatMonitorJobs } from "./doctor-heartbeat-cadence-migration.js";
+import { retireHeartbeatWithDoctor } from "./doctor-heartbeat-retirement.js";
 import {
   collectHeartbeatScratchMigrationFindings,
   maybeMigrateHeartbeatFilesToScratch,
@@ -206,6 +210,70 @@ describe("HEARTBEAT.md cron scratch migration", () => {
       );
     }
   });
+
+  it.each([
+    { completedId: "main", deleted: false },
+    { completedId: "ollama", deleted: false },
+    { completedId: "main", deleted: true },
+    { completedId: "ollama", deleted: true },
+  ])(
+    "retains shared source for completed $completedId (job deleted: $deleted)",
+    async ({ completedId, deleted }) => {
+      const fixture = await createFixture();
+      const cfg = await retireHeartbeatWithDoctor({
+        agents: {
+          ownership: "explicit",
+          entries: {
+            [completedId]: { workspace: fixture.workspace, heartbeat: { every: "30m" } },
+          },
+        },
+      });
+      const storePath = resolveCronJobsStorePathFromConfig(cfg);
+      const completedJob = (await loadCronJobsStore(storePath)).jobs[0]!;
+      writeCronScratchFixture({
+        storePath,
+        jobId: completedJob.id,
+        content: "Completed owner's operator scratch\r\n",
+        expectedRevision: 0,
+      });
+      if (deleted) {
+        await saveCronJobsStore(storePath, { version: 1, jobs: [] });
+      }
+      const completedJobs = (await loadCronJobsStore(storePath)).jobs;
+      const completedScratch = readCronJobScratchState(storePath, completedJob.id);
+      const receipt = (agentId: string) =>
+        withExistingOpenClawStateDatabaseReadOnly(({ db }) =>
+          readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
+        );
+      const completedReceipt = receipt(completedId);
+      expect(completedReceipt).toMatchObject({ jobId: completedJob.id, phase: "complete" });
+      const pendingId = completedId === "main" ? "ollama" : "main";
+      cfg.agents!.entries![pendingId] = {
+        workspace: fixture.workspace,
+        heartbeat: { every: "30m" },
+      };
+      const originalConfig = structuredClone(cfg);
+      const content = "# Operator-restored checklist\r\n\r\nKeep these exact bytes.  \r\n";
+      await fs.writeFile(fixture.heartbeatPath, content);
+
+      await expect(retireHeartbeatWithDoctor(cfg)).rejects.toThrow(
+        `Agent "${completedId}" has completed cutover`,
+      );
+
+      await expect(fs.readFile(fixture.heartbeatPath, "utf8")).resolves.toBe(content);
+      expect(cfg).toEqual(originalConfig);
+      expect(
+        (await loadCronJobsStore(storePath)).jobs.filter((job) => job.agentId === completedId),
+      ).toEqual(completedJobs);
+      expect(readCronJobScratchState(storePath, completedJob.id)).toEqual(completedScratch);
+      expect(receipt(completedId)).toEqual(completedReceipt);
+      expect(receipt(pendingId)).toMatchObject({ phase: "pending" });
+      const pendingJob = (await loadCronJobsStore(storePath)).jobs.find(
+        (job) => job.agentId === pendingId,
+      )!;
+      expect(readCronJobScratchState(storePath, pendingJob.id).scratch?.content).toBe(content);
+    },
+  );
 
   it("imports shared scratch and tasks into disabled owners without re-enabling them", async () => {
     const fixture = await createFixture();

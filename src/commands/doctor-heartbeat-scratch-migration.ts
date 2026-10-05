@@ -4,6 +4,7 @@ import path from "node:path";
 import { TextDecoder, isDeepStrictEqual } from "node:util";
 import { readRegularFile } from "@openclaw/fs-safe/advanced";
 import { note } from "../../packages/terminal-core/src/note.js";
+import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveStateDir } from "../config/paths.js";
@@ -464,7 +465,17 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
   // import into every monitor before the file is archived and removed once, so
   // the first agent's cleanup cannot starve its siblings.
   const groups = new Map<string, { source: HeartbeatSource; agents: [string, CronJob][] }>();
-  for (const [agentId, monitor] of monitors) {
+  const retainedSources = new Set<string>();
+  // Completed ownership survives deletion of the automation and its monitor entry.
+  for (const agentId of new Set([...monitors.keys(), ...listAgentIds(params.cfg)])) {
+    const monitor = monitors.get(agentId);
+    const receipt = withExistingOpenClawStateDatabaseReadOnly(
+      ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
+      { env },
+    );
+    if (!monitor && receipt?.phase !== "complete") {
+      continue;
+    }
     let source: HeartbeatSource | undefined;
     try {
       source = await readHeartbeatSource(params.cfg, agentId, { recoverClaims: true, env });
@@ -475,11 +486,8 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     if (!source) {
       continue;
     }
-    const receipt = withExistingOpenClawStateDatabaseReadOnly(
-      ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
-      { env },
-    );
     if (receipt?.phase === "complete") {
+      retainedSources.add(source.entryKey);
       warnings.push(
         `Agent "${agentId}" has completed cutover; its newly present HEARTBEAT.md was retained without changing the operator-owned automation.`,
       );
@@ -489,12 +497,14 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     // basename), not its resolved file target: two distinct symlinks pointing
     // at one shared file are each claimed and removed, while agents reaching
     // the same workspace through path aliases dedupe onto one entry.
-    const group = groups.get(source.entryKey) ?? {
-      source,
-      agents: [],
-    };
-    group.agents.push([agentId, monitor]);
-    groups.set(source.entryKey, group);
+    if (monitor) {
+      const group = groups.get(source.entryKey) ?? {
+        source,
+        agents: [],
+      };
+      group.agents.push([agentId, monitor]);
+      groups.set(source.entryKey, group);
+    }
   }
 
   for (const { source, agents } of groups.values()) {
@@ -503,7 +513,7 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     // receive the source. Any skipped owner keeps the shared file in place.
     // The revision seen here is also the CAS token for the later write, so a
     // concurrent edit in between surfaces as a conflict, never an overwrite.
-    let keepSource = false;
+    let keepSource = retainedSources.has(source.entryKey);
     const importAgents: [string, CronJob][] = [];
     let scratchWriteNeeded = false;
     const plannedRevisionByJobId = new Map<string, number>();

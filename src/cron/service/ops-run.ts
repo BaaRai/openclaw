@@ -42,7 +42,7 @@ async function finishPreparedManualRun(
   state: CronServiceState,
   prepared: ActivatedManualRun,
   mode?: CronRunMode,
-): Promise<Awaited<ReturnType<typeof executeJobCoreWithTimeout>> | undefined> {
+): Promise<void> {
   const executionJob = prepared.executionJob;
   const startedAt = prepared.startedAt;
   const jobId = prepared.jobId;
@@ -92,7 +92,7 @@ async function finishPreparedManualRun(
       prepared.onTriggerDisposition(disposition);
     }
     finalizationStarted = true;
-    const finalized = await finalizeCompletedCronRunOutcomes(
+    await finalizeCompletedCronRunOutcomes(
       state,
       [
         {
@@ -117,9 +117,6 @@ async function finishPreparedManualRun(
         },
       ],
       { onRequestedRunFinalized: () => armTimer(state) },
-    );
-    return finalized.find(
-      (outcome) => outcome.runReceipt?.receiptId === prepared.runReceipt.receiptId,
     );
   } finally {
     if (!finalizationStarted) {
@@ -224,10 +221,7 @@ async function executePreparedManualRun(
       if (!activeRun.ran) {
         return activeRun;
       }
-      const outcome = await finishPreparedManualRun(state, activeRun, mode);
-      if (outcome) {
-        activeRun.onSettledResult?.(outcome);
-      }
+      await finishPreparedManualRun(state, activeRun, mode);
       return { ok: true, ran: true } as const;
     },
     undefined,

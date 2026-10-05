@@ -4,6 +4,7 @@ import {
   describePairingConnectRequirement,
   type ConnectPairingRequiredReason,
 } from "../../packages/gateway-protocol/src/connect-error-details.js";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import type { TableColumn } from "../../packages/terminal-core/src/table.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { areRuntimeModelRefsEquivalent } from "../agents/model-runtime-aliases.js";
@@ -67,7 +68,7 @@ export function buildStatusAgentsValue(params: { agentStatus: AgentStatusLike })
 /** Scheduler enablement and total jobs are independent of an armed timer. */
 export function buildStatusAutomationsValue(result: StatusAutomationsResult): string {
   if (!result.ok) {
-    return `unavailable (${result.error})`;
+    return `unavailable (${sanitizeTerminalText(result.error)})`;
   }
   const { enabled, jobs, nextWakeAtMs } = result.value;
   return [

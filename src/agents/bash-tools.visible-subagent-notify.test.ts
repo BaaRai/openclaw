@@ -101,7 +101,7 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
-  for (const owner of sourceOwners.splice(0).reverse()) {
+  for (const owner of sourceOwners.splice(0).toReversed()) {
     owner.close();
   }
   subagentRuns.delete(RUN_ID);

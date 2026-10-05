@@ -1,11 +1,13 @@
+import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import type { OpenClawRegisteredAgentDatabase } from "./openclaw-agent-db-contract.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
 
 export type AgentDeletionWorkerWriteFacts = {
   databasePath: string;
+  sourceIdentity: DatabasePathIdentity & { birthtime: string };
   agentId: string;
   operationId: string;
-  lease: OpenClawStateLeaseIdentity;
+  lease: OpenClawStateLeaseIdentity & { scope: "core:agent-deletion" };
 };
 
 export type AgentDeletionWorkerWriteAuthority = {

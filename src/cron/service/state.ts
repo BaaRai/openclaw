@@ -237,6 +237,11 @@ export type CronServiceDeps = {
     job: CronJob,
     expectedTarget: SessionEventTarget | undefined,
     assertCurrent: () => void,
+    coalescing?: {
+      revision: string;
+      assertCurrent: () => void;
+      onOutcome: (outcome: "queued" | "coalesced") => void;
+    },
   ) => void | Promise<void>;
   captureSessionEventTarget?: (job: CronJob) => Promise<SessionEventTarget | undefined>;
   resolveSessionEventTarget?: (opts?: { agentId?: string; sessionKey?: string }) => {

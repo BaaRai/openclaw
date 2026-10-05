@@ -20,6 +20,7 @@ import {
   type ClawPortableHeartbeat,
   type ClawCronGateway,
 } from "./cron.js";
+import { digestClawValue } from "./digest.js";
 import { ClawExportError } from "./export-error.js";
 import { mutatePortableHeartbeatViaGateway } from "./portable-heartbeat-gateway.js";
 import { readPortableHeartbeatState } from "./portable-heartbeat-state.js";
@@ -411,7 +412,7 @@ export async function removePortableHeartbeat(
   cfg: OpenClawConfig,
   expected: PortableHeartbeatState,
   options: OpenClawStateDatabaseOptions & {
-    cronGateway?: Pick<ClawCronGateway, "get" | "remove">;
+    cronGateway?: Pick<ClawCronGateway, "mutateAutomation">;
     assertCurrent: () => void;
     workerAuthority: AgentDeletionWorkerWriteAuthority;
     expectedInstall: PersistedClawInstall | null;
@@ -419,25 +420,25 @@ export async function removePortableHeartbeat(
 ): Promise<void> {
   const gateway = options.cronGateway;
   if (expected.job) {
-    if (!gateway?.get) {
+    if (!gateway?.mutateAutomation) {
       throw new Error(
-        "Portable automation removal requires the serving Gateway cron.get and cron.remove APIs.",
+        "Portable automation removal requires the serving Gateway claws.automations.mutate API.",
       );
     }
-    await gateway.get(expected.job.id);
-    options.assertCurrent();
-    assertPortableHeartbeatUnchanged(
-      await readPortableHeartbeatState(agentId, cfg, options),
+    options.workerAuthority.assertCurrent();
+    await mutatePortableHeartbeatViaGateway(
+      agentId,
+      cfg,
       expected,
+      {
+        kind: "remove",
+        jobId: expected.job.id,
+        expectedInstallDigest: digestClawValue(options.expectedInstall),
+        deletion: options.workerAuthority.facts,
+      },
+      { ...options, cronGateway: gateway },
     );
     options.assertCurrent();
-    try {
-      await gateway.remove(expected.job.id);
-    } catch (error) {
-      if ((await gateway.get(expected.job.id)) != null) {
-        throw error;
-      }
-    }
   }
   options.assertCurrent();
   await mutatePortableHeartbeat(

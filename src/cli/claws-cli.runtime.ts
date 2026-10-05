@@ -570,6 +570,7 @@ export async function runClawsRemoveCommand(
       consentPlanIntegrity: opts.planIntegrity,
       referencedCleanup,
       cronGateway: {
+        mutateAutomation: clawAutomationMutationGateway,
         get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
         list: async (agentId) =>
           await listCronJobsFromGateway({}, { agentId, includeDisabled: true }),

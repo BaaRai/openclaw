@@ -286,18 +286,20 @@ describe("CronService one-shot lifecycle", () => {
       const job = await cron.add(
         mainJob({ schedule: { kind: "at", at: new Date(1).toISOString() } }),
       );
-      const onSettledResult = vi.fn(() => {
-        expect(cron.getJob(job.id)?.state.lastRunStatus).toBe("error");
-      });
-      await cron.run(job.id, "force", { onSettledResult });
+      await expect(cron.run(job.id, "force")).resolves.toEqual({ ok: true, ran: true });
       expect(runSessionEvent).toHaveBeenCalledOnce();
       expect(deps.enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(onSettledResult).toHaveBeenCalledExactlyOnceWith(
+      const { entries } = readCronRunHistoryPageForTests({
+        storeKey: cronStoreKey(deps.storePath),
+        jobId: job.id,
+      });
+      expect(entries).toEqual([
         expect.objectContaining({
           status: "error",
+          completionStatus: "failed",
           error: expect.stringContaining("session execution failed"),
         }),
-      );
+      ]);
       expect(cron.getJob(job.id)?.state).toMatchObject({
         lastRunStatus: "error",
         lastError: expect.stringContaining("session execution failed"),
@@ -354,19 +356,20 @@ describe("CronService one-shot lifecycle", () => {
       const runIsolatedAgentJob = vi.fn<CronServiceDeps["runIsolatedAgentJob"]>(async () => ({
         status: "ok",
       }));
-      const { cron, cleanup } = await fixture({ runIsolatedAgentJob });
+      const { cron, deps, cleanup } = await fixture({ runIsolatedAgentJob });
       try {
         const job = await cron.add(isolatedJob({ delivery: configured, deleteAfterRun: false }));
-        const onSettledResult = vi.fn();
-        await cron.run(job.id, "force", {
-          delivery: {
-            mode: "announce",
-            target: undefined,
-            to: "another-recipient",
-            accountId: "other",
-            threadId: "other-thread",
-          },
-          onSettledResult,
+        const delivery: CronDelivery = {
+          mode: "announce",
+          target: undefined,
+          to: "another-recipient",
+          accountId: "other",
+          threadId: "other-thread",
+          directPolicy: "allow",
+        };
+        await expect(cron.run(job.id, "force", { delivery })).resolves.toEqual({
+          ok: true,
+          ran: true,
         });
         expect(runIsolatedAgentJob).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
@@ -374,9 +377,11 @@ describe("CronService one-shot lifecycle", () => {
           }),
         );
         expect(cron.getJob(job.id)?.delivery).toEqual(configured);
-        expect(onSettledResult).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ status: "ok" }),
-        );
+        const { entries } = readCronRunHistoryPageForTests({
+          storeKey: cronStoreKey(deps.storePath),
+          jobId: job.id,
+        });
+        expect(entries).toEqual([expect.objectContaining({ status: "ok" })]);
       } finally {
         await cleanup();
       }

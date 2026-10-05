@@ -26,7 +26,9 @@ export async function mutatePortableHeartbeatViaGateway(
       "Portable automation changes require the Gateway claws.automations.mutate API.",
     );
   }
-  await gateway.waitUntilAgentAvailable?.(agentId);
+  if (mutation.kind !== "remove") {
+    await gateway.waitUntilAgentAvailable?.(agentId);
+  }
   const result = await gateway.mutateAutomation({
     agentId,
     expectedStateDigest: portableHeartbeatStateDigest(expected),

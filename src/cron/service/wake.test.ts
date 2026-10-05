@@ -70,6 +70,7 @@ describe("wake (cron timer)", () => {
       job,
       undefined,
       expect.any(Function),
+      undefined,
     );
     expect(enqueueSessionEvent).not.toHaveBeenCalled();
   });

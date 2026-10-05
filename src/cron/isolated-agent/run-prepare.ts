@@ -21,7 +21,6 @@ import {
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveCronSkillsSnapshot } from "../../skills/runtime/cron-snapshot.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
-import { resolveCronOwnerDeliverySkip } from "../delivery-plan.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import { appendCronJobScratchPrompt, appendCronUnattendedRunPreamble } from "../run-prompt.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
@@ -104,19 +103,6 @@ export async function prepareCronRunContext(params: {
     { agentId: requiredAgentId },
     tryResolveAmbientOwnerAgentId(requestedRuntimeCfg),
   );
-  if (input.job.delivery?.mode === "announce" && input.job.delivery.target === "owner") {
-    const preflightDelivery = await resolveCronDeliveryContext({
-      cfg: requestedRuntimeCfg,
-      job: input.job,
-      agentId: initialAgentId,
-    });
-    input.assertCurrent?.();
-    (input.abortSignal ?? input.signal)?.throwIfAborted();
-    const skipped = resolveCronOwnerDeliverySkip(preflightDelivery);
-    if (skipped) {
-      return { ok: false as const, result: skipped };
-    }
-  }
   const resultSessionKey =
     resolveCronDeliverySessionKey(input.job) ??
     resolveAgentMainSessionKey({ cfg: requestedRuntimeCfg, agentId: initialAgentId });
@@ -475,18 +461,6 @@ export async function prepareCronRunContext(params: {
       job: input.job,
       agentId,
     });
-    const skipped = resolveCronOwnerDeliverySkip({
-      deliveryPlan,
-      deliveryRequested,
-      resolvedDelivery,
-    });
-    if (skipped) {
-      sessionWorkAdmission.release();
-      await preparedModelRuntimeLease[Symbol.asyncDispose]();
-      preparedModelRuntimeLease = undefined;
-      return { ok: false as const, result: withRunSession(skipped) };
-    }
-
     const { formattedTime, timeLine } = resolveCronStyleNow(runtimeCfg, now);
     // Current jobs stay detached; a bounded tail preserves context without transcript continuation.
     const currentConversationContext =

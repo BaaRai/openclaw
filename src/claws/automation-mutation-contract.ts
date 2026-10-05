@@ -4,6 +4,10 @@ import { CronDateTimestampMsSchema } from "../../packages/gateway-protocol/src/s
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../cron/scratch-contract.js";
 import { clawAutomationInstallIntentSchema } from "./automation-install-intent.js";
 import { clawMonitorCleanupBindingSchema } from "./monitor-cleanup-contract.js";
+import {
+  clawRemovalLeaseSchema,
+  clawRemovalSourceIdentitySchema,
+} from "./removal-journal-contract.js";
 import { parseClawOpenClawProfile } from "./schema.js";
 import { MAX_CLAW_MANIFEST_BYTES } from "./source-limits.js";
 
@@ -47,6 +51,22 @@ export const clawAutomationMutationRequestSchema = z
         .object({ kind: z.literal("update"), source, expectedSettingsRevision: configRevision })
         .strict(),
       z.object({ kind: z.literal("release") }).strict(),
+      z
+        .object({
+          kind: z.literal("remove"),
+          jobId: text,
+          expectedInstallDigest: digest,
+          deletion: z
+            .object({
+              databasePath: text,
+              sourceIdentity: clawRemovalSourceIdentitySchema,
+              agentId: text,
+              operationId: text,
+              lease: clawRemovalLeaseSchema,
+            })
+            .strict(),
+        })
+        .strict(),
       z
         .object({
           kind: z.literal("rollback"),

@@ -43,6 +43,7 @@ import { resolveRequestClientIpFromHeaders } from "../net.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "../server-constants.js";
 import {
   HOOK_FAN_OUT_RESPONSE_DEADLINE_MS,
+  HookWakeUnavailableError,
   sendAgentResult,
   sendFanOutResult,
   settleFanOutDispatches,
@@ -390,7 +391,9 @@ export function createHooksRequestHandler(
           () => !rejectChangedHooksConfig(),
         );
       } catch (error) {
-        if (!(error instanceof SystemEventQueueFullError)) {
+        if (
+          !(error instanceof SystemEventQueueFullError || error instanceof HookWakeUnavailableError)
+        ) {
           throw error;
         }
         sendJson(res, 503, { ok: false, error: error.message, ...wakeResult });

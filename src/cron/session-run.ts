@@ -12,7 +12,6 @@ import { prepareAutomationSystemEvents } from "../infra/system-events.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { isCronWithinActiveHours } from "./active-hours.js";
 import type { CronCompletionDeliveryFence } from "./delivery-attempt-fence.js";
-import { resolveCronOwnerDeliverySkip } from "./delivery-plan.js";
 import { isCronExecutionIdle } from "./execution-idle.js";
 import {
   buildCronDeliveryTrace,
@@ -84,10 +83,6 @@ export async function runCronSessionTurn(params: {
     const delivery =
       job.payload.kind === "agentTurn" ? await resolveCronDeliveryContext(params) : undefined;
     assertCurrent();
-    const skipped = delivery && resolveCronOwnerDeliverySkip(delivery);
-    if (skipped && deferred.events.length === 0) {
-      return skipped;
-    }
     const expectedTarget = await captureSessionEventTarget(params.agentId, params.sessionKey);
     assertCurrent();
     const requestedChat = delivery?.deliveryRequested && delivery.deliveryPlan.mode !== "webhook";

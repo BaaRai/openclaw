@@ -97,11 +97,6 @@ describe("Claw automation Gateway custody", () => {
     state = await createOpenClawTestState({ label: "claw-automation-gateway" });
     await state.writeConfig(config);
     const storePath = state.statePath("cron", "jobs.json");
-    context = {
-      cronStorePath: storePath,
-      getRuntimeConfig: () => config,
-      isConfigReloadSettled: () => true,
-    };
     cron = new CronService({
       scheduler: createTestGatewayScheduler(),
       storePath,
@@ -110,6 +105,12 @@ describe("Claw automation Gateway custody", () => {
       enqueueSystemEvent: vi.fn(),
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
+    context = {
+      cron,
+      cronStorePath: storePath,
+      getRuntimeConfig: () => config,
+      isConfigReloadSettled: () => true,
+    };
     await cron.start();
   });
 
@@ -331,6 +332,11 @@ it("refuses portable import while a foreign Cron owner retains physical custody"
     openOpenClawStateDatabase();
     const source = captureOpenClawStateWorkerContext();
     const context = {
+      cron: {
+        remove: async () => {
+          throw new Error("Unexpected portable removal during import");
+        },
+      },
       cronStorePath: state.statePath("cron", "jobs.json"),
       getRuntimeConfig: () => config,
       isConfigReloadSettled: () => true,

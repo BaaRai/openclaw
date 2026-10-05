@@ -34,6 +34,7 @@ import { toPublicCronJob } from "../cron/public-job.js";
 import { cronScriptFailureMetadata } from "../cron/script-failure.js";
 import { CronService, type CronEvent } from "../cron/service.js";
 import { applyJobPatch } from "../cron/service/jobs.js";
+import type { DeferredHookWake } from "../cron/service/wake.js";
 import { runCronSessionTurn } from "../cron/session-run.js";
 import { resolveCronSessionTargetSessionKey } from "../cron/session-target.js";
 import { skillCollectionReviewMonitorAgentId } from "../cron/skill-collection-review-monitor.js";
@@ -118,6 +119,7 @@ class GatewaySystemJobReconciliationSupersededError extends Error {}
 
 export type GatewayCronState = {
   cron: GatewayCronServiceContract;
+  deferHookWake?: DeferredHookWake;
   storePath: string;
   cronEnabled: boolean;
   prepareExitWatcherHandoff?: () => Promise<GatewayCronExitWatcherHandoff | undefined>;
@@ -497,7 +499,7 @@ export function buildGatewayCronService(params: {
         }
       });
     },
-    deferSessionEvent: (text, job, expectedTarget, assertCurrent) => {
+    deferSessionEvent: (text, job, expectedTarget, assertCurrent, coalescing) => {
       const { agentId, sessionKey } = resolveCronTarget({
         agentId: job.agentId,
         sessionKey: resolveCronSessionTargetSessionKey(job.sessionTarget),
@@ -511,21 +513,55 @@ export function buildGatewayCronService(params: {
           throw new Error("Deferred automation target does not match its scheduled receiver");
         }
         assertSessionEventTargetCurrent(target);
-        enqueueAutomationSystemEvent(
+        const receiver = coalescing && {
+          revision: coalescing.revision,
+          assertCurrent: coalescing.assertCurrent,
+        };
+        const outcome = enqueueAutomationSystemEvent(
           text,
           withSystemEventOwner({ sessionKey: target.sessionKey }, target.agentId),
           {
             jobId: job.id,
             assertCurrent: () => assertSessionEventTargetCurrent(target),
             prepare: () => prepareSessionEventTargetForHost(target),
+            ...(receiver
+              ? {
+                  coalescing: {
+                    key: JSON.stringify([
+                      receiver.revision,
+                      target.agentId,
+                      target.sessionKey,
+                      target.storePath,
+                      target.sessionId,
+                      target.lifecycleRevision,
+                      target.generation,
+                    ]),
+                    assertCurrent: () => {
+                      receiver.assertCurrent();
+                      assertSessionEventTargetCurrent(target);
+                    },
+                  },
+                }
+              : {}),
           },
         );
+        coalescing?.onOutcome(outcome);
       };
+      const admit = coalescing
+        ? async (target: SessionEventTarget) => {
+            const prepared = await prepareSessionEventTargetForHost(target);
+            try {
+              prepared.assertCurrent();
+              enqueue(target);
+            } finally {
+              prepared.release();
+            }
+          }
+        : enqueue;
       if (expectedTarget) {
-        enqueue(expectedTarget);
-        return undefined;
+        return admit(expectedTarget);
       }
-      return captureSessionEventTargetForHost(agentId, sessionKey, { env }).then(enqueue);
+      return captureSessionEventTargetForHost(agentId, sessionKey, { env }).then(admit);
     },
     runIsolatedAgentJob: async (request) => {
       const { job } = request;
@@ -1319,6 +1355,7 @@ export function buildGatewayCronService(params: {
 
   return {
     cron,
+    deferHookWake: (opts) => cron.deferHookWake(opts),
     storePath,
     cronEnabled,
     prepareExitWatcherHandoff: async () => ({

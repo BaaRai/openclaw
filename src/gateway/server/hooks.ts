@@ -22,6 +22,7 @@ import type {
 } from "../../cron/isolated-agent/run.types.js";
 import { resolveCronAgentSessionKey } from "../../cron/isolated-agent/session-key.js";
 import type { CronExecutionIdentityAdmission } from "../../cron/service/state.js";
+import type { DeferredHookWake } from "../../cron/service/wake.js";
 import type { CronJob } from "../../cron/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
@@ -32,8 +33,6 @@ import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
   enqueueRequiredSystemEventEntry,
-  enqueueSystemEvent,
-  enqueueSystemEventWithReceipt,
 } from "../../infra/system-events.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -50,6 +49,7 @@ import {
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "../server-constants.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createPluginHookDispatcher } from "./hooks-plugin-dispatch.js";
+import { HookWakeUnavailableError } from "./hooks-request-handler-response.js";
 import { createHooksRequestHandler, type HookClientIpConfig } from "./hooks-request-handler.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -221,6 +221,7 @@ export function createGatewayHookDispatcher(params: {
   deps: CliDeps;
   logHooks: SubsystemLogger;
   agentStartAdmissionTimeoutMs?: number;
+  deferHookWake?: DeferredHookWake;
   /**
    * Hook agent dispatch runs off a session-keyed queue, so the inbound HTTP
    * request scope is already unwound by the time the turn starts. Without this
@@ -261,6 +262,20 @@ export function createGatewayHookDispatcher(params: {
     | undefined;
   const loadIsolatedAgentModule = () =>
     (isolatedAgentModulePromise ??= import("../../cron/isolated-agent.js"));
+  const deferHookEvent = async (request: Parameters<DeferredHookWake>[0]) => {
+    if (!params.deferHookWake) {
+      throw new HookWakeUnavailableError(
+        "Scheduled Hook wake admission is unavailable; restart the Gateway",
+      );
+    }
+    const result = await params.deferHookWake(request);
+    if (!result.ok) {
+      throw new HookWakeUnavailableError(
+        result.reason ?? "No scheduled target can receive this Hook notice",
+      );
+    }
+    return { eventOutcome: result.eventOutcome };
+  };
 
   const dispatchWakeHook = async (
     value: { text: string; mode: "now" | "next-heartbeat"; sessionKey?: string },
@@ -273,14 +288,31 @@ export function createGatewayHookDispatcher(params: {
       sessionKey: value.sessionKey,
     });
     if (value.mode === "next-heartbeat") {
-      if (isHooksConfigCurrent?.() === false) {
-        return null;
+      const changedConfig = new Error("Hook configuration changed during deferred wake admission");
+      const commitGuard = () => {
+        if (isHooksConfigCurrent?.() === false) {
+          throw changedConfig;
+        }
+      };
+      try {
+        commitGuard();
+        const expectedTarget = await captureSessionEventTargetForHost(
+          target.agentId,
+          target.eventSessionKey,
+        );
+        commitGuard();
+        return await deferHookEvent({
+          text: value.text,
+          agentId: target.agentId,
+          expectedTarget,
+          commitGuard,
+        });
+      } catch (error) {
+        if (error === changedConfig) {
+          return null;
+        }
+        throw error;
       }
-      const queued = enqueueSystemEventWithReceipt(
-        value.text,
-        withSystemEventOwner({ sessionKey: target.eventSessionKey }, target.agentId),
-      );
-      return { eventOutcome: queued ? "queued" : "coalesced" } as const;
     }
     const expectedTarget = await captureSessionEventTargetForHost(
       target.agentId,
@@ -437,13 +469,6 @@ export function createGatewayHookDispatcher(params: {
           }
           eventAgentId = globalTerminalAgentId;
         }
-        if (value.wakeMode === "next-heartbeat") {
-          enqueueSystemEvent(
-            text,
-            withSystemEventOwner({ sessionKey: eventSessionKey }, eventAgentId),
-          );
-          return;
-        }
         const expectedTarget =
           eventTarget.expectedTarget ??
           (hookEventTarget
@@ -451,6 +476,19 @@ export function createGatewayHookDispatcher(params: {
             : await captureSessionEventTargetForHost(eventAgentId, eventSessionKey));
         if (!expectedTarget) {
           throw new Error("Hook terminal target could not be captured before the run");
+        }
+        if (value.wakeMode === "next-heartbeat") {
+          await deferHookEvent({
+            text,
+            agentId: eventAgentId,
+            expectedTarget,
+            commitGuard: () => {
+              if (!listAgentIds(getRuntimeConfig()).includes(eventAgentId)) {
+                throw new Error("Hook terminal agent was removed before event admission");
+              }
+            },
+          });
+          return;
         }
         const receipt = enqueueSessionEventForHost(text, {
           agentId: eventAgentId,
@@ -702,6 +740,7 @@ export function createGatewayHooksRequestHandler(params: {
   port: number;
   logHooks: SubsystemLogger;
   agentStartAdmissionTimeoutMs?: number;
+  deferHookWake?: DeferredHookWake;
   resolveGatewayContext?: () => GatewayRequestContext | undefined;
   dispatcher?: GatewayHookDispatcher;
 }) {

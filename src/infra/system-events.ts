@@ -66,6 +66,7 @@ type AutomationNoticeOwner = {
   jobId: string;
   assertCurrent: () => void;
   prepare?: () => Promise<PreparedAutomationNotice>;
+  coalescing?: { key: string; assertCurrent: () => void };
 };
 
 const turnOwners = resolveGlobalSingleton(
@@ -315,7 +316,31 @@ export function enqueueAutomationSystemEvent(
   text: string,
   options: SystemEventOptions,
   automation: AutomationNoticeOwner,
-): void {
+): "queued" | "coalesced" {
+  const coalescing = automation.coalescing;
+  if (coalescing) {
+    coalescing.assertCurrent();
+    for (const event of getSessionQueue(requireSessionKey(options.sessionKey))?.queue ?? []) {
+      const owner = turnOwners.get(event);
+      const previous = owner?.automation;
+      if (
+        owner?.started ||
+        event.text !== text.trim() ||
+        previous?.jobId !== automation.jobId ||
+        previous.coalescing?.key !== coalescing.key
+      ) {
+        continue;
+      }
+      try {
+        previous.coalescing.assertCurrent();
+      } catch {
+        // Matching text cannot redeem a retired scheduled receiver.
+        continue;
+      }
+      coalescing.assertCurrent();
+      return "coalesced";
+    }
+  }
   const event = enqueueOwnedSystemEventEntry(text, options, {
     allowDuplicate: true,
     throwOnFull: true,
@@ -324,6 +349,7 @@ export function enqueueAutomationSystemEvent(
     throw new Error("Deferred automation event was not accepted");
   }
   turnOwners.set(event, { cancel: () => {}, started: false, automation });
+  return "queued";
 }
 
 export async function prepareAutomationSystemEvents(sessionKey: string, jobId: string) {

@@ -42,6 +42,7 @@ import {
 } from "./locked.js";
 import { normalizeOptionalAgentId } from "./normalize.js";
 import { resolveCurrentDefaultAgentId } from "./ops-shared.js";
+import type { CronRemoveOptions } from "./remove-options.js";
 import { prepareCronRunReceiptOwnerMutation } from "./run-receipts.js";
 import type {
   CronAddOptions,
@@ -443,11 +444,10 @@ export async function updateWithPrecondition(
 }
 
 /** Removes a cron job by id and re-arms the timer when the in-memory store changes. */
-export async function remove(
-  state: CronServiceState,
-  id: string,
-  opts?: { systemOwned?: boolean; commitGuard?: () => void },
-) {
+export async function remove(state: CronServiceState, id: string, opts?: CronRemoveOptions) {
+  if (opts?.clawPrecondition && opts.clawPrecondition.jobId !== id) {
+    throw new Error("Portable removal targets a different automation.");
+  }
   const source = captureCronJobMutationSource(state);
   let sessionCleanup:
     | {
@@ -468,6 +468,9 @@ export async function remove(
     }
     const removedJob = state.store.jobs.find((j) => j.id === id);
     if (!removedJob) {
+      if (opts?.clawPrecondition) {
+        throw new Error("Portable automation changed before removal; rebuild the Claw plan.");
+      }
       if (state.store !== previousStore) {
         armTimer(state);
       }
@@ -504,6 +507,10 @@ export async function remove(
       next: nextStore,
       method: "cron.remove",
       assertCurrent: opts?.commitGuard,
+      clawPrecondition: opts?.clawPrecondition,
+      expectedJob: opts?.clawPrecondition
+        ? { id, configRevision: opts.clawPrecondition.configRevision }
+        : undefined,
       postPersistNotifications,
       suppressScheduledJobId: id,
       afterCommit: () => {

@@ -183,6 +183,7 @@ export function withAgentDeletion<T>(
         ): AgentDeletionOperation => {
           const operationId = journal.operationId;
           const readContext = captureOpenClawStateReadWorkerContext(stateOptions);
+          const sourceIdentity = { ...readContext.admission.identity };
           const assertJournalIdentity = (
             currentStatePath: string,
             entries: readonly Pick<
@@ -292,12 +293,19 @@ export function withAgentDeletion<T>(
             },
             captureWorkerWriteAuthority: () => {
               assertCurrent();
+              if (
+                leaseIdentity.scope !== "core:agent-deletion" ||
+                sourceIdentity.birthtime === undefined
+              ) {
+                throw new Error("Agent deletion lost its original physical source or lease scope.");
+              }
               return {
                 facts: {
                   databasePath: readContext.admission.databasePath,
+                  sourceIdentity: { ...sourceIdentity, birthtime: sourceIdentity.birthtime },
                   agentId: id,
                   operationId,
-                  lease: { ...leaseIdentity },
+                  lease: { ...leaseIdentity, scope: leaseIdentity.scope },
                 },
                 assertCurrent: assertAsyncScopeCurrent,
               };

@@ -12,26 +12,29 @@ const agentId = z
   .regex(/^[a-z0-9][a-z0-9_-]*$/u)
   .max(128);
 
+export const clawRemovalSourceIdentitySchema = z
+  .object({ canonicalPath: text, key: text, birthtime: text })
+  .strict()
+  .refine((value) => {
+    try {
+      readDatabaseFileIdentity(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Invalid original database identity.");
+export const clawRemovalLeaseSchema = z
+  .object({ scope: z.literal("core:agent-deletion"), key: agentId, owner: text })
+  .strict();
+
 export const clawRemovalJournalRequestSchema = z
   .object({
     phase: z.enum(["begin", "rollback"]),
     agentId,
     operationId: text,
     binding: clawMonitorCleanupBindingSchema,
-    sourceIdentity: z
-      .object({ canonicalPath: text, key: text, birthtime: text })
-      .strict()
-      .refine((value) => {
-        try {
-          readDatabaseFileIdentity(value);
-          return true;
-        } catch {
-          return false;
-        }
-      }, "Invalid original database identity."),
-    lease: z
-      .object({ scope: z.literal("core:agent-deletion"), key: agentId, owner: text })
-      .strict(),
+    sourceIdentity: clawRemovalSourceIdentitySchema,
+    lease: clawRemovalLeaseSchema,
     expectedInstallDigest: digest,
     expectedJournalDigest: digest,
     configDigest: digest,

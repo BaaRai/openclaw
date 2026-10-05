@@ -69,7 +69,19 @@ it("awaits backup freshness before assembling the overview", async () => {
   );
 });
 
-it("keeps pending startup guidance distinct from reachability failure", async () => {
+it.each([
+  {
+    name: "plain error",
+    error: "gateway still starting; phase plugins",
+    expected: "unavailable (gateway still starting; phase plugins)",
+  },
+  {
+    name: "terminal controls in gateway error",
+    error:
+      "gateway still starting; phase \u001b[31mplugins\u001b[0m\u001b]52;c;ZmFrZQ==\u0007\nretry",
+    expected: "unavailable (gateway still starting; phase plugins\\nretry)",
+  },
+])("keeps startup guidance for $name", async ({ error, expected }) => {
   const params = createStatusCommandReportDataParams();
   const report = await buildStatusCommandReportData({
     ...params,
@@ -79,11 +91,9 @@ it("keeps pending startup guidance distinct from reachability failure", async ()
       gatewayProbe: { startupPhase: "plugins", error: null },
     },
     health: undefined,
-    automations: { ok: false, error: "gateway still starting; phase plugins" },
+    automations: { ok: false, error },
   });
-  expect(
-    stripAnsi(report.overviewRows.find(({ Item }) => Item === "Automations")?.Value ?? ""),
-  ).toBe("unavailable (gateway still starting; phase plugins)");
+  expect(report.overviewRows.find(({ Item }) => Item === "Automations")?.Value).toBe(expected);
   expect(report.footerLines.at(-1)).toBe("  Retry after startup: openclaw status --deep");
   expect(report.footerLines.join("\n")).not.toContain("Fix reachability first");
 });

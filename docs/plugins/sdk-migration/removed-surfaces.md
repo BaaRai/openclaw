@@ -79,6 +79,24 @@ Configure model and delivery policy on the automation instead of reply options.
 Ordinary internal events use `typingPolicy: "system_event"`; silent replies use
 `SILENT_REPLY_TOKEN` and `isSilentReplyText` from `reply-runtime`.
 
+Custom in-process Gateway handlers must also await `context.cron.wake(...)`
+before inspecting `ok` or `reason`. The method returned a result synchronously
+in `2026.9.7`; it now returns a result or a Promise of that result, because deferred
+wake admission can await current target and owner checks. Awaiting handles both
+immediate and deferred admission:
+
+```typescript
+const result = await context.cron.wake({
+  mode: "next-heartbeat",
+  text: "Check the pending work.",
+  agentId: "main",
+});
+```
+
+A successful wake result confirms admission, not completed model execution or
+transport delivery. This is a breaking change to the in-process SDK contract;
+the protocol-v4 `wake` JSON request and response shapes remain unchanged.
+
 The non-deprecated `heartbeat_prompt_contribution` hook remains available only for
 receipt-owned migrated/default proactive automations. Historical transcript
 recognition and the protocol-v4 wire adapters also remain supported; they do not

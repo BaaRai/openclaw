@@ -11,6 +11,7 @@ import * as readOps from "./service/ops-read.js";
 import type { OnExitRunOptions } from "./service/ops-run-preparation.js";
 import * as runOps from "./service/ops-run.js";
 import * as streamOps from "./service/ops-stream.js";
+import type { CronRemoveOptions } from "./service/remove-options.js";
 import {
   type CronAddOptions,
   type CronServiceDeps,
@@ -19,6 +20,7 @@ import {
   type CronUpdateOptions,
   createCronServiceState,
 } from "./service/state.js";
+import type { DeferredHookWake } from "./service/wake.js";
 import type { CronJob, CronJobCreate, CronJobPatch } from "./types.js";
 
 export type { CronEvent } from "./service/state.js";
@@ -137,7 +139,7 @@ export class CronService implements CronServiceContract {
     return await mutationOps.updateWithPrecondition(this.state, id, patch, precondition, opts);
   }
 
-  async remove(id: string, opts?: { systemOwned?: boolean; commitGuard?: () => void }) {
+  async remove(id: string, opts?: CronRemoveOptions) {
     return await mutationOps.remove(this.state, id, opts);
   }
 
@@ -264,5 +266,36 @@ export class CronService implements CronServiceContract {
 
   wake(opts: Parameters<CronServiceContract["wake"]>[0]) {
     return runOps.wakeNow(this.state, opts);
+  }
+
+  async deferHookWake(opts: Parameters<DeferredHookWake>[0]): ReturnType<DeferredHookWake> {
+    const generation = this.state.lifecycleGeneration;
+    const commitGuard = () => {
+      opts.commitGuard();
+      if (this.state.stopped || this.state.lifecycleGeneration !== generation) {
+        throw new Error("Scheduled Hook wake owner changed; retry the request");
+      }
+    };
+    commitGuard();
+    await this.list({ includeDisabled: true });
+    commitGuard();
+    let eventOutcome: "queued" | "coalesced" | undefined;
+    const result = await runOps.wakeNow(this.state, {
+      ...opts,
+      commitGuard,
+      mode: "next-heartbeat",
+      coalescing: {
+        onOutcome: (outcome) => {
+          eventOutcome = outcome;
+        },
+      },
+    });
+    if (!result.ok) {
+      return result;
+    }
+    if (!eventOutcome) {
+      throw new Error("Deferred Hook wake omitted its event admission outcome");
+    }
+    return { ok: true, eventOutcome };
   }
 }

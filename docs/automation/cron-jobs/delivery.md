@@ -114,6 +114,10 @@ the last group conversation or guess a recipient when owner identity is
 ambiguous. `delivery.directPolicy: "block"` (`--direct-policy block`) blocks
 direct/DM delivery for that job; the default is `allow`.
 
+A missing owner route does not skip execution. The job still runs, and ordinary
+delivery settlement records the unavailable destination without falling back to
+the last conversation. An explicit DM block remains intentional non-delivery.
+
 ```bash
 openclaw automations edit <job-id> \
   --announce --channel telegram --delivery-target owner

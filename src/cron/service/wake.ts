@@ -10,6 +10,14 @@ import {
 } from "./notification-intents.js";
 import type { CronServiceState } from "./state.js";
 
+/** Internal Hook adapter; the public Cron facade retains its existing wake contract. */
+export type DeferredHookWake = (opts: {
+  text: string;
+  agentId: string;
+  expectedTarget?: SessionEventTarget;
+  commitGuard: () => void;
+}) => Promise<{ ok: true; eventOutcome: "queued" | "coalesced" } | { ok: false; reason?: string }>;
+
 /** Keeps safety notices with their creator and limits failure routes to explicit origins. */
 export function enqueueCronNotification(
   state: CronServiceState,
@@ -46,6 +54,7 @@ export function wake(
     mode: "now" | "next-heartbeat";
     expectedTarget?: SessionEventTarget;
     commitGuard?: () => void;
+    coalescing?: { onOutcome: (outcome: "queued" | "coalesced") => void };
     text: string;
     /**
      * Internal session key to enqueue the system event against. When omitted,
@@ -100,7 +109,25 @@ export function wake(
     state.deps.enqueueSessionEvent(text, enqueueOpts);
     return { ok: true } as const;
   }
-  const target = state.deps.resolveSessionEventTarget?.({ agentId });
+  const capturedAgentId = normalizeOptionalAgentId(opts.expectedTarget?.agentId);
+  const capturedSessionKey = opts.expectedTarget?.sessionKey?.trim() || undefined;
+  const requestedTarget = { agentId, sessionKey: capturedSessionKey };
+  if (capturedAgentId && agentId && normalizeOptionalAgentId(agentId) !== capturedAgentId) {
+    return {
+      ok: false,
+      reason: "Captured wake target does not match the requested agent",
+    } as const;
+  }
+  const target = state.deps.resolveSessionEventTarget?.(requestedTarget);
+  if (
+    (capturedAgentId && target?.agentId !== capturedAgentId) ||
+    (capturedSessionKey && target?.sessionKey !== capturedSessionKey)
+  ) {
+    return {
+      ok: false,
+      reason: "Captured wake target no longer resolves to its destination",
+    } as const;
+  }
   const job = state.store?.jobs.find((candidate) => {
     if (
       !target?.agentId ||
@@ -131,8 +158,7 @@ export function wake(
   }
   const generation = state.lifecycleGeneration;
   const revision = resolveCronJobConfigRevision(job);
-  const assertCurrent = () => {
-    opts.commitGuard?.();
+  const assertReceiverCurrent = () => {
     const currentJob = state.store?.jobs.find((candidate) => candidate.id === job.id);
     if (
       state.lifecycleGeneration !== generation ||
@@ -145,7 +171,7 @@ export function wake(
     ) {
       throw new Error("Scheduled wake receiver changed during admission; retry the wake");
     }
-    const currentTarget = state.deps.resolveSessionEventTarget?.({ agentId });
+    const currentTarget = state.deps.resolveSessionEventTarget?.(requestedTarget);
     const receiverTarget = state.deps.resolveSessionEventTarget?.({
       agentId: currentJob.agentId,
       sessionKey: currentJob.sessionTarget.startsWith("session:")
@@ -161,7 +187,19 @@ export function wake(
       throw new Error("Scheduled wake destination changed during admission; retry the wake");
     }
   };
+  const assertCurrent = () => {
+    opts.commitGuard?.();
+    assertReceiverCurrent();
+  };
   assertCurrent();
-  const pending = state.deps.deferSessionEvent(text, job, opts.expectedTarget, assertCurrent);
+  const pending = state.deps.deferSessionEvent(
+    text,
+    job,
+    opts.expectedTarget,
+    assertCurrent,
+    opts.coalescing
+      ? { ...opts.coalescing, revision, assertCurrent: assertReceiverCurrent }
+      : undefined,
+  );
   return pending ? pending.then(() => ({ ok: true }) as const) : ({ ok: true } as const);
 }

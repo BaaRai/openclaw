@@ -78,7 +78,7 @@ const params = () => ({
 });
 
 describe("scheduled session execution", () => {
-  it("skips before session execution when owner delivery has no route", async () => {
+  it("executes without an owner route and records ordinary delivery failure", async () => {
     fixture.delivery.mockResolvedValue({
       deliveryRequested: true,
       deliveryPlan: { mode: "announce", target: "owner" },
@@ -87,15 +87,21 @@ describe("scheduled session execution", () => {
         error: new Error("Owner delivery unavailable (no-route); configure an authorized owner DM"),
       },
     });
-    const result = await runCronSessionTurn(params());
+    const input = params();
+    const result = await runCronSessionTurn(input);
     expect(result).toMatchObject({
-      status: "skipped",
-      executionStarted: false,
+      status: "ok",
+      executionStarted: true,
       delivered: false,
-      deliveryAttempted: false,
-      summary: expect.stringContaining("configure an authorized owner DM"),
+      deliveryError: expect.stringContaining("configure an authorized owner DM"),
     });
-    expect(fixture.enqueue).not.toHaveBeenCalled();
+    expect(fixture.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.any(String),
+      expect.objectContaining({ deliver: false, deliveryContext: undefined }),
+    );
+    expect(resolveAdmittedCronCompletionStatus(input.job, result.status, "not-delivered")).toBe(
+      "failed",
+    );
   });
 
   it("records a denied DM as intentional non-delivery without borrowing the old route", async () => {

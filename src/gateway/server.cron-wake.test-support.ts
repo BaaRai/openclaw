@@ -1,5 +1,5 @@
 // Deferred v4 wake proof uses the shared Cron fixture and real session/notice owners.
-import { expect, test, vi } from "vitest";
+import { assert, expect, test, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -21,6 +21,77 @@ export function installDeferredCronWakeTests(
     creatorKey: string;
   }>,
 ) {
+  test("keeps a captured Hook notice with its mapped receiver and revalidates queued admission", async (testContext) => {
+    const { cronState, sessionKey, creatorKey } = await createDeferredWakeReceiver();
+    const receiver = await cronState.cron.add({
+      name: "Mapped Hook receiver",
+      agentId: "main",
+      enabled: true,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: `session:${creatorKey}`,
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "Review mapped notices." },
+    });
+    const deferHookWake = cronState.deferHookWake;
+    assert(deferHookWake);
+    const expectedTarget = await sessionEventHandoff.captureSessionEventTargetForHost(
+      "main",
+      creatorKey,
+    );
+    const request = {
+      text: "Mapped notice.",
+      agentId: "main",
+      expectedTarget,
+      commitGuard: () => {},
+    };
+    await expect(deferHookWake(request)).resolves.toEqual({ ok: true, eventOutcome: "queued" });
+    expect(peekSystemEvents(sessionKey)).toEqual([]);
+    const notices = await prepareAutomationSystemEvents(creatorKey, receiver.id);
+    try {
+      expect(notices.events.map((event) => event.text)).toEqual([request.text]);
+      notices.start();
+    } finally {
+      notices.release();
+    }
+    await expect(deferHookWake({ ...request, agentId: "other" })).resolves.toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Captured wake target"),
+    });
+    expect(peekSystemEvents(creatorKey)).toEqual([]);
+
+    const prepared = createDeferred();
+    const resume = createDeferred();
+    const prepareTarget = sessionEventHandoff.prepareSessionEventTargetForHost;
+    const gate = vi
+      .spyOn(sessionEventHandoff, "prepareSessionEventTargetForHost")
+      .mockImplementationOnce(async (target) => {
+        const lease = await prepareTarget(target);
+        prepared.resolve();
+        await resume.promise;
+        return lease;
+      });
+    const pending = deferHookWake(request);
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(
+          prepared.promise,
+          pending,
+          "Hook notice did not prepare its target",
+        ),
+        testContext.signal,
+      );
+      await cronState.cron.update(receiver.id, { enabled: false });
+      resume.resolve();
+      await expect(pending).rejects.toThrow("Scheduled wake receiver changed during admission");
+      expect(peekSystemEvents(creatorKey)).toEqual([]);
+      expect(peekSystemEvents(sessionKey)).toEqual([]);
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([pending]);
+      gate.mockRestore();
+    }
+  });
+
   test.each([false, true])(
     "admits a deferred v4 wake to its receiver's captured session (reset=%s)",
     async (reset) => {

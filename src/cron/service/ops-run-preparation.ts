@@ -76,7 +76,6 @@ export type OnExitRunOptions = {
 };
 
 export type ManualRunOptions = {
-  onSettledResult?: CronServiceRunOptions["onSettledResult"];
   onExit?: OnExitRunOptions;
   runId?: string;
   /** Revalidates the caller before preflight effects and durable reservation. */
@@ -412,7 +411,6 @@ export async function prepareManualRun(
       jobId: reservedJob.id,
       runId: opts?.runId,
       terminalTracker: opts?.terminalTracker,
-      onSettledResult: opts?.onSettledResult,
       owningCronLaneTaskMarker: opts?.owningCronLaneTaskMarker,
       commitGuard: opts?.commitGuard,
       reservationAt,
@@ -519,12 +517,13 @@ export async function activatePreparedManualRun(
         mode: "announce",
         ...configured,
         ...prepared.delivery,
-        // Routing cannot widen the persisted account, owner, or silent policy.
+        // Routing cannot widen the persisted account, owner, silent, or DM policy.
         ...(configured?.target === "owner"
           ? { target: "owner", to: undefined, threadId: undefined }
           : {}),
         ...(configured?.accountId ? { accountId: configured.accountId } : {}),
         ...(configured?.mode === "none" ? { mode: "none" } : {}),
+        ...(configured?.directPolicy === "block" ? { directPolicy: "block" } : {}),
       };
       assertExecutionPolicy({ ...job, delivery });
     }

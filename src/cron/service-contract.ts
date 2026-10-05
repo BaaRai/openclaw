@@ -23,12 +23,6 @@ type CronWakeResult = { ok: true } | { ok: false; reason?: string };
 /** Result shape for direct/queued cron runs. */
 export type CronServiceRunResult = CronRunResult;
 export type CronServiceRunOptions = {
-  /** Canonical result of this exact direct run, after durable settlement. */
-  onSettledResult?: (result: {
-    status: "ok" | "error" | "skipped";
-    error?: string;
-    deliveryError?: string;
-  }) => void;
   payload?: CronPayload;
   /** Per-occurrence routing; stored delivery policy remains authoritative. */
   delivery?: Partial<

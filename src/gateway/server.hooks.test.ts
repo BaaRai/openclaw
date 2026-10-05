@@ -7,16 +7,22 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
 import type { HooksConfig, HookMappingConfig } from "../config/types.hooks.js";
+import { saveCronJobsStore } from "../cron/store.js";
 import {
   drainSystemEvents,
+  enqueueSystemEvent,
   peekSystemEventEntries,
   peekSystemEvents,
+  prepareAutomationSystemEvents,
 } from "../infra/system-events.js";
 import { CommandLane } from "../process/lanes.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import {
+  connectWebchatClient,
   cronIsolatedRun,
   installGatewayTestHooks,
+  rpcReq,
   testState,
   withGatewayServer,
   waitForSystemEvent,
@@ -109,6 +115,62 @@ function setHookAgentRoster(explicitSole = false): void {
     : { ownership: "explicit", entries: { main: {}, hooks: {} } };
   if (!explicitSole) {
     testState.agentConfig = { ...testState.agentConfig, systemAgent: { agentId: "main" } };
+  }
+}
+
+async function withScheduledHookReceivers(
+  run: Parameters<typeof withGatewayServer>[0],
+): Promise<void> {
+  const storePath = path.join(
+    requireNonEmptyString(process.env.OPENCLAW_STATE_DIR, "OPENCLAW_STATE_DIR"),
+    "cron",
+    "hook-receivers.json",
+  );
+  const now = Date.now();
+  const nextRunAtMs = now + 86_400_000;
+  const previousStore = testState.cronStorePath;
+  const previousEnabled = testState.cronEnabled;
+  testState.cronStorePath = storePath;
+  testState.cronEnabled = true;
+  try {
+    await saveCronJobsStore(storePath, {
+      version: 1,
+      jobs: ["main", "hooks"].map((agentId) => ({
+        id: `hook-receiver-${agentId}`,
+        agentId,
+        name: `Scheduled ${agentId} notices`,
+        enabled: true,
+        createdAtMs: now,
+        updatedAtMs: now,
+        schedule: { kind: "at", at: new Date(nextRunAtMs).toISOString() },
+        sessionTarget: "main",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: "Review pending notices." },
+        delivery: { mode: "none" },
+        state: { nextRunAtMs },
+      })),
+    });
+    await withEnvAsync({ OPENCLAW_SKIP_CRON: "0" }, () => withGatewayServer(run));
+  } finally {
+    testState.cronStorePath = previousStore;
+    testState.cronEnabled = previousEnabled;
+    drainSystemEvents(HOOKS_MAIN_SESSION_KEY);
+  }
+}
+
+async function consumeScheduledHookNotices(sessionKey: string, agentId: string, texts: string[]) {
+  const unrelated = await prepareAutomationSystemEvents(sessionKey, "another-automation");
+  try {
+    expect(unrelated.events).toEqual([]);
+  } finally {
+    unrelated.release();
+  }
+  const scheduled = await prepareAutomationSystemEvents(sessionKey, `hook-receiver-${agentId}`);
+  try {
+    expect(scheduled.events.map((event) => event.text)).toEqual(texts);
+    scheduled.start();
+  } finally {
+    scheduled.release();
   }
 }
 
@@ -208,7 +270,18 @@ describe("gateway server hooks", () => {
     await withGatewayServer(async ({ port }) => {
       await postHook(port, "wake", { text: "Ping" }, { status: 401, token: null });
 
-      await postHook(port, "wake", { text: "Ping", mode: "next-heartbeat" });
+      const unavailable = await postHook(
+        port,
+        "wake",
+        { text: "Deferred ping", mode: "next-heartbeat" },
+        { status: 503 },
+      );
+      await expect(unavailable.json()).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("No enabled ordinary scheduled session job"),
+      });
+      expect(peekSystemEvents(resolveMainKey())).toEqual([]);
+      await postHook(port, "wake", { text: "Ping", mode: "now" });
       const wakeEvents = await waitForSystemEvent();
       expect(wakeEvents.join("\n")).toContain("Ping");
       drainSystemEvents(resolveMainKey());
@@ -402,7 +475,7 @@ describe("gateway server hooks", () => {
     configureHooks();
     setHookAgentRoster();
 
-    await withGatewayServer(async ({ port }) => {
+    await withScheduledHookReceivers(async ({ port }) => {
       cronIsolatedRun.mockClear();
       for (const wakeMode of ["now", "next-heartbeat"] as const) {
         mockIsolatedRunAfterStartOnce({ status: "error", summary: "boom", delivered: false });
@@ -421,6 +494,8 @@ describe("gateway server hooks", () => {
         ]);
         if (wakeMode === "next-heartbeat") {
           expect(enqueueSessionEvent).not.toHaveBeenCalled();
+          await consumeScheduledHookNotices(resolveMainKey(), "main", events);
+          expect(peekSystemEvents(resolveMainKey())).toEqual([]);
         }
         enqueueSessionEvent.mockClear();
         drainSystemEvents(resolveMainKey());
@@ -428,7 +503,7 @@ describe("gateway server hooks", () => {
     });
   });
 
-  test("hands immediate wakes to session turns and leaves deferred wakes queued", async () => {
+  test("hands immediate wakes to session turns and defers notices to their scheduled receiver", async () => {
     configureHooks({
       allowRequestSessionKey: true,
       allowedAgentIds: ["main", "hooks"],
@@ -452,7 +527,7 @@ describe("gateway server hooks", () => {
     });
     setHookAgentRoster();
 
-    await withGatewayServer(async ({ port }) => {
+    await withScheduledHookReceivers(async ({ port }) => {
       for (const mode of ["now", "next-heartbeat"] as const) {
         enqueueSessionEvent.mockClear();
         const directKey = mode === "now" ? "agent:main:hook:wake:direct" : resolveMainKey();
@@ -461,12 +536,17 @@ describe("gateway server hooks", () => {
           mode,
           ...(mode === "now" ? { sessionKey: "hook:wake:direct" } : {}),
         };
+        if (mode === "next-heartbeat") {
+          enqueueSystemEvent("Direct wake", { sessionKey: directKey });
+        }
         const direct = await postHook(port, "wake", payload);
         await expect(direct.json()).resolves.toMatchObject({ eventOutcome: "queued" });
         const directDuplicate = await postHook(port, "wake", payload);
         await expect(directDuplicate.json()).resolves.toMatchObject({ eventOutcome: "coalesced" });
         const directEvents = peekSystemEventEntries(directKey);
-        expect(directEvents.map((event) => event.text)).toEqual(["Direct wake"]);
+        expect(directEvents.map((event) => event.text)).toEqual(
+          mode === "now" ? ["Direct wake"] : ["Direct wake", "Direct wake"],
+        );
         if (mode === "now") {
           expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("Direct wake", {
             agentId: "main",
@@ -481,6 +561,8 @@ describe("gateway server hooks", () => {
           });
         } else {
           expect(enqueueSessionEvent).not.toHaveBeenCalled();
+          await consumeScheduledHookNotices(directKey, "main", ["Direct wake"]);
+          expect(peekSystemEvents(directKey)).toEqual(["Direct wake"]);
         }
         drainSystemEvents(directKey);
         enqueueSessionEvent.mockClear();
@@ -507,6 +589,8 @@ describe("gateway server hooks", () => {
           });
         } else {
           expect(enqueueSessionEvent).not.toHaveBeenCalled();
+          await consumeScheduledHookNotices(mappedKey, "hooks", ["Mapped wake: Email"]);
+          expect(peekSystemEvents(mappedKey)).toEqual([]);
         }
         drainSystemEvents(mappedKey);
       }
@@ -532,6 +616,68 @@ describe("gateway server hooks", () => {
         });
         expect(peekSystemEventEntries(sessionKey)).toEqual(pending);
         drainSystemEvents(sessionKey);
+      }
+
+      for (const route of ["wake", "mapped-passive-wake"]) {
+        const sessionKey = route === "wake" ? resolveMainKey() : HOOKS_MAIN_SESSION_KEY;
+        for (let index = 0; index < 19; index++) {
+          enqueueSystemEvent(`Existing notice ${index}`, { sessionKey });
+        }
+        const payload = (text: string) =>
+          route === "wake" ? { text, mode: "next-heartbeat" } : { subject: text };
+        const admitted = await postHook(port, route, payload("At capacity"));
+        await expect(admitted.json()).resolves.toMatchObject({ eventOutcome: "queued" });
+        const pending = peekSystemEventEntries(sessionKey);
+        expect(pending).toHaveLength(20);
+        const duplicate = await postHook(port, route, payload("At capacity"));
+        await expect(duplicate.json()).resolves.toMatchObject({ eventOutcome: "coalesced" });
+        const refused = await postHook(port, route, payload("Overflow"), { status: 503 });
+        await expect(refused.json()).resolves.toMatchObject({
+          ok: false,
+          error: expect.stringContaining("queue is full"),
+        });
+        expect(peekSystemEventEntries(sessionKey)).toEqual(pending);
+        drainSystemEvents(sessionKey);
+      }
+
+      const socket = await connectWebchatClient({ port, scopes: ["operator.admin"] });
+      try {
+        const payload = { text: "Receiver revision", mode: "next-heartbeat" };
+        await postHook(port, "wake", payload);
+        const updated = await rpcReq(socket, "cron.update", {
+          id: "hook-receiver-main",
+          patch: { payload: { kind: "agentTurn", message: "Review revised notices." } },
+        });
+        expect(updated.ok).toBe(true);
+        const revised = await postHook(port, "wake", payload);
+        await expect(revised.json()).resolves.toMatchObject({ eventOutcome: "queued" });
+        expect(peekSystemEvents(resolveMainKey())).toEqual([
+          "Receiver revision",
+          "Receiver revision",
+        ]);
+        const reset = await rpcReq(socket, "sessions.reset", { key: resolveMainKey() });
+        expect(reset.ok).toBe(true);
+        const replaced = await postHook(port, "wake", payload);
+        await expect(replaced.json()).resolves.toMatchObject({ eventOutcome: "queued" });
+        await consumeScheduledHookNotices(resolveMainKey(), "main", ["Receiver revision"]);
+        expect(peekSystemEvents(resolveMainKey())).toEqual([]);
+        const disabled = await rpcReq(socket, "cron.update", {
+          id: "hook-receiver-hooks",
+          patch: { enabled: false },
+        });
+        expect(disabled.ok).toBe(true);
+        const unavailable = await postHook(
+          port,
+          "mapped-passive-wake",
+          { subject: "No receiver" },
+          { status: 503 },
+        );
+        await expect(unavailable.json()).resolves.toMatchObject({
+          error: expect.stringContaining("No enabled ordinary scheduled session job"),
+        });
+        expect(peekSystemEvents(HOOKS_MAIN_SESSION_KEY)).toEqual([]);
+      } finally {
+        socket.close();
       }
     });
 
