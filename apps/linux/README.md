@@ -160,10 +160,13 @@ alone therefore cannot prove Gateway installation or runtime switching.
 
 ### Windows bundled-runtime development
 
-Windows production staging requires an Authenticode-signed Windows artifact in
+Windows x64 and ARM64 production staging require matching Authenticode-signed artifacts in
 `scripts/lib/openclaw-bun.json`. With the current unsigned entry, ordinary staging
 writes an unavailable sentinel before making any release download. macOS Tauri
 keeps its existing runtime owner; Linux and macOS pin entries are unchanged.
+The fork release owns signing with the OpenClaw Foundation identity. Its verified
+release manifest generates each Windows pin; absent ARM64 artifacts are never
+replaced by x64 payloads, even on Windows hosts that support emulation.
 
 On a disposable Windows host, Git Bash must be on `PATH` alongside Node and Rust.
 An explicit local release directory can prepare an unsigned debug proof:
@@ -601,6 +604,9 @@ under Xvfb, including pointer input, snapshots, dashboard replacement, and nativ
 save/cancel, and uploads the synthetic screenshots and JSON results as the
 `linux-inline-browser` proof artifact. Bundles, the full graphical first-run
 scenarios, and AppImage runtime checks remain manual dispatch checks.
+Windows x64 and ARM64 runners verify native runtime materialization, Windows
+paths and service actions, power lifecycle, and desktop process ownership. These
+unit fixtures do not replace native proof with the matching fork Bun artifact.
 
 Manually dispatch `Linux App` on the branch to validate packaging before a
 release. It retains all pull-request checks, builds the `.deb` and AppImage,

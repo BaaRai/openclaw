@@ -103,6 +103,7 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
       "windows-unsigned",
       "windows-missing",
       "windows-local",
+      "windows-local-arm64",
       "windows-local-checksum",
       "windows-architecture",
       "windows-truncated-pe",
@@ -135,7 +136,7 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
           path.join(scripts, "stage-openclaw-bun.sh"),
         );
         const arches: [Arch, ...Arch[]] = windows
-          ? [scenario === "windows-arm64" ? "arm64" : "x64"]
+          ? [scenario.endsWith("-arm64") ? "arm64" : "x64"]
           : scenario === "cached" && process.platform === "darwin"
             ? ["arm64", "x64"]
             : [hostArch];
@@ -275,6 +276,7 @@ exit 2
             "windows-signed",
             "windows-arm64",
             "windows-local",
+            "windows-local-arm64",
             "windows-unsigned",
             "windows-missing",
           ].includes(scenario)
@@ -332,9 +334,14 @@ exit 2
           }
         }
         if (
-          !["cached", "download", "windows-signed", "windows-arm64", "windows-local"].includes(
-            scenario,
-          )
+          ![
+            "cached",
+            "download",
+            "windows-signed",
+            "windows-arm64",
+            "windows-local",
+            "windows-local-arm64",
+          ].includes(scenario)
         ) {
           expect(result.status).not.toBe(0);
           expect(result.stderr).toContain(

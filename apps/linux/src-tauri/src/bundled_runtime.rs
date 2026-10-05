@@ -646,6 +646,15 @@ mod tests {
             let manifest: Manifest = serde_json::from_value(value).unwrap();
             assert_eq!(validate_manifest(&manifest).is_ok(), accepted);
         }
+        let mut other_arch = original;
+        other_arch["arch"] = if cfg!(target_arch = "aarch64") {
+            "x64"
+        } else {
+            "arm64"
+        }
+        .into();
+        let manifest: Manifest = serde_json::from_value(other_arch).unwrap();
+        assert!(validate_manifest(&manifest).is_err());
         let runtime = fixture.seed().unwrap();
         assert!(runtime.bun.ends_with("bin/bun.exe"));
         assert!(!runtime.bun.to_string_lossy().starts_with(r"\\?\"));

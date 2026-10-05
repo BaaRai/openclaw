@@ -30,33 +30,36 @@ test("leaves macOS and FreeBSD Tauri runtime behavior unchanged", () => {
   }
 });
 
-const windows = { platform: "windows", arch: "x64" };
-const pin = {
-  tag: "unix-tag", commit: "unix-commit", revision: "unix-revision",
-  artifacts: { "windows-x64": { tag: "windows-tag", commit: "windows-commit", authenticodeSigned: false } },
-};
-
-test("does not admit absent or unsigned Windows payloads for download", () => {
-  assert.equal(runtimeIdentity({ ...pin, artifacts: {} }, windows), null);
-  assert.equal(runtimeIdentity(pin, windows), null);
-  assert.equal(runtimeIdentity({ ...pin, artifacts: { "windows-x64": { authenticodeSigned: "true" } } }, windows), null);
-});
-
-test("uses Windows provenance only after signed admission", () => {
-  const signed = { ...pin, artifacts: { "windows-x64": { ...pin.artifacts["windows-x64"], authenticodeSigned: true } } };
-  assert.deepEqual(runtimeIdentity(signed, windows), {
-    tag: "windows-tag", commit: "windows-commit", authenticodeSigned: true,
-  });
-  assert.throws(() => runtimeIdentity(signed, windows, "local-artifacts"), /explicitly unsigned/);
-  assert.deepEqual(runtimeIdentity(pin, { platform: "linux", arch: "x64" }), {
+for (const arch of ["x64", "arm64"]) {
+  const windows = { platform: "windows", arch };
+  const target = `windows-${arch}`;
+  const pin = {
     tag: "unix-tag", commit: "unix-commit", revision: "unix-revision",
-  });
-});
+    artifacts: { [target]: { tag: "windows-tag", commit: "windows-commit", authenticodeSigned: false } },
+  };
 
-test("marks local unsigned Windows proof without inheriting the Unix revision", () => {
-  assert.deepEqual(runtimeIdentity(pin, windows, "local-artifacts"), {
-    tag: "windows-tag", commit: "windows-commit", authenticodeSigned: false, testOnly: true,
+  test(`does not admit absent or unsigned Windows ${arch} payloads for download`, () => {
+    assert.equal(runtimeIdentity({ ...pin, artifacts: {} }, windows), null);
+    assert.equal(runtimeIdentity(pin, windows), null);
+    assert.equal(runtimeIdentity({ ...pin, artifacts: { [target]: { authenticodeSigned: "true" } } }, windows), null);
   });
-  assert.throws(() => runtimeIdentity(pin, { platform: "linux", arch: "x64" }, "local-artifacts"), /Windows target/);
-  assert.throws(() => runtimeIdentity({ ...pin, artifacts: {} }, windows, "local-artifacts"), /pinned Windows target/);
-});
+
+  test(`uses Windows ${arch} provenance only after signed admission`, () => {
+    const signed = { ...pin, artifacts: { [target]: { ...pin.artifacts[target], authenticodeSigned: true } } };
+    assert.deepEqual(runtimeIdentity(signed, windows), {
+      tag: "windows-tag", commit: "windows-commit", authenticodeSigned: true,
+    });
+    assert.throws(() => runtimeIdentity(signed, windows, "local-artifacts"), /explicitly unsigned/);
+    assert.deepEqual(runtimeIdentity(pin, { platform: "linux", arch: "x64" }), {
+      tag: "unix-tag", commit: "unix-commit", revision: "unix-revision",
+    });
+  });
+
+  test(`marks local unsigned Windows ${arch} proof without inheriting the Unix revision`, () => {
+    assert.deepEqual(runtimeIdentity(pin, windows, "local-artifacts"), {
+      tag: "windows-tag", commit: "windows-commit", authenticodeSigned: false, testOnly: true,
+    });
+    assert.throws(() => runtimeIdentity(pin, { platform: "linux", arch: "x64" }, "local-artifacts"), /Windows target/);
+    assert.throws(() => runtimeIdentity({ ...pin, artifacts: {} }, windows, "local-artifacts"), /pinned Windows target/);
+  });
+}

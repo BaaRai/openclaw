@@ -296,8 +296,9 @@ The Tauri companion in `apps/linux` is separate from Windows Hub. Its Windows
 bundled-runtime path requires a Windows fork artifact marked Authenticode-signed
 in the shared release pin. An unsigned or missing artifact leaves that path
 unavailable; there is no user setting that enables it. The current Windows x64
-entry is unsigned preparation data. Windows ARM64 remains unavailable until the
-fork supplies an admitted artifact for it.
+entry is unsigned preparation data. Both x64 and ARM64 use this admission rule;
+each requires its matching fork artifact and generated pin entry. An absent
+ARM64 artifact stays unavailable rather than selecting an x64 executable.
 
 When an artifact is admitted, fresh local setup installs a private Node-based CLI
 from the selected Stable or Beta channel, then uses the canonical CLI to install
@@ -319,7 +320,12 @@ those still referenced by a running service. Windows may keep executable files
 open; the canonical service owner stops the old process before changing its
 Scheduled Task definition.
 
-Authenticode establishes publisher identity and file integrity; it does not
+The fork release signs both Windows architectures with the OpenClaw Foundation
+Azure Artifact Signing identity. The release owner verifies a valid timestamped
+signature with subject
+`CN=OpenClaw Foundation, O=OpenClaw Foundation, L=Mill Valley, S=California, C=US`
+before generating the executable and archive hashes. Authenticode establishes
+publisher identity and file integrity; it does not
 promise SmartScreen reputation or a warning-free first launch. The app and
 installer have their own signing requirements. Local unsigned debug proof does
 not establish SmartScreen behavior for a downloaded release.
