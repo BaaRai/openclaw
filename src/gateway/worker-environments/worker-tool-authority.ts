@@ -1,6 +1,6 @@
-import { hasAnyAuthProfileStoreSourceAsync } from "../../agents/auth-profiles/source-check.js";
 import { getAgentToolExecutionLocation } from "../../agents/agent-tool-metadata.js";
 import { createOpenClawCodingToolsInternalAsync } from "../../agents/agent-tools.js";
+import { hasAnyAuthProfileStoreSourceAsync } from "../../agents/auth-profiles/source-check.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
 import { resolveConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
