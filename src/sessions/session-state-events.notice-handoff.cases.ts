@@ -12,7 +12,7 @@ import {
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   acknowledgeSessionStateNotices,
-  recordSessionStateEvent,
+  recordSessionStateEventAsync,
   sweepSessionStateWatchNotices,
 } from "./session-state-events.js";
 import {
@@ -40,12 +40,12 @@ export function registerSessionStateNoticeHandoffCases(
   noticeHandoff: NoticeHandoff,
   cfg: OpenClawConfig,
 ) {
-  it("freezes one notice watermark while material events continue", () => {
+  it("freezes one notice watermark while material events continue", async () => {
     const database = createDatabaseOptions();
-    seedChild(database);
-    const first = recordSessionStateEvent(eventInput(), database)!;
-    recordSessionStateEvent(eventInput(), database);
-    const third = recordSessionStateEvent(eventInput(), database)!;
+    await seedChild(database);
+    const first = (await recordSessionStateEventAsync(eventInput(), database))!;
+    await recordSessionStateEventAsync(eventInput(), database);
+    const third = (await recordSessionStateEventAsync(eventInput(), database))!;
 
     expect(peekSystemEventEntries(watcher)).toHaveLength(1);
     expect(readCursor(database)).toEqual({
@@ -57,9 +57,9 @@ export function registerSessionStateNoticeHandoffCases(
 
   it("opens a fresh notice for material work interleaved before ack", async () => {
     const database = createDatabaseOptions();
-    seedChild(database);
-    const frozen = recordSessionStateEvent(eventInput(), database)!;
-    const interleaved = recordSessionStateEvent(eventInput(), database)!;
+    await seedChild(database);
+    const frozen = (await recordSessionStateEventAsync(eventInput(), database))!;
+    const interleaved = (await recordSessionStateEventAsync(eventInput(), database))!;
     const watcherStorePath = peekSystemEventEntries(watcher)[0]?.sessionStorePath ?? null;
     resetSystemEventsForTest();
 
@@ -91,9 +91,9 @@ export function registerSessionStateNoticeHandoffCases(
   it("does not reopen an acked notice for log-only events or during sweep", async () => {
     const database = createDatabaseOptions();
     await createWatcherSession(database);
-    seedChild(database);
-    const material = recordSessionStateEvent(eventInput(), database)!;
-    recordSessionStateEvent(
+    await seedChild(database);
+    const material = (await recordSessionStateEventAsync(eventInput(), database))!;
+    await recordSessionStateEventAsync(
       eventInput({ kind: "run_completed", actorType: "system", runId: "run-log-only" }),
       database,
     );
@@ -119,16 +119,19 @@ export function registerSessionStateNoticeHandoffCases(
   it("hands active watcher notices to ordinary turns while nested notices remain passive", async () => {
     vi.useFakeTimers();
     const database = createDatabaseOptions();
-    seedChild(database, nestedWatcher);
+    await seedChild(database, nestedWatcher);
 
-    recordSessionStateEvent(eventInput({ watcherSessionKeys: [nestedWatcher] }), database);
+    await recordSessionStateEventAsync(
+      eventInput({ watcherSessionKeys: [nestedWatcher] }),
+      database,
+    );
     await vi.advanceTimersByTimeAsync(21_000);
     expect(peekSystemEventEntries(nestedWatcher)).toHaveLength(1);
     expect(noticeHandoff.capture).not.toHaveBeenCalled();
     expect(noticeHandoff.enqueue).not.toHaveBeenCalled();
 
-    seedChild(database, watcher);
-    recordSessionStateEvent(eventInput(), database);
+    await seedChild(database, watcher);
+    await recordSessionStateEventAsync(eventInput(), database);
     await vi.advanceTimersByTimeAsync(21_000);
     expect(noticeHandoff.enqueue).toHaveBeenCalledExactlyOnceWith(
       expect.stringContaining(`Session "${child}" changed`),
@@ -177,9 +180,9 @@ export function registerSessionStateNoticeHandoffCases(
   it("acknowledges adopted notices without cancelling their claimed occurrence when a followup is due", async () => {
     vi.useFakeTimers();
     const database = createDatabaseOptions();
-    seedChild(database);
-    const frozen = recordSessionStateEvent(eventInput(), database)!;
-    const interleaved = recordSessionStateEvent(eventInput(), database)!;
+    await seedChild(database);
+    const frozen = (await recordSessionStateEventAsync(eventInput(), database))!;
+    const interleaved = (await recordSessionStateEventAsync(eventInput(), database))!;
     const completion = createDeferred<{
       status: "completed";
       executionStarted: boolean;
@@ -221,8 +224,8 @@ export function registerSessionStateNoticeHandoffCases(
 
   it("does not acknowledge a replacement watcher store while worker admission is pending", async () => {
     const database = createDatabaseOptions();
-    seedChild(database);
-    recordSessionStateEvent(eventInput(), database);
+    await seedChild(database);
+    await recordSessionStateEventAsync(eventInput(), database);
     const before = readCursor(database);
     const originalPath = peekSystemEventEntries(watcher)[0]?.sessionStorePath;
     expect(originalPath).toBeTruthy();
