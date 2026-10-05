@@ -89,7 +89,7 @@ export function installDeferredCronWakeTests(
         );
         completed();
       }
-      const expectedReceiverId = alternatives.map((entry) => entry.id).sort()[0];
+      const expectedReceiverId = alternatives.map((entry) => entry.id).toSorted()[0];
       const deferHookWake = cronState.deferHookWake;
       assert(deferHookWake);
       phase("capture target");

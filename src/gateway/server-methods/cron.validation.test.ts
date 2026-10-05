@@ -58,7 +58,6 @@ import {
   pluginEntries,
   telegramConfig,
   telegramSlackConfig,
-  telegramDeliveryWithSlackFailure,
   telegramDisabledAccountConfig,
   msteamsConfig,
   slackSynologyConfig,

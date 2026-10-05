@@ -145,6 +145,7 @@ it.each(["own", "foreign", "operator"] as const)(
         "scheduled admission",
       ).admit("gateway", params.runId);
       await params.onExecutionStarted?.();
+      await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
       params.onExecutionPhase?.({ phase: "model_call_started" });
       if (scenario !== "foreign") {
         expect(admitted.admissionSource).toBe(

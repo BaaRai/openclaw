@@ -467,6 +467,7 @@ describe("claws cli", () => {
       config: { agents: { entries: { "demo-agent": {} } } },
       configRevisionHash: "applied",
       appliedConfigHash: "applied",
+      reloadSettled: true,
     });
     vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(20_000);
     const [, options] = mocks.applyClawAddPlan.mock.calls[0]!;
@@ -874,6 +875,7 @@ describe("claws cli", () => {
       config: { agents: { entries: { "demo-agent": {} } } },
       configRevisionHash: "applied",
       appliedConfigHash: "applied",
+      reloadSettled: true,
     });
     vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(20_000);
     const [plan, , options] = mocks.applyClawUpdatePlan.mock.calls[0]!;

@@ -85,6 +85,7 @@ it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgra
             const admittedRunContext = await admission.admit("gateway", params.runId);
             params.onExecutionPhase?.({ phase: "model_call_started" });
             await params.onExecutionStarted?.();
+            await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
             const workspace = await resolveAttemptWorkspaceSandbox({
               ...params,
               admittedRunContext,

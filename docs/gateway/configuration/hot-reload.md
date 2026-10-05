@@ -42,6 +42,11 @@ shows as unapplied config. `openclaw plugins reload <id> --wait` also lets you
 watch a timed-out replacement finish. A Gateway restart applies the saved config
 in full.
 
+`config.get` also reports `reloadSettled`, a live readiness fact. Matching saved
+and applied revisions can precede reload cleanup. Claw automation setup waits for
+the requested agent, matching revisions, and `reloadSettled: true` before sending
+its mutation; the Gateway still rechecks authority before committing it.
+
 Direct file edits are treated as untrusted until they validate. The source's file adapter waits
 for editor temp-write/rename churn to settle, reads the final file, and rejects
 invalid external edits without rewriting `openclaw.json`. OpenClaw-owned config

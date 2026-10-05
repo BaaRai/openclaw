@@ -90,6 +90,7 @@ describe("script follow-up handoff", () => {
       receiver,
       target,
       expect.any(Function),
+      undefined,
     );
     expect(fixture.enqueueSessionEvent).not.toHaveBeenCalled();
     receiver.enabled = false;
