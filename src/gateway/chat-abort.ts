@@ -29,7 +29,6 @@ import { removeChatAbortControllerEntry } from "./chat-abort-lifecycle-internal.
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
-import { projectLiveAssistantBufferedText } from "./live-chat-projector.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import {
   createChatAbortMarker,
@@ -77,10 +76,7 @@ export function projectInFlightRunSnapshot(params: {
   sessionAbortable?: boolean;
 }): InFlightRunSnapshot {
   const run = params.chatRunState.runs.get(params.runId);
-  const projected = projectLiveAssistantBufferedText(
-    params.chatRunState.resolveBuffer(params.runId).text,
-    { suppressLeadFragments: true },
-  );
+  const projected = params.chatRunState.resolveBuffer(params.runId);
   const plan = run?.planSnapshot;
   const events = run?.progressSnapshot?.events;
   return {

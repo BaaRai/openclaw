@@ -32,6 +32,7 @@ type TranscriptUsage = Pick<
 >;
 
 type TextTurnTranscriptContext = {
+  runId?: string;
   inputProvenance?: InputProvenance;
   body: string;
   transcriptBody?: string;
@@ -214,10 +215,11 @@ async function persistTextTurnTranscript(
     {
       config: params.config,
       cwd: params.sessionCwd,
+      runId: params.runId,
       messages,
       publishWhen: "always",
       touchSessionEntry: true,
-      updateMode: "file-only",
+      updateMode: params.runId ? "inline" : "file-only",
       expectedSessionId:
         params.expectedSessionId ??
         (params.sessionStore && params.storePath ? params.sessionId : undefined),
