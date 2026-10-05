@@ -54,7 +54,6 @@ it("renders restart recovery ownership changes as session guidance", async () =>
   try {
     const reply = await handleReplyAgentRunError(createRestartRecoveryClaimChangedError(), {
       resolveVisibleReplyDelivery: async () => false,
-      isHeartbeat: false,
       replyExpectation: "required",
       isRestartRecoveryArmed: async () => false,
       replyOperation,
