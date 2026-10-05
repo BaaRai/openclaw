@@ -74,8 +74,10 @@ export async function captureSessionEventTargetForHost(
   const generation = getAgentEventLifecycleGeneration();
   const caller = getGatewayToolCallerIdentity();
   const callerAgentMatches = caller?.agentId === agentId;
-  const callerMatches =
-    callerAgentMatches && resolveSessionEventKey(agentId, caller.sessionKey) === sessionKey;
+  if (callerAgentMatches) {
+    // Validate producer ownership even when routing selects another session of this agent.
+    resolveSessionEventKey(agentId, caller.sessionKey);
+  }
   // Routing can remap a Cron or owner-DM completion without widening its delivery policy.
   const deliver =
     callerAgentMatches && caller?.operationalRunInstance
@@ -115,7 +117,7 @@ export async function captureSessionEventTargetForHost(
       },
     );
     let toolsAllow: string[] | undefined;
-    if (caller && callerMatches) {
+    if (caller && callerAgentMatches) {
       assertCaptureCurrent();
       if (caller.sessionEventToolsAllow) {
         if (
