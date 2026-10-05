@@ -2,14 +2,19 @@
 use crate::cli::{output_tail, OpenClawCli};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 const MARKER: &str = "# OpenClaw-Tauri runtime v1 ";
 const CHANGED: &str = "The Gateway runtime or service definition changed. Its current selection was preserved; inspect it before retrying.";
 const PAUSED: &str = "The Gateway is paused. Start it before choosing Use bundled runtime.";
@@ -23,18 +28,21 @@ pub(crate) struct BundledRuntime {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg(unix)]
 pub(crate) enum Purpose {
     Gateway,
     Browser,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg(unix)]
 struct Launcher {
     purpose: Purpose,
     runtime: BundledRuntime,
     entry: PathBuf,
 }
 
+#[cfg(unix)]
 struct LauncherFile {
     path: PathBuf,
     bytes: Vec<u8>,
@@ -76,9 +84,8 @@ impl Observation {
     }
 
     pub(crate) fn uses_runtime_path(&self, expected: &Path) -> bool {
-        self.runtime_path().is_some_and(|path| {
-            path == expected || fs::canonicalize(path).ok().as_deref() == Some(expected)
-        })
+        self.runtime_path()
+            .is_some_and(|path| same_path(path, expected))
     }
 
     pub(crate) fn is_current(&self, runtime: &BundledRuntime) -> bool {
@@ -173,7 +180,7 @@ impl Observation {
             && self.text("/service/runtimeIntent/pin/runtime") == Some("bun")
             && self
                 .text("/service/runtimeIntent/pin/path")
-                .is_some_and(|path| Path::new(path) == runtime.bun)
+                .is_some_and(|path| same_path(Path::new(path), &runtime.bun))
             && self.flag("/service/loaded") == Some(true)
             && self.text("/service/targetRole") == Some("target")
             && self.text("/service/runtime/status") == Some("running")
@@ -203,7 +210,7 @@ impl Observation {
             .unwrap_or_else(|| {
                 if path
                     .and_then(Path::file_name)
-                    .is_some_and(|name| name == "bun")
+                    .is_some_and(|name| name == "bun" || name == "bun.exe")
                 {
                     "bun"
                 } else {
@@ -231,6 +238,7 @@ pub(crate) fn fresh(
     runtime: &BundledRuntime,
     is_current: &dyn Fn() -> bool,
 ) -> Result<(), String> {
+    #[cfg(unix)]
     let launcher = read_launcher(cli)?;
     let confirmed = inspect(cli)?;
     perform(
@@ -241,6 +249,7 @@ pub(crate) fn fresh(
         is_current,
         Duration::from_secs(600),
     )?;
+    #[cfg(unix)]
     if let Some(launcher) = launcher {
         check_current(is_current)?;
         publish_launcher(&launcher, runtime, Purpose::Gateway).map_err(|error| {
@@ -383,6 +392,7 @@ fn checked_output(mut command: Command, label: &str) -> Result<Output, String> {
 }
 
 /// This marker describes a launcher only. It never grants permission to mutate a service.
+#[cfg(unix)]
 pub(crate) fn bind_runtime(
     cli: &OpenClawCli,
     runtime: &BundledRuntime,
@@ -394,6 +404,7 @@ pub(crate) fn bind_runtime(
     publish_launcher(&launcher, runtime, purpose)
 }
 
+#[cfg(unix)]
 fn read_launcher(cli: &OpenClawCli) -> Result<Option<LauncherFile>, String> {
     let Some(path) = cli.managed_wrapper() else {
         return Ok(None);
@@ -442,6 +453,7 @@ fn read_launcher(cli: &OpenClawCli) -> Result<Option<LauncherFile>, String> {
     Ok(Some(LauncherFile { path, bytes, entry }))
 }
 
+#[cfg(unix)]
 fn publish_launcher(
     original: &LauncherFile,
     runtime: &BundledRuntime,
@@ -486,7 +498,8 @@ fn validate_runtime(runtime: &BundledRuntime) -> Result<(), String> {
     for path in std::iter::once(&runtime.bun).chain(runtime.sqlite.iter()) {
         if !path.is_absolute()
             || !path.is_file()
-            || fs::canonicalize(path).map_err(|error| error.to_string())? != *path
+            || normalized_path(&fs::canonicalize(path).map_err(|error| error.to_string())?)
+                != normalized_path(path)
         {
             return Err("Bundled runtime paths must be immutable, absolute files.".into());
         }
@@ -494,14 +507,33 @@ fn validate_runtime(runtime: &BundledRuntime) -> Result<(), String> {
     Ok(())
 }
 
+fn normalized_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        crate::cli::ordinary_windows_path(path)
+    }
+    #[cfg(not(windows))]
+    path.to_path_buf()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    normalized_path(left) == normalized_path(right)
+        || matches!((fs::canonicalize(left), fs::canonicalize(right)), (Ok(left), Ok(right)) if left == right)
+}
+
 fn quote(path: &Path) -> Result<String, String> {
     let value = path
         .to_str()
         .filter(|value| !value.contains(['\n', '\r', '\0']))
         .ok_or("Runtime paths must be single-line UTF-8.")?;
-    Ok(format!("'{}'", value.replace('\'', "'\\''")))
+    #[cfg(windows)]
+    let escaped = value.replace('\'', "''");
+    #[cfg(not(windows))]
+    let escaped = value.replace('\'', "'\\''");
+    Ok(format!("'{escaped}'"))
 }
 
+#[cfg(unix)]
 fn render(launcher: &Launcher) -> Result<Vec<u8>, String> {
     let sqlite = launcher
         .runtime
@@ -515,6 +547,7 @@ fn render(launcher: &Launcher) -> Result<Vec<u8>, String> {
         quote(&launcher.runtime.bun)?, quote(&launcher.entry)?).into_bytes())
 }
 
+#[cfg(unix)]
 fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_file() || metadata.len() > 65536 {
@@ -531,6 +564,42 @@ fn check_current(is_current: &dyn Fn() -> bool) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "runtime_action_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_runtime_paths_and_recovery_preserve_literal_arguments() {
+        let root = std::env::temp_dir().join(format!("openclaw-runtime-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let bun = root.join("bun.exe");
+        fs::write(&bun, "synthetic runtime").unwrap();
+        let runtime = BundledRuntime {
+            bun: normalized_path(&fs::canonicalize(&bun).unwrap()),
+            sqlite: None,
+        };
+        assert!(validate_runtime(&runtime).is_ok());
+        assert!(same_path(&runtime.bun, &fs::canonicalize(&bun).unwrap()));
+        assert_eq!(
+            quote(Path::new(r"C:\Peter's files\bun.exe")).unwrap(),
+            r"'C:\Peter''s files\bun.exe'"
+        );
+        let observed = Observation(serde_json::json!({ "service": {
+            "command": { "programArguments": [r"C:\Peter's files\bun.exe"] },
+            "runtimeIntent": { "status": "known", "revision": "pin", "definition": "task" }
+        }}));
+        assert_eq!(
+            observed.previous_runtime_command(),
+            r"openclaw gateway install --force --runtime bun --runtime-path 'C:\Peter''s files\bun.exe'"
+        );
+        assert_eq!(
+            serde_json::to_value(observed.expected_pin().unwrap()).unwrap(),
+            serde_json::json!({"revision":"pin","definition":"task"})
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}

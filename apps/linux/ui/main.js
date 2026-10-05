@@ -94,7 +94,10 @@ function render({
   elements.installHint.textContent =
     firstRunBuild?.platform === "freebsd"
       ? "Installs the CLI in ~/.openclaw using your system Node.js and npm."
-      : "Installs OpenClaw and its managed runtime in ~/.openclaw.";
+      : firstRunBuild?.platform === "windows"
+        ? "Installs Stable or Beta in ~/.openclaw. Development requires an existing source CLI."
+        : "Installs OpenClaw and its managed runtime in ~/.openclaw.";
+  elements.channel.querySelector('[value="dev"]').disabled = firstRunBuild?.platform === "windows";
   show(elements.installControls, showInstall);
   show(elements.actionControls, false);
   show(elements.editConnection, false);
@@ -296,7 +299,7 @@ async function connect() {
       firstRunPhase = snapshot.phase;
       firstRunBuild = await invoke("build_info").catch(() => null);
       if (firstRunBuild?.releaseBuild === false) {
-        elements.channel.value = "dev";
+        elements.channel.value = firstRunBuild.platform === "windows" ? "stable" : "dev";
       }
       renderWelcome();
     } else if (snapshot.phase === "remoteError") {
@@ -410,7 +413,9 @@ async function continueLocalSetup() {
       description:
         firstRunBuild?.platform === "freebsd"
           ? "Install a compatible system Node.js and npm before installing the CLI. Then start your Gateway with the package service or openclaw gateway run."
-          : "This development build works best with a matching OpenClaw release channel.",
+          : firstRunBuild?.platform === "windows"
+            ? "Choose Stable or Beta. To use a development checkout, install its CLI separately and connect to its Gateway."
+            : "This development build works best with a matching OpenClaw release channel.",
       eyebrow: "FIRST-RUN SETUP",
       showInstall: true,
       title: "Choose a release channel",

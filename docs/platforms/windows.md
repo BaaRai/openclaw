@@ -290,6 +290,46 @@ profile, and state/config overrides. Stop the Gateway through its owner before
 replacing the package, run the newly installed Doctor, then start and verify the
 Gateway. Do not lower schema markers or run an older build against migrated data.
 
+## Tauri companion runtime preparation
+
+The Tauri companion in `apps/linux` is separate from Windows Hub. Its Windows
+bundled-runtime path requires a Windows fork artifact marked Authenticode-signed
+in the shared release pin. An unsigned or missing artifact leaves that path
+unavailable; there is no user setting that enables it. The current Windows x64
+entry is unsigned preparation data. Windows ARM64 remains unavailable until the
+fork supplies an admitted artifact for it.
+
+When an artifact is admitted, fresh local setup installs a private Node-based CLI
+from the selected Stable or Beta channel, then uses the canonical CLI to install
+the Gateway on bundled Bun. Windows fresh setup does not offer Development; an
+existing source-installed CLI can still be used. Node remains CLI and installation
+tooling. Existing Gateways keep their runtime across startup, reconnects, and app
+updates. Choose **Use bundled runtime…** and confirm the displayed current runtime
+to change one. The CLI checks the captured runtime pin and service definition
+under its native service lock. Paused, changed, or unverifiable services refuse
+without automatic migration or rollback.
+
+The app decodes verified `bun.exe` bytes into an immutable directory under its
+account state directory, normally
+`%USERPROFILE%\.openclaw\tools\desktop-runtime\<tag>-<manifest-hash>\bin\bun.exe`.
+A file lock serializes publication, reparse points are rejected, and staged files
+are flushed and closed before a rename within the same directory. Published
+runtime directories are never overwritten or automatically removed, including
+those still referenced by a running service. Windows may keep executable files
+open; the canonical service owner stops the old process before changing its
+Scheduled Task definition.
+
+Authenticode establishes publisher identity and file integrity; it does not
+promise SmartScreen reputation or a warning-free first launch. The app and
+installer have their own signing requirements. Local unsigned debug proof does
+not establish SmartScreen behavior for a downloaded release.
+
+For complete uninstall, quit the companion and run the canonical uninstaller
+using Node and a CLI package outside the state directory, as in the
+[independent npx uninstall flow](/install/uninstall). A Windows CLI cannot remove
+its own open runtime image from that directory; the uninstaller reports partial
+cleanup rather than claiming success.
+
 ## WSL2 Gateway
 
 WSL2 remains the most Linux-compatible Gateway runtime on Windows. Windows

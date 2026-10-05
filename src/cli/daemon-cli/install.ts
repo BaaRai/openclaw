@@ -269,6 +269,11 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
   let pinnedRuntimePath = opts.runtimePath ?? (opts.runtime ? undefined : pinSnapshot.pin?.path);
   const effectiveServiceEnv = mergeGatewayServiceEnv(process.env, existingServiceCommand);
   const assertWritable = async () => {
+    // Windows manual installs retain their existing repair/fallback contract.
+    // Guarded desktop selection requires explicit native-definition admission.
+    if (process.platform === "win32" && opts.expectedRuntimePin === undefined) {
+      return true;
+    }
     try {
       // Drop-ins can redirect effective state away from the files this install will publish.
       for (const environment of [effectiveServiceEnv, installEnv]) {
@@ -560,7 +565,10 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     install: async () => {
       if (
         isUpdateOwnedGatewayServiceCommand() ||
-        isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS)
+        isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS) ||
+        (process.platform === "win32" &&
+          opts.expectedRuntimePin !== undefined &&
+          existingServiceCommand !== null)
       ) {
         definitionBackup = await reconcileGatewayServiceDefinition({
           env: installEnv,
