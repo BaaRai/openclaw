@@ -84,6 +84,7 @@ function createService(storePath: string, deps: Partial<CronServiceDeps> = {}) {
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
     enqueueSessionEvent: vi.fn(),
+    runSessionEvent: vi.fn(async () => ({ status: "ok" as const })),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     ...deps,
   });
