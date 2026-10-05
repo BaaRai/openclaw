@@ -230,8 +230,8 @@ describe("background completion delivery authority", () => {
     });
     const previousConfig = getRuntimeConfigSnapshot();
     setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
-    const runId = `completion-delivery-${row.source.replaceAll(" ", "-")}`;
-    const params = createMinimalRunAgentTurnParams({ opts: { runId } });
+    const completionRunId = `completion-delivery-${row.source.replaceAll(" ", "-")}`;
+    const params = createMinimalRunAgentTurnParams({ opts: { runId: completionRunId } });
     if (row.source !== "ordinary") {
       params.followupRun.run.internalEventExecution = {
         deliver: row.deliver,
@@ -273,7 +273,7 @@ describe("background completion delivery authority", () => {
         });
       }
     } finally {
-      actualRegistry.clearAgentRunContext(runId);
+      actualRegistry.clearAgentRunContext(completionRunId);
       readEntry.mockRestore();
       if (previousConfig) {
         setRuntimeConfigSnapshot(previousConfig);

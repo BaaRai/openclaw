@@ -21,6 +21,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import {
   activateMcpLoopbackClientGrantCapture,
   mintMcpLoopbackClientGrant,
@@ -190,12 +191,14 @@ it("hands off background completion from an internal-event MCP grant to its orig
     {
       sessionId,
       updatedAt: 1,
-      deliveryContext: {
-        channel: "telegram",
-        to: topic,
-        accountId: "work",
-        threadId: 42,
-      },
+      delivery: normalizeSessionDeliveryState({
+        context: {
+          channel: "telegram",
+          to: topic,
+          accountId: "work",
+          threadId: 42,
+        },
+      }),
     },
   );
   const notified = createDeferred<{
