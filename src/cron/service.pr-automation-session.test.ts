@@ -61,6 +61,7 @@ it.each(["autoFix", "autoMerge"] as const)(
       ).admit("gateway", params.runId);
       expectDefined(resolveAdmittedRunActiveAssertion(admitted), "active admission assertion")();
       await params.onExecutionStarted?.();
+      await params.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
       params.onExecutionPhase?.({ phase: "model_call_started" });
       const target = readPrAutomationRecipeTarget(params.prompt);
       finalEffect(
@@ -71,7 +72,11 @@ it.each(["autoFix", "autoMerge"] as const)(
     });
     try {
       await fixture.execution.update(fixture.selected.id, { enabled: true });
-      expect(await fixture.tick()).toMatchObject({ jobId: fixture.selected.id, status: "ok" });
+      const firstEvent = await fixture.tick();
+      expect(firstEvent, firstEvent.error).toMatchObject({
+        jobId: fixture.selected.id,
+        status: "ok",
+      });
       expect(finalEffect.mock.calls).toEqual([
         [{ owner: "fixture-org", repo: "fixture-repo", number: 41 }, SESSION_ID],
       ]);
