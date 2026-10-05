@@ -2672,10 +2672,8 @@ describe("cron method validation", () => {
         params,
         caller ? callerClient(caller) : undefined,
       );
-      expect(context.cron.wake).toHaveBeenCalledWith({
-        ...expected,
-        commitGuard: expect.any(Function),
-      });
+      const expectedWake = { ...expected, commitGuard: expect.any(Function) };
+      expect(context.cron.wake).toHaveBeenCalledWith(expectedWake);
       expect(context.cron.prepareWake).toHaveBeenCalledOnce();
       expect(context.cron.prepareWake.mock.invocationCallOrder[0]).toBeLessThan(
         context.cron.wake.mock.invocationCallOrder[0]!,
