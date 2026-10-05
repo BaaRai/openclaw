@@ -223,6 +223,7 @@ it.skipIf(process.platform === "win32").each([
       sessionKey,
       runSessionKey: sessionKey,
       runId: RUN_ID,
+      inheritRuntimeToolAllowlist: true,
       workspaceDir: tmpDir,
       cwd: tmpDir,
       exec: {
