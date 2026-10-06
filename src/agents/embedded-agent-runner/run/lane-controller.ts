@@ -274,29 +274,6 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       });
     }
   };
-  const enqueue = <T>(
-    params: Pick<LaneParams, "enqueue">,
-    lane: string,
-    task: () => Promise<T>,
-    opts: CommandQueueEnqueueOptions,
-  ): Promise<T> => {
-    if (!params.enqueue) {
-      noteLaneWaitIfBusy(lane);
-    }
-    // Global capacity is held until raw task settlement; operation timeouts cannot release it.
-    const queueOptions = withRunLaneWait({
-      taskIdentity,
-      abortSignal,
-      maxConcurrent: opts.maxConcurrent,
-      priority: opts.priority,
-      onQueued: opts.onQueued,
-      onWait: opts.onWait,
-      warnAfterMs: opts.warnAfterMs,
-    });
-    return params.enqueue
-      ? params.enqueue(task, queueOptions)
-      : enqueueCommandInLane(lane, task, queueOptions);
-  };
   const enqueueGlobal = (
     task: () => Promise<EmbeddedAgentRunResult>,
     opts?: CommandQueueEnqueueOptions,
@@ -328,18 +305,6 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       if (ownsCapacityWait) {
         ownedGlobalCapacityWaits -= 1;
       }
-    };
-    const globalOpts: CommandQueueEnqueueOptions = {
-      ...opts,
-      maxConcurrent: options.getParams().swarmExecutionLane?.maxConcurrent,
-      priority: isBackgroundWorkLane(options.globalLane)
-        ? "background"
-        : sessionLanePolicy.priority,
-      onQueued: () => {
-        beginCapacityWait();
-        noteCapacityWait();
-        opts?.onQueued?.();
-      },
     };
     const taskWithCurrentLifecycle = async () => {
       endCapacityWait();
@@ -444,12 +409,30 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
     };
     let queuedRun: Promise<EmbeddedAgentRunResult>;
     try {
-      queuedRun = enqueue(
-        options.getParams(),
-        options.globalLane,
-        () => trackGlobalExecution(taskWithCurrentLifecycle()),
-        globalOpts,
-      );
+      const { enqueue } = options.getParams();
+      if (!enqueue) {
+        noteLaneWaitIfBusy(options.globalLane);
+      }
+      // Global capacity is held until raw task settlement; operation timeouts cannot release it.
+      const queueOptions = withRunLaneWait({
+        taskIdentity,
+        abortSignal,
+        maxConcurrent: options.getParams().swarmExecutionLane?.maxConcurrent,
+        priority: isBackgroundWorkLane(options.globalLane)
+          ? "background"
+          : sessionLanePolicy.priority,
+        onQueued: () => {
+          beginCapacityWait();
+          noteCapacityWait();
+          opts?.onQueued?.();
+        },
+        onWait: opts?.onWait,
+        warnAfterMs: opts?.warnAfterMs,
+      });
+      const trackedTask = () => trackGlobalExecution(taskWithCurrentLifecycle());
+      queuedRun = enqueue
+        ? enqueue(trackedTask, queueOptions)
+        : enqueueCommandInLane(options.globalLane, trackedTask, queueOptions);
     } catch (error) {
       finishGlobalLaneAdmission();
       throw error;
