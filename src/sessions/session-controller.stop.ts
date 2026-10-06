@@ -93,8 +93,7 @@ export function captureSessionControllerStop(params: {
     ...[...inputs].map(captureSessionControllerSourceSettlement),
     ...[...operations].map((operation) => operation.ownerSettlement),
   ];
-  // A routing snapshot may never select this owner. Do not retain observers on
-  // unrelated long-lived producers until a caller actually joins their receipt.
+  // Defer the aggregate receipt so unselected routing snapshots retain no producer observers.
   let settled: Promise<void> | undefined;
   return Object.freeze({
     inputs: Object.freeze([...inputs]),
@@ -114,21 +113,15 @@ export function captureSessionControllerStop(params: {
 /** Request-local selection for a target discovered by asynchronous routing. */
 export function captureSessionControllerStopCandidates() {
   return [...sessionControllers.values()].flatMap((entry) => {
-    // Storeless aliases such as `global` overlap across agents. Group the captured
-    // resources by their admitted agent so a mixed transitional entry cannot give
-    // one agent Stop authority over a peer's operation or queued input.
+    // Storeless aliases such as `global` overlap agents; group by agent for Stop authority.
     const resources = new Map<
       string | undefined,
       { inputs: SessionControllerInput[]; operations: ReplyOperation[] }
     >();
     const group = (agentId: string | undefined) => {
-      const existing = resources.get(agentId);
-      if (existing) {
-        return existing;
-      }
-      const created = { inputs: [], operations: [] };
-      resources.set(agentId, created);
-      return created;
+      const captured = resources.get(agentId) ?? { inputs: [], operations: [] };
+      resources.set(agentId, captured);
+      return captured;
     };
     for (const input of entry.mailbox?.entries ?? []) {
       if (input.phase !== "consumed") {
@@ -180,61 +173,28 @@ type SessionStopPolicy = Readonly<{
   fireCommandHook: boolean;
 }>;
 
+const commandStop = {
+  cancelQueued: true,
+  stopChildren: true,
+  recordMessageCutoff: false,
+  fireCommandHook: true,
+} as const;
+const ownerStop = {
+  cancelQueued: false,
+  stopChildren: false,
+  recordMessageCutoff: false,
+  fireCommandHook: false,
+} as const;
 const SESSION_STOP_POLICY = {
-  "channel-user": {
-    cancelQueued: true,
-    stopChildren: true,
-    recordMessageCutoff: true,
-    fireCommandHook: true,
-  },
-  "client-session": {
-    cancelQueued: true,
-    stopChildren: true,
-    recordMessageCutoff: false,
-    fireCommandHook: true,
-  },
-  "client-run": {
-    cancelQueued: true,
-    stopChildren: true,
-    recordMessageCutoff: false,
-    fireCommandHook: true,
-  },
-  mutation: {
-    cancelQueued: false,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
-  interrupt: {
-    cancelQueued: false,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
-  restart: {
-    cancelQueued: true,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
-  watchdog: {
-    cancelQueued: false,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
-  "operator-revocation": {
-    cancelQueued: true,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
-  supersede: {
-    cancelQueued: false,
-    stopChildren: false,
-    recordMessageCutoff: false,
-    fireCommandHook: false,
-  },
+  "channel-user": { ...commandStop, recordMessageCutoff: true },
+  "client-session": commandStop,
+  "client-run": commandStop,
+  mutation: ownerStop,
+  interrupt: ownerStop,
+  restart: { ...ownerStop, cancelQueued: true },
+  watchdog: ownerStop,
+  "operator-revocation": { ...ownerStop, cancelQueued: true },
+  supersede: ownerStop,
 } as const satisfies Record<SessionStopSource, SessionStopPolicy>;
 
 export type SessionStopHookContext = Readonly<{
@@ -309,22 +269,17 @@ export type SessionStopRequest = SessionStopRequestBase &
 /** One sequencer for captured Stop. Publication adapters wrap, but never replace, its primitive. */
 function applySessionControllerStop(
   capture: SessionControllerStopCapture,
-  params: {
-    source: SessionStopSource;
-    assertCurrent?: () => void;
-    reason?: unknown;
-    phase?: "all" | "queued" | "active";
-    /** Reserve presentation/partial custody before invoking cancel exactly once. */
-    cancelInput?: (input: SessionControllerInput, cancel: () => boolean) => boolean;
-    cancelOperation?: (operation: ReplyOperation, cancel: () => boolean) => boolean;
-    /** Independent authorized effects, such as captured channel inputs, between queue and active. */
-    afterQueued?: () => void;
-    onCancelled?: (target: SessionControllerInput | ReplyOperation) => void;
-    onError?: (
-      target: SessionControllerInput | ReplyOperation,
-      error: unknown,
-    ) => "continue" | void;
-  },
+  params: Pick<
+    SessionStopRequestBase,
+    | "source"
+    | "assertCurrent"
+    | "reason"
+    | "cancelInput"
+    | "cancelOperation"
+    | "afterQueued"
+    | "onCancelled"
+    | "onError"
+  > & { phase?: "all" | "queued" | "active" },
 ): SessionControllerStopResult {
   const result: SessionControllerStopResult = {
     queuedCancelled: 0,
@@ -349,7 +304,6 @@ function applySessionControllerStop(
     effect: () => boolean,
     committedAfterFailure: () => boolean,
     record: () => void,
-    assertEffectCurrent: () => void = assertCurrent,
   ) => {
     let called = false;
     let accepted = false;
@@ -357,13 +311,12 @@ function applySessionControllerStop(
       if (called) {
         return accepted;
       }
-      assertEffectCurrent();
+      assertCurrent();
       called = true;
       try {
         accepted = effect();
       } catch (error) {
-        // Exact owner outcome/custody records distinguish a failed observer from
-        // an uncommitted refusal. Never discover a successor or infer idle=settled.
+        // Exact owner records distinguish a failed observer from an uncommitted refusal.
         accepted = committedAfterFailure();
         if (accepted) {
           record();
@@ -376,9 +329,19 @@ function applySessionControllerStop(
       return accepted;
     };
   };
+  const countFinalizing = (aborted: boolean, operation: ReplyOperation | undefined) => {
+    if (
+      !aborted &&
+      operation &&
+      isCurrentSessionControllerOperation(operation) &&
+      !operation.result &&
+      (operation.abortFrozen || !isReplyOperationAbortable(operation))
+    ) {
+      result.finalizing++;
+    }
+  };
   const cancelSource = (input: SessionControllerInput, queued: boolean) => {
-    // Adapters may reserve presentation or custody before cancellation, but the
-    // exact shared primitive always revalidates live authority at the side effect.
+    // Adapters may reserve custody first; this primitive revalidates authority at the side effect.
     assertCurrent();
     const operation = input.claim?.operation;
     const hadResult = Boolean(operation?.result);
@@ -401,22 +364,14 @@ function applySessionControllerStop(
         }
         params.onCancelled?.(input);
       },
-      assertCurrent,
     );
     if (params.cancelInput) {
       params.cancelInput(input, cancel);
     } else {
       cancel();
     }
-    if (
-      !queued &&
-      !input.abortSignal.aborted &&
-      operation &&
-      isCurrentSessionControllerOperation(operation) &&
-      !operation.result &&
-      (operation.abortFrozen || !isReplyOperationAbortable(operation))
-    ) {
-      result.finalizing++;
+    if (!queued) {
+      countFinalizing(input.abortSignal.aborted, operation);
     }
   };
   const effect = (target: SessionControllerInput | ReplyOperation, run: () => void) => {
@@ -483,14 +438,7 @@ function applySessionControllerStop(
       } else {
         cancel();
       }
-      if (
-        !operation.abortSignal.aborted &&
-        isCurrentSessionControllerOperation(operation) &&
-        !operation.result &&
-        (operation.abortFrozen || !isReplyOperationAbortable(operation))
-      ) {
-        result.finalizing++;
-      }
+      countFinalizing(operation.abortSignal.aborted, operation);
     });
   }
   return result;
@@ -526,12 +474,7 @@ function resolveStopOutcome(
   });
 }
 
-/**
- * Applies the source policy to one captured stop request.
- *
- * The caller resolves and authorizes the target. This owner decides which captured
- * inputs, child runs, cutoff writer, and command hook participate in the request.
- */
+/** Applies the source policy to one captured, caller-authorized stop request. */
 export function stopSession(request: SessionStopRequest): SessionStopExecution {
   const sourcePolicy = SESSION_STOP_POLICY[request.source];
   const policy =
@@ -559,15 +502,9 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
     }
     const capture = typeof request.capture === "function" ? request.capture() : request.capture;
     request.assertCurrent?.();
-    parentResult = applySessionControllerStop(capture, {
-      source: request.source,
-      assertCurrent: request.assertCurrent,
-      reason: request.reason,
+    const applied = applySessionControllerStop(capture, {
+      ...request,
       phase: policy.cancelQueued ? "all" : "active",
-      cancelInput: request.cancelInput,
-      cancelOperation: request.cancelOperation,
-      afterQueued: request.afterQueued,
-      onCancelled: request.onCancelled,
       onError: (target, error) => {
         const decision = request.onError?.(target, error);
         if (decision !== "continue") {
@@ -576,6 +513,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         return decision;
       },
     });
+    parentResult = applied;
     // The external parent stops after controller owners, and Stop settles only after it does.
     const external = request.externalParent;
     const externalStop = external
@@ -584,23 +522,17 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         })
       : undefined;
     if (external?.settled) {
-      parentResult.settled = Promise.all([parentResult.settled, external.settled]).then(
-        () => undefined,
-      );
+      applied.settled = Promise.all([applied.settled, external.settled]).then(() => undefined);
     }
-    resolveParentResult(parentResult);
-    request.afterParent?.(parentResult);
+    resolveParentResult(applied);
+    request.afterParent?.(applied);
     runPostParent = async () => {
       await externalStop;
-      const currentParentResult = parentResult;
-      if (!currentParentResult) {
-        throw new Error("Parent Stop result is unavailable");
-      }
-      const alreadyFinalizing =
-        currentParentResult.finalizing > 0 || externalStatus === "finalizing";
-      const activeCancelled =
-        currentParentResult.activeCancelled + (externalStatus === "aborted" ? 1 : 0);
-      if ((!alreadyFinalizing || activeCancelled > 0) && request.recordAbortTarget) {
+      const outcome = resolveStopOutcome(applied, externalStatus, { stopped: 0, failed: 0 });
+      if (
+        (!outcome.alreadyFinalizing || outcome.activeCancelled > 0) &&
+        request.recordAbortTarget
+      ) {
         await request.recordAbortTarget({
           recordCutoff: policy.recordMessageCutoff && request.messageIdentity !== undefined,
         });
@@ -661,8 +593,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         throw new Error("Parent Stop result is unavailable");
       }
       await postParent();
-      // Committed cancellation errors cannot strand later owners, but still fail
-      // default Stop callers after parent and descendant cancellation completes.
+      // Committed failures never strand later owners but still fail default callers afterward.
       if (unhandledFailures.length === 1) {
         throw unhandledFailures[0];
       }
