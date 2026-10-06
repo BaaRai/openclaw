@@ -18,6 +18,7 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   isRequesterYieldCohortMember,
   isRequesterSettleWakeForRun,
+  owesRequesterCompletion,
 } from "./subagent-requester-settle-identity.js";
 import {
   compareSubagentRunGeneration,
@@ -225,6 +226,11 @@ function selectRequesterTurnChildren(
   );
 }
 
+/** Bound children whose completion obligation was not retired by kill or suppression. */
+const selectOwingRequesterTurnChildren = (
+  ...args: Parameters<typeof selectRequesterTurnChildren>
+): SubagentRunRecord[] => selectRequesterTurnChildren(...args).filter(owesRequesterCompletion);
+
 const nextRearmGeneration = (entries: readonly SubagentRunRecord[]) =>
   Math.max(0, ...entries.map((entry) => entry.requesterSettleWake?.rearmGeneration ?? 0)) + 1;
 
@@ -245,20 +251,26 @@ export async function markRequesterTurnYieldedInRuns(params: {
   const { preparedAuthority } = params;
   let cronAuthority: Awaited<ReturnType<PreparedRequesterCronAuthority["bind"]>>;
   try {
-    const selectedEntries = selectRequesterTurnChildren(
+    const boundCount = selectRequesterTurnChildren(
+      params.runs,
+      requesterSessionKey,
+      params.requesterAgentId,
+      requesterTurnRunId,
+    ).length;
+    const selectedEntries = selectOwingRequesterTurnChildren(
       params.runs,
       requesterSessionKey,
       params.requesterAgentId,
       requesterTurnRunId,
     );
     if (selectedEntries.length === 0) {
-      return 0;
+      return boundCount;
     }
     await params.transfer({
       kind: "intent",
       entries: selectedEntries,
       validateSelection: () => {
-        const selected = selectRequesterTurnChildren(
+        const selected = selectOwingRequesterTurnChildren(
           params.runs,
           requesterSessionKey,
           params.requesterAgentId,
@@ -300,7 +312,7 @@ export async function markRequesterTurnYieldedInRuns(params: {
         throw new SubagentRegistryWriteError("committed", error, "published");
       }
     }
-    return selectedEntries.length;
+    return boundCount;
   } catch (error) {
     cronAuthority?.revoke();
     throw error;
@@ -329,7 +341,7 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
 
   // Completion rows keep their original task owner across steer; inline or
   // non-completion spawns are intentionally outside this batch.
-  const selectedEntries = selectRequesterTurnChildren(
+  const boundEntries = selectRequesterTurnChildren(
     params.runs,
     requesterSessionKey,
     params.requesterAgentId,
@@ -340,13 +352,15 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
       .filter((spawn) => spawn.expectsCompletionMessage === true)
       .map((spawn) => spawn.runId),
   );
-  for (const entry of selectedEntries) {
+  for (const entry of boundEntries) {
     const taskRunId = entry.taskRunId ?? entry.runId;
     const spawn = spawnsByRunId.get(taskRunId);
     if (
       !spawn ||
       entry.childSessionKey !== spawn.childSessionKey ||
-      (params.requesterYielded && entry.requesterTurnYielded !== true)
+      (params.requesterYielded &&
+        owesRequesterCompletion(entry) &&
+        entry.requesterTurnYielded !== true)
     ) {
       return false;
     }
@@ -354,8 +368,13 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
   }
   // Accepted completion receipts outlive registry rows. A surviving subset
   // cannot attest that the whole requester obligation transferred to a wake.
-  if (requiredRunIds.size > 0 || selectedEntries.length === 0) {
+  if (requiredRunIds.size > 0 || boundEntries.length === 0) {
     return false;
+  }
+  // Retired children owe nothing; a cohort holds only the remaining obligations.
+  const selectedEntries = boundEntries.filter(owesRequesterCompletion);
+  if (selectedEntries.length === 0) {
+    return true;
   }
 
   const childRunIds = new Set(selectedEntries.map((entry) => entry.runId));
@@ -392,7 +411,7 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
         "Requester pause owner appeared outside the admitted cohort",
       );
     }
-    const current = selectRequesterTurnChildren(
+    const current = selectOwingRequesterTurnChildren(
       params.runs,
       requesterSessionKey,
       params.requesterAgentId,

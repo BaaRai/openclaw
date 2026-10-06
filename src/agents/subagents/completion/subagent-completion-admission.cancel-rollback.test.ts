@@ -161,7 +161,7 @@ describe("requester wake cancellation rollback", () => {
         expect(driver.wake).toHaveBeenCalledOnce();
         expect(finalized).not.toHaveBeenCalled();
         stopResult = Promise.allSettled([
-          driver.controller.cancelRequesterSettleWake(input.subagent, () => {}),
+          driver.controller.retireSubagentObligations(input.subagent, () => {}),
         ]);
         await writerEntered.promise;
 

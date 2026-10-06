@@ -564,6 +564,12 @@ const subagentSweeper = createSubagentRegistrySweeper({
   runContextEngineSubagentEnded: contextCleanup.runContextEngineSubagentEnded,
   notifyContextEngineSubagentEnded: contextCleanup.notifyContextEngineSubagentEnded,
   retireSupersededRun: retireSupersededSubagentRun,
+  retireObligations: (entry) =>
+    subagentLifecycleController.retireSubagentObligations(entry, () => {
+      if (!isSameSubagentRunOwner(subagentRuns.get(entry.runId), entry)) {
+        throw new Error("Killed subagent row changed before obligation retirement.");
+      }
+    }),
   getRunsForChildSession: getSubagentRunsForChildSession,
   getRunsForCollectorGroup: getSubagentRunsForCollectorGroup,
   warn,
@@ -623,8 +629,6 @@ const subagentRunManager = createSubagentRunManager({
 });
 
 export const replaceSubagentRunAfterSteerCore = subagentRunManager.replaceSubagentRunAfterSteer;
-export const adoptKilledSubagentRunForRequesterTurn =
-  subagentRunManager.adoptKilledSubagentRunForRequesterTurn;
 export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
 export function registerSubagentRun(
@@ -686,8 +690,7 @@ async function addSubagentRunForTests(entry: SubagentRunRecord) {
 
 export const finalizeInterruptedSubagentRun = completionRuntime.finalizeInterruptedSubagentRun;
 export const markSubagentRunTerminated = subagentRunManager.markSubagentRunTerminated;
-export const cancelSubagentRequesterSettleWake =
-  subagentLifecycleController.cancelRequesterSettleWake;
+export const retireSubagentObligations = subagentLifecycleController.retireSubagentObligations;
 
 export { prependAgentSteeringPrompt };
 

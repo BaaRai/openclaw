@@ -493,6 +493,7 @@ export async function killSubagentRunAdmin(
         cfg: params.cfg,
         tree,
         scope,
+        suppressTaskDelivery: params.suppressTaskDelivery,
         beforeSessionKill: control?.beforeSessionKill,
         requiredSessionId: control?.requiredSessionId,
         // Resolve stable task identity once; a later replacement must not inherit this Stop.

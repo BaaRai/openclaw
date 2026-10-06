@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { buildAnnounceIdempotencyKey } from "../../announce-idempotency.js";
+import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   compareSubagentRunGeneration,
@@ -88,6 +89,21 @@ export function isRequesterSettleWakeForRun(params: {
       pause: Boolean(pauseNotice),
     }).runId
   );
+}
+
+/** Kill, suppression, and session retirement each end a row's completion obligation. */
+export function isSubagentObligationRetired(entry: SubagentRunRecord): boolean {
+  return (
+    entry.killIntent !== undefined ||
+    entry.killReconciliation !== undefined ||
+    entry.suppressCompletionDelivery === true ||
+    entry.endedReason === SUBAGENT_ENDED_REASON_KILLED
+  );
+}
+
+/** A requester cohort counts only members that still owe their completion. */
+export function owesRequesterCompletion(entry: SubagentRunRecord): boolean {
+  return entry.expectsCompletionMessage === true && !isSubagentObligationRetired(entry);
 }
 
 /** Run, requester, and frozen delivery-policy bindings, distinct from wake progress. */

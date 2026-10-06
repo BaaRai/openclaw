@@ -38,7 +38,7 @@ import type {
 import { refreshFrozenResultFromSession } from "./subagent-registry-lifecycle-delivery.js";
 import { finalizeResumedAnnounceGiveUp } from "./subagent-registry-lifecycle-give-up.js";
 import {
-  cancelRequesterSettleWake,
+  retireSubagentObligations,
   scheduleRequesterSettleWake,
 } from "./subagent-registry-lifecycle-wake.js";
 import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
@@ -570,8 +570,8 @@ export class SubagentLifecycleController {
     scheduleRequesterSettleWake(this, runId, entry);
   };
 
-  cancelRequesterSettleWake = (entry: SubagentRunRecord, assertCurrent: () => void) =>
-    cancelRequesterSettleWake(this, entry, assertCurrent);
+  retireSubagentObligations = (entry: SubagentRunRecord, assertCurrent: () => void) =>
+    retireSubagentObligations(this, entry, assertCurrent);
 
   adoptSubagentRunForRequesterTurn = (
     params: Omit<Parameters<typeof adoptSubagentRunForRequesterTurnInRuns>[0], "runs">,

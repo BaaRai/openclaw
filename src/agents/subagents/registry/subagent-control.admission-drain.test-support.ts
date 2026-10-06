@@ -56,8 +56,6 @@ export function registerAdmissionDrainControlTests({
         onInterrupt: () => interrupted.resolve(),
       });
       setSubagentControlDepsForTest({
-        isTargetSessionRunActive: () => false,
-        abortEmbeddedAgentRun: () => false,
         clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
       });
 

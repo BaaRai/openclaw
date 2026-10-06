@@ -190,6 +190,23 @@ export async function deleteGatewaySession({
     try {
       const current = assertCurrent();
       try {
+        const { killSubagentRunAdmin } =
+          await import("../../agents/subagents/registry/subagent-control.js");
+        const retiredChild = await killSubagentRunAdmin(
+          {
+            cfg,
+            sessionKey: target.canonicalKey,
+            agentId: target.agentId,
+            suppressTaskDelivery: true,
+          },
+          {
+            assertCurrent,
+            requiredSessionId: current.entry?.sessionId,
+          },
+        );
+        if (retiredChild.found && retiredChild.error) {
+          throw new Error(retiredChild.error);
+        }
         drain = await prepareSessionLifecycleDrain({
           action: "delete",
           authorize: assertCurrent,

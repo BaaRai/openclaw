@@ -5,6 +5,7 @@ import { isGatewayRestartDrainError } from "../../../process/gateway-work-admiss
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
+import { retireSubagentControllerInputs } from "../announce/subagent-announce-controller-source.js";
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import { revokeRequesterCronAuthorityBatch } from "../requester-cron-authority.js";
 import { revokeRequesterFinalAttachment } from "../requester-final-attachment.js";
@@ -137,12 +138,14 @@ function releaseRequesterSettleWakeBatch(
   }
 }
 
-/** Stop retires a completed child's continuation without changing its captured outcome. */
-export async function cancelRequesterSettleWake(
+/** Kill, suppression, and deletion retire a child's owed inputs and its cohort membership. */
+export async function retireSubagentObligations(
   context: SubagentLifecycleWakeContext,
   entry: SubagentRunRecord,
   assertCurrent: () => void,
 ): Promise<void> {
+  assertCurrent();
+  retireSubagentControllerInputs(entry);
   const wake = entry.requesterSettleWake;
   if (!wake || entry.execution.status !== "terminal" || entry.pauseReason === "sessions_yield") {
     return;

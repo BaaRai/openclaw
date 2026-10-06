@@ -63,7 +63,6 @@ const STALE_ACTIVE_SUBAGENT_GRACE_MS = isFastTestRuntimeEnv() ? 1_000 : 60_000;
 const restartRecoveryLoader = createLazyImportLoader(
   () => import("./subagent-registry-restart-recovery.js"),
 );
-const killRuntimeLoader = createLazyImportLoader(() => import("./subagent-control.runtime.js"));
 type CompletionRuntime = ReturnType<typeof createSubagentRegistryCompletionRuntime>;
 
 export function createSubagentRegistrySweeper(params: {
@@ -89,6 +88,7 @@ export function createSubagentRegistrySweeper(params: {
   runContextEngineSubagentEnded: (params: ContextEngineSubagentEndedParams) => Promise<void>;
   notifyContextEngineSubagentEnded: (params: ContextEngineSubagentEndedParams) => Promise<void>;
   retireSupersededRun: (runId: string, entry: SubagentRunRecord) => Promise<void>;
+  retireObligations: (entry: SubagentRunRecord) => Promise<void>;
   getRunsForChildSession: (
     childSessionKey: string,
     childAgentId?: string,
@@ -325,7 +325,7 @@ export function createSubagentRegistrySweeper(params: {
             entry,
             runs,
             getRunsForChildSession: params.getRunsForChildSession,
-            loadKillRuntime: () => killRuntimeLoader.load(),
+            retireObligations: params.retireObligations,
             completeSubagentRunWithRecovery: params.completeSubagentRunWithRecovery,
             retireSupersededRun: params.retireSupersededRun,
             warn: params.warn,

@@ -70,7 +70,6 @@ it("bounds durable kill reconciliation when an accepted live source never settle
   const cancelled = new Promise<void>((resolve) => {
     source.abortSignal.addEventListener("abort", () => resolve(), { once: true });
   });
-  const runtime = await import("./subagent-control.runtime.js");
   const completeSubagentRunWithRecovery = vi.fn(async () => {});
   const warn = vi.fn();
   const result = vi.fn();
@@ -79,9 +78,9 @@ it("bounds durable kill reconciliation when an accepted live source never settle
     entry,
     runs,
     getRunsForChildSession: createSubagentSweeperChildLookup(runs),
-    loadKillRuntime: async () => runtime,
     completeSubagentRunWithRecovery,
     retireSupersededRun: vi.fn(),
+    retireObligations: vi.fn(async () => {}),
     warn,
   }).then(result);
   onTestFinished(async () => {

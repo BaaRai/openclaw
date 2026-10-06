@@ -32,6 +32,8 @@ export type SubagentKillMutationResult = {
   targetState?: SubagentKillTargetState;
   error?: string;
   completedCleanupError?: string;
+  /** The controller held no turn or input for this run; only registry state was settled. */
+  reason?: "no_controller_record";
 };
 
 export type SubagentAdminKillResult =
@@ -54,5 +56,6 @@ export type SubagentAdminKillParams = {
   expectedTaskRunId?: string;
   expectedGeneration?: number;
   expectedOwnerKey?: string;
+  suppressTaskDelivery?: boolean;
   onResult?: (result: SubagentAdminKillResult) => undefined;
 };

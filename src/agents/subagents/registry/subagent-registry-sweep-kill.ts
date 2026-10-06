@@ -65,12 +65,12 @@ export async function reconcileDurableSubagentKillIntent(params: {
     childSessionKey: string,
     childAgentId?: string,
   ) => Iterable<SubagentRunRecord>;
-  loadKillRuntime: () => Promise<typeof import("./subagent-control.runtime.js")>;
   completeSubagentRunWithRecovery: (
     completion: SubagentCompletionRequest,
     source: string,
   ) => Promise<void>;
   retireSupersededRun: (runId: string, entry: SubagentRunRecord) => Promise<void>;
+  retireObligations: (entry: SubagentRunRecord) => Promise<void>;
   warn: (message: string, meta?: Record<string, unknown>) => void;
 }): Promise<boolean> {
   const killIntent = params.entry.killIntent;
@@ -135,6 +135,10 @@ export async function reconcileDurableSubagentKillIntent(params: {
       },
       retired ? "sweeper-retired-kill-intent" : "sweeper-pending-kill-intent",
     );
+    const killed = params.runs.get(params.runId);
+    if (killed && isSameSubagentRunOwner(killed, params.entry)) {
+      await params.retireObligations(killed);
+    }
     return true;
   };
   if (
@@ -155,10 +159,6 @@ export async function reconcileDurableSubagentKillIntent(params: {
     return false;
   }
   try {
-    const runtime = await params.loadKillRuntime();
-    if (!ownsCurrentGeneration() || isSessionMutationActive(storePath, identities)) {
-      return false;
-    }
     session = await prepareSubagentKillSession(
       cfg,
       params.entry.childSessionKey,
@@ -208,16 +208,10 @@ export async function reconcileDurableSubagentKillIntent(params: {
           }
         };
         const hasLiveRunContext = Boolean(getAgentRunContext(params.runId));
-        const active = killIntent.sessionId
-          ? runtime.isTargetSessionRunActive(killIntent.sessionId, target)
-          : false;
+        const active = capture.operations.some((operation) => !operation.result);
         const stopped = cancelCapturedSessionControllerSource(capture, { assertCurrent });
         assertCurrent();
-        const aborted =
-          stopped.activeCancelled > 0 ||
-          (!capture.inputs.length && !capture.operations.length && killIntent.sessionId && active
-            ? runtime.abortEmbeddedAgentRun(killIntent.sessionId, target)
-            : false);
+        const aborted = stopped.activeCancelled > 0;
         const queuedInputsSettled = await waitForSessionControllerSettlement(
           Promise.all(capture.queuedInputs.map((input) => input.settlement.promise)).then(
             () => undefined,

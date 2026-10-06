@@ -98,15 +98,7 @@ export function registerLateDescendantControlTests({
           queued: true,
         });
       };
-      setSubagentControlDepsForTest({
-        isTargetSessionRunActive: () => true,
-        abortEmbeddedAgentRun: () => {
-          if (phase === "admission drain") {
-            expect(releaseSwarmRun(parent.runId)).toBe(true);
-          }
-          return true;
-        },
-      });
+      setSubagentControlDepsForTest({});
       const controller = {
         controllerSessionKey: owner,
         controllerAgentId: "main",

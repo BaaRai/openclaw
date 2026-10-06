@@ -19,7 +19,6 @@ import {
   normalizeSubagentRunState,
   resetRequesterSettleWakeRetry,
 } from "./subagent-delivery-state.js";
-import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import {
   safeRemoveAttachmentsDir,
   shouldRemoveSubagentAttachments,
@@ -204,24 +203,6 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     }
   };
 
-  /** Transfers a same-turn completion claim from an exact cancelled run to its accepted successor. */
-  readonly adoptKilledSubagentRunForRequesterTurn = (params: {
-    expected: SubagentRunRecord;
-    nextRunId: string;
-    task: string;
-    assertCurrent: () => void;
-  }): Promise<boolean> =>
-    this.replaceSubagentRunAfterSteer({
-      previousRunId: params.expected.runId,
-      nextRunId: params.nextRunId,
-      expected: params.expected,
-      allowEndedSource: true,
-      adoptKilledRequesterTurn: true,
-      task: params.task,
-      gatewayContextResolver: getGatewayContextResolver(params.expected),
-      assertCurrent: params.assertCurrent,
-    });
-
   readonly replaceSubagentRunAfterSteer = async (replaceParams: {
     previousRunId: string;
     nextRunId: string;
@@ -238,8 +219,6 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     // longer waiting. Without this the yielded parent loses its only wake path
     // and its settle batch defers with nothing recording why.
     preserveRequesterSettleWake?: boolean;
-    /** Same-turn follow-up replaces an exact Stop without reviving the cancelled execution. */
-    adoptKilledRequesterTurn?: true;
     transcriptTarget?: AgentRunSessionTarget;
     task?: string;
     lifecycleGeneration?: string;
@@ -290,16 +269,6 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         [...runIds],
         (rows) => {
           const source = rows.get(previousRunId);
-          const killedRequesterTurn =
-            replaceParams.adoptKilledRequesterTurn === true &&
-            source !== undefined &&
-            source.execution.status === "terminal" &&
-            source.endedReason === SUBAGENT_ENDED_REASON_KILLED &&
-            source.killReconciliation?.killedAt !== undefined &&
-            source.killReconciliation.supersededAt === undefined &&
-            source.requesterTurnRunId !== undefined &&
-            source.expectsCompletionMessage === true &&
-            source.delivery?.status !== "delivered";
           if (
             !source ||
             !isSameSubagentRunOwner(source, selected) ||
@@ -310,9 +279,8 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
             (replaceParams.expected && !isSameSubagentRunOwner(source, replaceParams.expected)) ||
             (replaceParams.expected &&
               ((typeof source.execution.endedAt === "number" && !replaceParams.allowEndedSource) ||
-                (source.killReconciliation && !killedRequesterTurn) ||
+                source.killReconciliation ||
                 source.killIntent)) ||
-            (replaceParams.adoptKilledRequesterTurn === true && !killedRequesterTurn) ||
             !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)
           ) {
             return { value: undefined };

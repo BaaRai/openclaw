@@ -1,4 +1,4 @@
-// Prove exact-run Stop followed by a kept-child follow-up through real Gateway tools.
+// Prove Stop, deletion, and yield of kept children through real Gateway tools.
 import { X509Certificate } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,6 +14,8 @@ import {
   getSubagentRunByRunId,
   resetSubagentRegistryForTests,
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
+import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
+import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -29,6 +31,10 @@ const stoppedTask = "Hold this first child execution until it is stopped.";
 const followupTask = "Finish this successor execution with the required success marker.";
 const stoppedResult = "STOPPED_RUN_MUST_NOT_DELIVER";
 const successorResult = "AFTER_STOP_OK";
+const deletedTask = "Pause until this child session is deleted.";
+const siblingTask = "Finish the sibling task after the other child is retired.";
+const siblingResult = "AFTER_RETIREMENT_OK";
+const pauseNotice = "Paused awaiting continuation.";
 const proxyUser = "subagent-stop-administrator@example.test";
 
 function toolCallEvents(name: string, args: Record<string, unknown>, sequence: number) {
@@ -75,41 +81,38 @@ function toolCallEvents(name: string, args: Record<string, unknown>, sequence: n
   ];
 }
 
-function findRecord(
+function findRecords(
   value: unknown,
   matches: (record: Record<string, unknown>) => boolean,
-): Record<string, unknown> | undefined {
+): Record<string, unknown>[] {
   if (typeof value === "string") {
     try {
-      return findRecord(JSON.parse(value) as unknown, matches);
+      return findRecords(JSON.parse(value) as unknown, matches);
     } catch {
-      return undefined;
+      return [];
     }
   }
   if (Array.isArray(value)) {
-    for (const item of value) {
-      const matched = findRecord(item, matches);
-      if (matched) {
-        return matched;
-      }
-    }
-    return undefined;
+    return value.flatMap((item) => findRecords(item, matches));
   }
   if (!value || typeof value !== "object") {
-    return undefined;
+    return [];
   }
   const record = value as Record<string, unknown>;
-  if (matches(record)) {
-    return record;
-  }
-  for (const item of Object.values(record)) {
-    const matched = findRecord(item, matches);
-    if (matched) {
-      return matched;
-    }
-  }
-  return undefined;
+  return [
+    ...(matches(record) ? [record] : []),
+    ...Object.values(record).flatMap((item) => findRecords(item, matches)),
+  ];
 }
+
+const spawnReceipts = (body: string) =>
+  findRecords(
+    JSON.parse(body) as unknown,
+    (record) => typeof record.childSessionKey === "string" && typeof record.runId === "string",
+  ).map((record) => ({
+    runId: record.runId as string,
+    sessionKey: record.childSessionKey as string,
+  }));
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
   let body = "";
@@ -119,27 +122,25 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
   return body;
 }
 
-async function startStopFollowupModel() {
-  const firstChildStarted = createDeferred();
-  const firstChildStopped = createDeferred();
-  const successorAccepted = createDeferred<string>();
-  const allowParentYield = createDeferred();
-  const completionDelivered = createDeferred();
-  const requests: string[] = [];
-  let parentRequestCount = 0;
+/** Serves one scripted parent plus its children; unscripted turns answer NO_REPLY. */
+async function startScriptedModel(
+  handle: (
+    body: string,
+    request: IncomingMessage,
+    response: ServerResponse,
+    sequence: number,
+  ) => Promise<boolean>,
+) {
   let responseSequence = 0;
-  let successorDeliveries = 0;
-  let stoppedDeliveries = 0;
   const server = createServer((request, response) => {
-    void handleRequest(request, response).catch((error: unknown) => {
+    void serve(request, response).catch((error: unknown) => {
       if (!response.headersSent) {
         response.writeHead(500, { "content-type": "application/json" });
       }
       response.end(JSON.stringify({ error: { message: String(error) } }));
     });
   });
-
-  async function handleRequest(request: IncomingMessage, response: ServerResponse) {
+  async function serve(request: IncomingMessage, response: ServerResponse) {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/v1/models") {
       response.writeHead(200, { "content-type": "application/json" });
@@ -151,141 +152,15 @@ async function startStopFollowupModel() {
       return;
     }
     const body = await readRequestBody(request);
-    requests.push(body);
     responseSequence += 1;
-    if (!body.includes(parentPrompt)) {
-      // A follow-up to the kept child starts a distinct successor execution.
-      if (body.includes(followupTask)) {
-        writeOpenAiResponsesText(response, {
-          text: successorResult,
-          messageId: "stop_followup_successor",
-          responseId: "stop_followup_successor_response",
-        });
-        return;
-      }
-      // The stopped execution attempts a late result after its transport is cancelled.
-      if (body.includes(stoppedTask)) {
-        firstChildStarted.resolve();
-        request.once("aborted", () => firstChildStopped.resolve());
-        response.once("close", () => firstChildStopped.resolve());
-        await firstChildStopped.promise;
-        writeOpenAiResponsesText(response, {
-          text: stoppedResult,
-          messageId: "stopped_child_late_result",
-          responseId: "stopped_child_late_result_response",
-        });
-        return;
-      }
+    if (!(await handle(body, request, response, responseSequence))) {
       writeOpenAiResponsesText(response, {
         text: "NO_REPLY",
         messageId: `fallback_${responseSequence}`,
         responseId: `fallback_response_${responseSequence}`,
       });
-      return;
     }
-
-    // Completion reaches the requester through a fresh delivery-only agent turn.
-    if (body.includes(successorResult)) {
-      successorDeliveries += 1;
-      writeOpenAiResponsesText(response, {
-        text: "PARENT_RECEIVED_SUCCESSOR",
-        messageId: `successor_delivery_${responseSequence}`,
-        responseId: `successor_delivery_response_${responseSequence}`,
-      });
-      completionDelivered.resolve();
-      return;
-    }
-    if (body.includes(stoppedResult)) {
-      stoppedDeliveries += 1;
-      writeOpenAiResponsesText(response, {
-        text: "NO_REPLY",
-        messageId: `stopped_delivery_${responseSequence}`,
-        responseId: `stopped_delivery_response_${responseSequence}`,
-      });
-      return;
-    }
-
-    parentRequestCount += 1;
-    if (parentRequestCount === 1) {
-      writeOpenAiResponsesSse(
-        response,
-        toolCallEvents(
-          "sessions_spawn",
-          {
-            task: stoppedTask,
-            context: "isolated",
-            cleanup: "keep",
-            completionTarget: "parent",
-          },
-          responseSequence,
-        ),
-      );
-      return;
-    }
-    const parsed = JSON.parse(body) as unknown;
-    const child = findRecord(
-      parsed,
-      (record) => typeof record.childSessionKey === "string" && typeof record.runId === "string",
-    );
-    if (!child) {
-      throw new Error("Parent transport did not retain the child spawn receipt");
-    }
-    const childSessionKey = child.childSessionKey as string;
-    const childRunId = child.runId as string;
-    if (parentRequestCount === 2) {
-      await firstChildStarted.promise;
-      writeOpenAiResponsesSse(
-        response,
-        toolCallEvents(
-          "sessions",
-          { action: "stop", sessionKey: childSessionKey, runId: childRunId },
-          responseSequence,
-        ),
-      );
-      return;
-    }
-    if (parentRequestCount === 3) {
-      writeOpenAiResponsesSse(
-        response,
-        toolCallEvents(
-          "sessions_send",
-          {
-            sessionKey: childSessionKey,
-            mode: "followup",
-            timeoutSeconds: 0,
-            message: followupTask,
-          },
-          responseSequence,
-        ),
-      );
-      return;
-    }
-    if (parentRequestCount === 4) {
-      const followup = findRecord(
-        parsed,
-        (record) =>
-          record.status === "accepted" &&
-          record.targetDisposition === "queued" &&
-          typeof record.runId === "string",
-      );
-      if (!followup) {
-        throw new Error("Parent transport did not retain the queued follow-up receipt");
-      }
-      successorAccepted.resolve(followup.runId as string);
-      await allowParentYield.promise;
-      writeOpenAiResponsesSse(
-        response,
-        toolCallEvents("sessions_yield", { waitFor: "message" }, responseSequence),
-      );
-      return;
-    }
-    writeOpenAiResponsesText(response, {
-      text: "NO_REPLY",
-      messageId: `parent_fallback_${responseSequence}`,
-      responseId: `parent_fallback_response_${responseSequence}`,
-    });
   }
-
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -293,14 +168,7 @@ async function startStopFollowupModel() {
   const address = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${address.port}/v1`,
-    firstChildStarted: firstChildStarted.promise,
-    successorAccepted: successorAccepted.promise,
-    completionDelivered: completionDelivered.promise,
-    allowParentYield: () => allowParentYield.resolve(),
-    deliveryCounts: () => ({ successorDeliveries, stoppedDeliveries }),
-    requests,
     close: async () => {
-      allowParentYield.resolve();
       server.closeAllConnections();
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
@@ -309,13 +177,261 @@ async function startStopFollowupModel() {
   };
 }
 
-afterEach(async () => {
-  await resetSubagentRegistryForTests({ persist: false });
-});
+/** A child that holds its model call until cancellation, then attempts a late result. */
+async function holdUntilStopped(
+  request: IncomingMessage,
+  response: ServerResponse,
+  started: () => void,
+) {
+  const stopped = createDeferred();
+  started();
+  request.once("aborted", () => stopped.resolve());
+  response.once("close", () => stopped.resolve());
+  await stopped.promise;
+  writeOpenAiResponsesText(response, {
+    text: stoppedResult,
+    messageId: "stopped_child_late_result",
+    responseId: "stopped_child_late_result_response",
+  });
+}
 
-it("delivers exactly one kept-child successor after exact-run Stop", async () => {
-  const model = await startStopFollowupModel();
-  const state = await createOpenClawTestState({ label: "subagent-stop-followup" });
+/** Requester continuations answer visibly so delivery records a visible final. */
+function writeVisibleReply(response: ServerResponse, text: string, sequence: number) {
+  writeOpenAiResponsesText(response, {
+    text,
+    messageId: `requester_delivery_${sequence}`,
+    responseId: `requester_delivery_response_${sequence}`,
+  });
+  return true;
+}
+
+function writeToolCall(
+  response: ServerResponse,
+  name: string,
+  args: Record<string, unknown>,
+  sequence: number,
+) {
+  writeOpenAiResponsesSse(response, toolCallEvents(name, args, sequence));
+  return true;
+}
+
+function startStopFollowupModel(sourceState: "active" | "paused") {
+  const firstChildStarted = createDeferred();
+  const sourceIdentified = createDeferred<{ runId: string }>();
+  const allowParentStop = createDeferred();
+  const successorAccepted = createDeferred<string>();
+  const allowParentYield = createDeferred();
+  const completionDelivered = createDeferred();
+  const counts = { successorDeliveries: 0, stoppedDeliveries: 0 };
+  let parentRequestCount = 0;
+  return {
+    firstChildStarted: firstChildStarted.promise,
+    sourceIdentified: sourceIdentified.promise,
+    allowParentStop: () => allowParentStop.resolve(),
+    successorAccepted: successorAccepted.promise,
+    completionDelivered: completionDelivered.promise,
+    allowParentYield: () => allowParentYield.resolve(),
+    deliveryCounts: () => ({ ...counts }),
+    release: () => allowParentYield.resolve(),
+    handle: async (
+      body: string,
+      request: IncomingMessage,
+      response: ServerResponse,
+      sequence: number,
+    ) => {
+      if (!body.includes(parentPrompt)) {
+        // A follow-up to the kept child starts a distinct successor execution.
+        if (body.includes(followupTask)) {
+          writeOpenAiResponsesText(response, {
+            text: successorResult,
+            messageId: "stop_followup_successor",
+            responseId: "stop_followup_successor_response",
+          });
+          return true;
+        }
+        if (!body.includes(stoppedTask)) {
+          return false;
+        }
+        if (sourceState === "active") {
+          await holdUntilStopped(request, response, () => firstChildStarted.resolve());
+          return true;
+        }
+        return body.includes("function_call_output")
+          ? false
+          : writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      // A stale notice or late result from the stopped source must never reach the requester.
+      if (body.includes(stoppedResult) || body.includes(pauseNotice)) {
+        counts.stoppedDeliveries += 1;
+        return false;
+      }
+      // Completion reaches the requester through a fresh delivery-only agent turn.
+      if (body.includes(successorResult)) {
+        counts.successorDeliveries += 1;
+        completionDelivered.resolve();
+        return writeVisibleReply(response, "PARENT_RECEIVED_SUCCESSOR", sequence);
+      }
+      parentRequestCount += 1;
+      if (parentRequestCount === 1) {
+        return writeToolCall(
+          response,
+          "sessions_spawn",
+          { task: stoppedTask, context: "isolated", cleanup: "keep", completionTarget: "parent" },
+          sequence,
+        );
+      }
+      const [child] = spawnReceipts(body);
+      if (!child) {
+        throw new Error("Parent transport did not retain the child spawn receipt");
+      }
+      sourceIdentified.resolve({ runId: child.runId });
+      if (parentRequestCount === 2) {
+        await allowParentStop.promise;
+        return writeToolCall(
+          response,
+          "sessions",
+          { action: "stop", sessionKey: child.sessionKey, runId: child.runId },
+          sequence,
+        );
+      }
+      if (parentRequestCount === 3) {
+        return writeToolCall(
+          response,
+          "sessions_send",
+          {
+            sessionKey: child.sessionKey,
+            mode: "followup",
+            timeoutSeconds: 0,
+            message: followupTask,
+          },
+          sequence,
+        );
+      }
+      if (parentRequestCount === 4) {
+        const [followup] = findRecords(
+          JSON.parse(body) as unknown,
+          (record) =>
+            record.status === "accepted" &&
+            record.targetDisposition === "queued" &&
+            typeof record.runId === "string",
+        );
+        if (!followup) {
+          throw new Error("Parent transport did not retain the queued follow-up receipt");
+        }
+        successorAccepted.resolve(followup.runId as string);
+        await allowParentYield.promise;
+        return writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      return false;
+    },
+  };
+}
+
+/** One parent with a paused child it later retires and a sibling that completes. */
+function startRetiredSiblingModel(retirement: "delete" | "stop") {
+  const retiredChild = createDeferred<{ runId: string; sessionKey: string }>();
+  const retiredChildStarted = createDeferred();
+  const siblingChild = createDeferred<{ runId: string; sessionKey: string }>();
+  const allowParentRetirement = createDeferred();
+  const siblingDelivered = createDeferred();
+  const counts = { siblingDeliveries: 0, retiredDeliveries: 0 };
+  let parentRequestCount = 0;
+  const childSpawn = (task: string) => ({
+    task,
+    context: "isolated",
+    cleanup: "keep",
+    ...(retirement === "stop" ? { completionTarget: "parent" } : {}),
+  });
+  return {
+    retiredChild: retiredChild.promise,
+    retiredChildStarted: retiredChildStarted.promise,
+    siblingChild: siblingChild.promise,
+    siblingDelivered: siblingDelivered.promise,
+    allowParentRetirement: () => allowParentRetirement.resolve(),
+    deliveryCounts: () => ({ ...counts }),
+    release: () => allowParentRetirement.resolve(),
+    handle: async (
+      body: string,
+      request: IncomingMessage,
+      response: ServerResponse,
+      sequence: number,
+    ) => {
+      if (!body.includes(parentPrompt)) {
+        if (body.includes(siblingTask)) {
+          writeOpenAiResponsesText(response, {
+            text: siblingResult,
+            messageId: "retirement_sibling_result",
+            responseId: "retirement_sibling_result_response",
+          });
+          return true;
+        }
+        if (!body.includes(deletedTask) && !body.includes(stoppedTask)) {
+          return false;
+        }
+        if (retirement === "stop") {
+          await holdUntilStopped(request, response, () => retiredChildStarted.resolve());
+          return true;
+        }
+        retiredChildStarted.resolve();
+        return body.includes("function_call_output")
+          ? false
+          : writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      if (body.includes(pauseNotice) || body.includes(stoppedResult)) {
+        counts.retiredDeliveries += 1;
+        return false;
+      }
+      if (body.includes(siblingResult)) {
+        counts.siblingDeliveries += 1;
+        siblingDelivered.resolve();
+        return writeVisibleReply(response, "PARENT_RECEIVED_SIBLING", sequence);
+      }
+      parentRequestCount += 1;
+      if (parentRequestCount === 1) {
+        return writeToolCall(
+          response,
+          "sessions_spawn",
+          childSpawn(retirement === "stop" ? stoppedTask : deletedTask),
+          sequence,
+        );
+      }
+      const children = spawnReceipts(body);
+      if (parentRequestCount === 2) {
+        const [child] = children;
+        if (!child) {
+          throw new Error("Parent did not retain the retired-child spawn receipt");
+        }
+        retiredChild.resolve(child);
+        return writeToolCall(response, "sessions_spawn", childSpawn(siblingTask), sequence);
+      }
+      const retired = await retiredChild.promise;
+      if (parentRequestCount === 3) {
+        const child = children.find((entry) => entry.runId !== retired.runId);
+        if (!child) {
+          throw new Error("Parent did not retain the sibling spawn receipt");
+        }
+        siblingChild.resolve(child);
+        await allowParentRetirement.promise;
+        return retirement === "stop"
+          ? writeToolCall(
+              response,
+              "sessions",
+              { action: "stop", sessionKey: retired.sessionKey, runId: retired.runId },
+              sequence,
+            )
+          : writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      if (parentRequestCount === 4 && retirement === "stop") {
+        // Yield immediately behind the Stop, while the stopped sibling still settles.
+        return writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      return false;
+    },
+  };
+}
+
+async function startProofGateway(modelUrl: string, label: string) {
+  const state = await createOpenClawTestState({ label });
   setUserProfileRole(ensureProfileForEmail(proxyUser).id, "administrator");
   const cfg = buildSubagentStopConfig(state.workspaceDir, {
     certPath: await state.writeText("tls/cert.pem", TEST_TLS_CERT_PEM),
@@ -325,9 +441,8 @@ it("delivers exactly one kept-child successor after exact-run Stop", async () =>
   if (!provider) {
     throw new Error("Missing synthetic model provider");
   }
-  provider.baseUrl = model.url;
+  provider.baseUrl = modelUrl;
   provider.request = { allowPrivateNetwork: true };
-  const parentRunId = "subagent-stop-followup-parent";
   const gateway = await startGatewayWithClient({
     cfg,
     configPath: state.configPath,
@@ -340,53 +455,136 @@ it("delivers exactly one kept-child successor after exact-run Stop", async () =>
     origin: "https://control.example.com",
     scopes: ["operator.admin", "operator.read", "operator.write"],
   });
-  let stopObserving = () => {};
-  try {
-    await gateway.server.startupSettled;
-    await expect(
-      gateway.client.request("chat.send", {
-        sessionKey: "agent:main:subagent-stop-followup-parent",
-        message: parentPrompt,
-        idempotencyKey: parentRunId,
-        deliver: false,
-      }),
-    ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
-    await model.firstChildStarted;
-    const successorRunId = await model.successorAccepted;
-    await expect(
-      gateway.client.request("agent.wait", { runId: successorRunId, timeoutMs: 30_000 }),
-    ).resolves.toMatchObject({ status: "ok" });
-    model.allowParentYield();
-    const parentOutcome = await gateway.client.request<Record<string, unknown>>("agent.wait", {
-      runId: parentRunId,
-      timeoutMs: 30_000,
-    });
-    if (parentOutcome.status !== "ok") {
-      const successor = getSubagentRunByRunId(successorRunId);
-      throw new Error(
-        `Requester wait failed with successor delivery=${successor?.delivery?.status ?? "missing"}: ${JSON.stringify(parentOutcome)}`,
-      );
-    }
+  await gateway.server.startupSettled;
+  return {
+    client: gateway.client,
+    close: async () => {
+      await disconnectGatewayClient(gateway.client);
+      await gateway.server.close({ reason: `${label} proof complete` });
+      await state.cleanup();
+    },
+  };
+}
 
-    const delivered = createDeferred();
-    const observeDelivery = () => {
-      const current = getSubagentRunByRunId(successorRunId);
-      if (current?.delivery?.status === "delivered") {
-        delivered.resolve();
-      }
-    };
-    stopObserving = subscribeSubagentRunChanges("persistence", observeDelivery);
-    observeDelivery();
-    await model.completionDelivered;
-    await delivered.promise;
-    expect(model.deliveryCounts()).toEqual({ successorDeliveries: 1, stoppedDeliveries: 0 });
-    expect(model.requests.filter((body) => body.includes(successorResult))).toHaveLength(1);
-    expect(model.requests.some((body) => body.includes(stoppedResult))).toBe(false);
+/** Resolves once the published registry row satisfies the predicate. */
+async function waitForRun(runId: string, matches: (row: SubagentRunRecord) => boolean) {
+  const reached = createDeferred();
+  const observe = () => {
+    const row = getSubagentRunByRunId(runId);
+    if (row && matches(row)) {
+      reached.resolve();
+    }
+  };
+  const stop = subscribeSubagentRunChanges("persistence", observe);
+  try {
+    observe();
+    await reached.promise;
   } finally {
-    stopObserving();
-    await disconnectGatewayClient(gateway.client);
-    await gateway.server.close({ reason: "subagent stop follow-up proof complete" });
-    await model.close();
-    await state.cleanup();
+    stop();
   }
+}
+
+/** Controller inputs that a run still owes its requester, by stable reservation identity. */
+function owedControllerInputs(runId: string) {
+  return [...sessionControllerMailboxes()].flatMap((mailbox) =>
+    mailbox.entries.filter(
+      (input) => input.phase !== "consumed" && input.sourceTurnId?.includes(runId) === true,
+    ),
+  );
+}
+
+afterEach(async () => {
+  await resetSubagentRegistryForTests({ persist: false });
 });
+
+it.each(["active", "paused"] as const)(
+  "delivers exactly one kept-child successor after exact-run Stop of an %s source",
+  async (sourceState) => {
+    const script = startStopFollowupModel(sourceState);
+    const model = await startScriptedModel(script.handle);
+    const gateway = await startProofGateway(model.url, `subagent-stop-followup-${sourceState}`);
+    const parentRunId = `subagent-stop-followup-parent-${sourceState}`;
+    try {
+      await expect(
+        gateway.client.request("chat.send", {
+          sessionKey: `agent:main:${parentRunId}`,
+          message: parentPrompt,
+          idempotencyKey: parentRunId,
+          deliver: false,
+        }),
+      ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
+      const source = await script.sourceIdentified;
+      if (sourceState === "active") {
+        await script.firstChildStarted;
+      } else {
+        await waitForRun(source.runId, (row) => row.pauseReason === "sessions_yield");
+      }
+      script.allowParentStop();
+      const successorRunId = await script.successorAccepted;
+      await expect(
+        gateway.client.request("agent.wait", { runId: successorRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      script.allowParentYield();
+      await expect(
+        gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      await waitForRun(successorRunId, (row) => row.delivery?.status === "delivered");
+      await script.completionDelivered;
+      expect(script.deliveryCounts()).toEqual({ successorDeliveries: 1, stoppedDeliveries: 0 });
+      expect(owedControllerInputs(source.runId), "the stopped source owes nothing").toEqual([]);
+      expect(owedControllerInputs(successorRunId), "the successor delivered once").toEqual([]);
+    } finally {
+      script.release();
+      await gateway.close();
+      await model.close();
+    }
+  },
+);
+
+it.each(["delete", "stop"] as const)(
+  "retires a %s child without blocking its completed sibling or the parent yield",
+  async (retirement) => {
+    const script = startRetiredSiblingModel(retirement);
+    const model = await startScriptedModel(script.handle);
+    const gateway = await startProofGateway(model.url, `subagent-retired-${retirement}`);
+    const parentRunId = `subagent-retired-${retirement}-parent`;
+    try {
+      await expect(
+        gateway.client.request("chat.send", {
+          sessionKey: `agent:main:${parentRunId}`,
+          message: parentPrompt,
+          idempotencyKey: parentRunId,
+          deliver: false,
+        }),
+      ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
+      const retired = await script.retiredChild;
+      await script.retiredChildStarted;
+      if (retirement === "delete") {
+        await waitForRun(retired.runId, (row) => row.pauseReason === "sessions_yield");
+      }
+      const sibling = await script.siblingChild;
+      await expect(
+        gateway.client.request("agent.wait", { runId: sibling.runId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      if (retirement === "delete") {
+        await expect(
+          gateway.client.request("sessions.delete", { key: retired.sessionKey }),
+        ).resolves.toMatchObject({ ok: true, deleted: true });
+        expect(owedControllerInputs(retired.runId), "deletion retires its inputs").toEqual([]);
+      }
+      script.allowParentRetirement();
+      await expect(
+        gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      await waitForRun(sibling.runId, (row) => row.delivery?.status === "delivered");
+      await script.siblingDelivered;
+      expect(script.deliveryCounts()).toEqual({ siblingDeliveries: 1, retiredDeliveries: 0 });
+      expect(owedControllerInputs(retired.runId), "the retired child owes nothing").toEqual([]);
+      expect(owedControllerInputs(sibling.runId), "the sibling delivered once").toEqual([]);
+    } finally {
+      script.release();
+      await gateway.close();
+      await model.close();
+    }
+  },
+);

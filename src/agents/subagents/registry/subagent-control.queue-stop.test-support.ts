@@ -21,12 +21,10 @@ export function registerQueueStopControlTests({
   cfgWithSessionStore,
   setSubagentControlDepsForTest,
   writeSessionStoreFixture,
-  abort,
 }: {
   cfgWithSessionStore: (storePath?: string) => OpenClawConfig;
   setSubagentControlDepsForTest: (overrides?: Partial<ControlRuntime>) => void;
   writeSessionStoreFixture: (label: string, store: Record<string, unknown>) => Promise<string>;
-  abort: ControlRuntime["abortEmbeddedAgentRun"];
 }) {
   it.each(["bulk", "first cancellation await", "controlled tree", "admin tree", "channel stop"])(
     "does not dispatch selected queued work during %s cancellation",
@@ -74,14 +72,6 @@ export function registerQueueStopControlTests({
         });
       }
       setSubagentControlDepsForTest({
-        isTargetSessionRunActive: () => true,
-        abortEmbeddedAgentRun: (sessionId) => {
-          expect(sessionId).toBe("running-session");
-          if (kind !== "channel stop" && kind !== "first cancellation await") {
-            expect(releaseSwarmRun(running.runId)).toBe(true);
-          }
-          return true;
-        },
         clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
       });
       const controller = {
@@ -170,7 +160,10 @@ export function registerQueueStopControlTests({
           ).toMatchObject({ handled: true, stoppedSubagents: 2, failedSubagents: 0 });
           expect(parent?.abortSignal.aborted).toBe(true);
         }
-        expect(abort).toHaveBeenCalledOnce();
+        if (kind !== "channel stop" && kind !== "first cancellation await") {
+          // No live collector run exists here; release capacity as its terminal cleanup would.
+          expect(releaseSwarmRun(running.runId)).toBe(true);
+        }
         for (const entry of [running, queued]) {
           expect(getSubagentRunByChildSessionKey(entry.childSessionKey)).toMatchObject({
             execution: { status: "terminal" },

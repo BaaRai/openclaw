@@ -73,6 +73,7 @@ function sweeperFixture(): TimerFixture {
     runContextEngineSubagentEnded: unexpected,
     notifyContextEngineSubagentEnded: unexpected,
     retireSupersededRun: unexpected,
+    retireObligations: unexpected,
     getRunsForChildSession: unexpected,
     getRunsForCollectorGroup: unexpected,
     warn: unexpected,

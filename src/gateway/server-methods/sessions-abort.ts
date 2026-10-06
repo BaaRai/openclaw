@@ -56,7 +56,7 @@ import { resolveChatAbortRequester } from "./chat-abort-authorization.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import {
   abortControlledSubagents,
-  abortQueuedCollectorSession,
+  abortDormantSubagentSession,
   descendantAbortError,
 } from "./chat-abort-runtime.js";
 import { abortedPartialPersistenceError } from "./chat-aborted-partial.js";
@@ -493,7 +493,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         throw abortedPartialPersistenceError(error, abortWarning);
       }
     };
-    const queuedAbort = abortQueuedCollectorSession({
+    const dormantAbort = abortDormantSubagentSession({
       context,
       sessionKey: canonicalKey,
       sessionKeyAliases: [key, ...(requestedKeyAliases ?? [])],
@@ -510,8 +510,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       hookContext: stopHookContext,
       assertCurrent: assertAbortCurrent,
     });
-    if (queuedAbort) {
-      const result = await queuedAbort;
+    if (dormantAbort) {
+      const result = await dormantAbort;
       if (result.ok) {
         abortWarning = result.value.warning;
       }

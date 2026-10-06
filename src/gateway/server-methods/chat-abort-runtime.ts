@@ -76,8 +76,8 @@ import type { GatewayRequestContext } from "./types.js";
 
 export { abortControlledSubagents, descendantAbortError } from "./chat-abort-descendants.js";
 
-/** Stops an unstarted collector through its scheduler owner before controller cancellation. */
-export function abortQueuedCollectorSession(
+/** Stops registry-owned work that has no active executor to reach through ordinary abort. */
+export function abortDormantSubagentSession(
   params: Omit<ChatSessionAbortParams, "ops"> & { runId?: string },
 ): Promise<QueuedCollectorAbortOutcome> | undefined {
   const entry = getLatestLiveSubagentRunByChildSessionKey(
@@ -85,13 +85,17 @@ export function abortQueuedCollectorSession(
     undefined,
     params.agentId,
   );
-  if (!entry || !isSubagentRunQueued(entry) || (params.runId && entry.runId !== params.runId)) {
+  if (
+    !entry ||
+    (!isSubagentRunQueued(entry) && entry.pauseReason !== "sessions_yield") ||
+    (params.runId && entry.runId !== params.runId)
+  ) {
     return undefined;
   }
   const cfg = params.session?.ok
     ? params.session.value.cfg
     : (params.context.getRuntimeConfig() ?? {});
-  // The queued child does not grant cancellation authority. Capture its live
+  // The dormant child does not grant cancellation authority. Capture its live
   // parent source and carry that exact requester claim through the awaited kill.
   const parentRunId = entry.requesterTurnRunId;
   const parentSource = parentRunId ? getRpcSource(parentRunId) : undefined;
@@ -105,11 +109,11 @@ export function abortQueuedCollectorSession(
   };
   const assertCurrent = () => {
     params.assertCurrent?.();
-    // Registry generation and controller scope protect the child reservation;
+    // Registry generation and controller scope protect the child obligation;
     // the source checks below independently protect its parent requester.
     const current = getCurrentSubagentRunOwner(subagentRuns, entry);
     if (!current || (current.execution.status === "queued" && !isSubagentRunQueued(current))) {
-      throw new Error("Queued collector reservation changed; retry Stop.");
+      throw new Error("Dormant subagent obligation changed; retry Stop.");
     }
     const ownershipError = ensureSubagentControllerOwnsRun({ cfg, controller, entry: current });
     if (ownershipError) {
@@ -145,7 +149,7 @@ export function abortQueuedCollectorSession(
       )
     ) {
       throw new Error(
-        "Unauthorized queued collector Stop; use its active parent requester connection or an administrator.",
+        "Unauthorized dormant subagent Stop; use its active parent requester connection or an administrator.",
       );
     }
   };
@@ -156,7 +160,7 @@ export function abortQueuedCollectorSession(
       ok: false,
       error: errorShape(
         ErrorCodes.UNAVAILABLE,
-        "Queued collector cancellation was not published; retry Stop.",
+        "Dormant subagent cancellation was not published; retry Stop.",
       ),
     };
     let failure: { error: unknown } | undefined;
@@ -208,7 +212,7 @@ export function abortQueuedCollectorSession(
                 ok: false,
                 error: errorShape(
                   ErrorCodes.UNAVAILABLE,
-                  "Queued collector was not stopped; other session work was preserved. Wait for it to finish or cancel it through its owner, then retry.",
+                  "Dormant subagent was not stopped; other session work was preserved. Wait for it to finish or cancel it through its owner, then retry.",
                 ),
               };
               return;
@@ -272,7 +276,7 @@ export function abortQueuedCollectorSession(
         }
         throw new AggregateError(
           [failure?.error ?? outcome.error, error],
-          "Queued collector cancellation and persistence failed",
+          "Dormant subagent cancellation and persistence failed",
           { cause: error },
         );
       }
@@ -635,7 +639,7 @@ export async function abortChatRunsForSessionKeyWithPartials(
   params: ChatSessionAbortParams,
 ): Promise<ChatSessionAbortResult> {
   if (params.cascadeDescendants) {
-    const queuedAbort = abortQueuedCollectorSession(params);
+    const queuedAbort = abortDormantSubagentSession(params);
     if (queuedAbort) {
       const result = await queuedAbort;
       return result.ok

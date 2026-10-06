@@ -50,12 +50,6 @@ import { loadSubagentSessionEntry } from "./subagent-session-reconciliation.js";
 const recoverRow = vi.hoisted(() => vi.fn());
 const getAgentRunContext = vi.hoisted(() => vi.fn<(_runId: string) => unknown>(() => undefined));
 const removeInternalSessionEffectsSession = vi.hoisted(() => vi.fn(async () => {}));
-type ControlRuntime = typeof import("./subagent-control.runtime.js");
-const killRuntime = vi.hoisted(() => ({
-  abortEmbeddedAgentRun: vi.fn<ControlRuntime["abortEmbeddedAgentRun"]>(() => false),
-  isTargetSessionRunActive: vi.fn<ControlRuntime["isTargetSessionRunActive"]>(() => false),
-  clearSessionQueues: vi.fn(() => ({ followupCleared: 0, keys: [] })),
-}));
 const killSessionEntry = vi.hoisted(() => ({
   current: undefined as
     | { sessionId: string; lifecycleRevision?: string; updatedAt: number }
@@ -75,7 +69,6 @@ vi.mock("../../../infra/agent-run-registry.js", async (importOriginal) => ({
 vi.mock("../../internal-session-effects.js", () => ({
   removeInternalSessionEffectsSession,
 }));
-vi.mock("./subagent-control.runtime.js", () => killRuntime);
 vi.mock("./subagent-control-session.js", { spy: true });
 vi.mock("./subagent-session-reconciliation.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./subagent-session-reconciliation.js")>();
@@ -106,12 +99,6 @@ describe("subagent registry recovery scheduling", () => {
       };
     });
     getAgentRunContext.mockReset().mockReturnValue(undefined);
-    killRuntime.abortEmbeddedAgentRun.mockReset().mockReturnValue(false);
-    killRuntime.isTargetSessionRunActive.mockReset().mockReturnValue(false);
-    killRuntime.clearSessionQueues.mockReset().mockReturnValue({
-      followupCleared: 0,
-      keys: [],
-    });
     killSessionEntry.current = {
       sessionId: "session-id",
       lifecycleRevision: "session-revision",
@@ -495,8 +482,6 @@ describe("subagent registry recovery scheduling", () => {
       sessionLifecycleRevision: "session-revision",
     };
     getAgentRunContext.mockReturnValue({});
-    const actualRuntime = await vi.importActual<ControlRuntime>("./subagent-control.runtime.js");
-    killRuntime.isTargetSessionRunActive.mockImplementation(actualRuntime.isTargetSessionRunActive);
 
     const target = captureSessionTarget({
       storeScope: resolveSessionStorePathCore(getRuntimeConfig().session?.store, {
@@ -591,8 +576,6 @@ describe("subagent registry recovery scheduling", () => {
             killIntent: undefined,
           };
           runs.set(foreign.runId, foreign);
-          killRuntime.isTargetSessionRunActive.mockReturnValue(true);
-          killRuntime.abortEmbeddedAgentRun.mockReturnValue(true);
           const sql = observeMainThreadSql();
           try {
             expect(
@@ -601,7 +584,7 @@ describe("subagent registry recovery scheduling", () => {
                 entry,
                 runs,
                 getRunsForChildSession: childRuns(runs),
-                loadKillRuntime: async () => killRuntime,
+                retireObligations: vi.fn(async () => {}),
                 completeSubagentRunWithRecovery,
                 retireSupersededRun: vi.fn(),
                 warn: vi.fn(),
@@ -611,11 +594,6 @@ describe("subagent registry recovery scheduling", () => {
           } finally {
             sql.restore();
           }
-          expect(killRuntime.abortEmbeddedAgentRun).toHaveBeenCalledExactlyOnceWith(
-            "research-session",
-            expect.objectContaining({ sessionKey: "global", agentId: "research" }),
-          );
-          expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
           expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
             expect.not.objectContaining({ suppressSessionEffects: true }),
             "sweeper-pending-kill-intent",
@@ -634,10 +612,6 @@ describe("subagent registry recovery scheduling", () => {
     };
 
     await sweeper.sweepOnce();
-
-    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
-    expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: entry.runId,
@@ -646,61 +620,6 @@ describe("subagent registry recovery scheduling", () => {
       }),
       "sweeper-retired-kill-intent",
     );
-  });
-
-  it.each([
-    [
-      "same run id",
-      (runs: Map<string, SubagentRunRecord>, entry: SubagentRunRecord) =>
-        runs.set(entry.runId, run()),
-    ],
-    [
-      "newer generation",
-      (runs: Map<string, SubagentRunRecord>, entry: SubagentRunRecord) => {
-        const newer = run();
-        newer.runId = "newer-kill-run";
-        newer.generation = (entry.generation ?? 0) + 1;
-        runs.set(newer.runId, newer);
-      },
-    ],
-  ])("does not apply a durable kill after %s wins during runtime loading", async (_name, win) => {
-    const entry = run();
-    entry.killIntent = {
-      requestedAt: Date.now(),
-      reason: "killed",
-      sessionId: "session-id",
-      lifecycleGeneration: getAgentEventLifecycleGeneration(),
-      sessionLifecycleRevision: "session-revision",
-    };
-    const runs = new Map([[entry.runId, entry]]);
-    const runtime = createDeferred<typeof import("./subagent-control.runtime.js")>();
-    const loadKillRuntime = vi.fn(() => runtime.promise);
-    const completeSubagentRunWithRecovery = vi.fn();
-    const retireSupersededRun = vi.fn();
-    const pending = reconcileDurableSubagentKillIntent({
-      runId: entry.runId,
-      entry,
-      runs,
-      getRunsForChildSession: childRuns(runs),
-      loadKillRuntime,
-      completeSubagentRunWithRecovery,
-      retireSupersededRun,
-      warn: vi.fn(),
-    });
-
-    try {
-      await vi.waitFor(() => expect(loadKillRuntime).toHaveBeenCalledOnce());
-      win(runs, entry);
-    } finally {
-      runtime.resolve(killRuntime as never);
-      await pending;
-    }
-
-    await expect(pending).resolves.toBe(false);
-    expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
-    expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
-    expect(retireSupersededRun).not.toHaveBeenCalled();
   });
 
   it("does not apply a durable kill after the same session id resets to a new revision", async () => {
@@ -713,36 +632,25 @@ describe("subagent registry recovery scheduling", () => {
       sessionLifecycleRevision: "session-revision",
     };
     const runs = new Map([[entry.runId, entry]]);
-    const runtime = createDeferred<typeof import("./subagent-control.runtime.js")>();
-    const loadKillRuntime = vi.fn(() => runtime.promise);
     const completeSubagentRunWithRecovery = vi.fn();
+    killSessionEntry.current = {
+      sessionId: "session-id",
+      lifecycleRevision: "replacement-revision",
+      updatedAt: Date.now(),
+    };
 
-    const pending = reconcileDurableSubagentKillIntent({
-      runId: entry.runId,
-      entry,
-      runs,
-      getRunsForChildSession: childRuns(runs),
-      loadKillRuntime,
-      completeSubagentRunWithRecovery,
-      retireSupersededRun: vi.fn(),
-      warn: vi.fn(),
-    });
-    try {
-      await vi.waitFor(() => expect(loadKillRuntime).toHaveBeenCalledOnce());
-      killSessionEntry.current = {
-        sessionId: "session-id",
-        lifecycleRevision: "replacement-revision",
-        updatedAt: Date.now(),
-      };
-    } finally {
-      runtime.resolve(killRuntime as never);
-      await pending;
-    }
-
-    await expect(pending).resolves.toBe(true);
-    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
-    expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
+    await expect(
+      reconcileDurableSubagentKillIntent({
+        runId: entry.runId,
+        entry,
+        runs,
+        getRunsForChildSession: childRuns(runs),
+        completeSubagentRunWithRecovery,
+        retireSupersededRun: vi.fn(),
+        retireObligations: vi.fn(async () => {}),
+        warn: vi.fn(),
+      }),
+    ).resolves.toBe(true);
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: entry.runId,
@@ -785,17 +693,12 @@ describe("subagent registry recovery scheduling", () => {
         entry,
         runs,
         getRunsForChildSession: childRuns(runs),
-        loadKillRuntime: async () =>
-          killRuntime as unknown as typeof import("./subagent-control.runtime.js"),
+        retireObligations: vi.fn(async () => {}),
         completeSubagentRunWithRecovery,
         retireSupersededRun,
         warn: vi.fn(),
       }),
     ).resolves.toBe(true);
-
-    expect(killRuntime.isTargetSessionRunActive).not.toHaveBeenCalled();
-    expect(killRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(killRuntime.clearSessionQueues).not.toHaveBeenCalled();
     expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
     expect(retireSupersededRun).toHaveBeenCalledWith(entry.runId, entry);
   });

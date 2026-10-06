@@ -11,8 +11,14 @@ import {
   type SubagentKillTargetState,
 } from "./subagent-control.types.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
-import { claimSubagentRunKill, markSubagentRunTerminated } from "./subagent-registry.js";
+import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
+import {
+  claimSubagentRunKill,
+  markSubagentRunTerminated,
+  retireSubagentObligations,
+} from "./subagent-registry.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { isSubagentObligationRetired } from "./subagent-requester-settle-identity.js";
 
 type SubagentKillClaim = NonNullable<Awaited<ReturnType<typeof claimSubagentRunKill>>>;
 
@@ -112,7 +118,32 @@ export function createSubagentKillSettlementOwner(params: SubagentKillSettlement
     };
   };
 
-  const settle = async (claim: SubagentKillClaim): Promise<SubagentKillMutationResult> => {
+  // A committed kill ends the row's completion obligation, including its owed inputs.
+  const retireObligations = async (
+    result: SubagentKillMutationResult,
+  ): Promise<SubagentKillMutationResult> => {
+    const current = params.currentEntry();
+    if (!current || !isSubagentObligationRetired(current)) {
+      return result;
+    }
+    try {
+      // The killed row may already have a successor; retirement binds to this exact row.
+      await retireSubagentObligations(current, () => {
+        if (getCurrentSubagentRunOwner(subagentRuns, current) !== current) {
+          throw new Error("Killed subagent row changed before obligation retirement.");
+        }
+      });
+      return result;
+    } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
+      const failure = `Subagent obligation retirement failed: ${formatErrorMessage(error)}`;
+      return { ...result, error: [result.error, failure].filter(Boolean).join(" ") };
+    }
+  };
+
+  const settleKill = async (claim: SubagentKillClaim): Promise<SubagentKillMutationResult> => {
     if (!ownsSessionIncarnation()) {
       return releaseChangedSession(claim);
     }
@@ -174,6 +205,7 @@ export function createSubagentKillSettlementOwner(params: SubagentKillSettlement
     }
     return { killed: true };
   };
+  const settle = async (claim: SubagentKillClaim) => retireObligations(await settleKill(claim));
 
   return {
     assertCancellationCurrent,
@@ -181,6 +213,7 @@ export function createSubagentKillSettlementOwner(params: SubagentKillSettlement
     ownsIntent,
     ownsSessionIncarnation,
     releaseChangedSession,
+    retireObligations,
     settle,
   };
 }

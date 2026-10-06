@@ -289,7 +289,7 @@ export function createLifecycleControllerFixture(
   controller.settleRequesterTurnAfterSessionSpawns = runOwned(
     controller.settleRequesterTurnAfterSessionSpawns,
   );
-  controller.cancelRequesterSettleWake = runOwned(controller.cancelRequesterSettleWake);
+  controller.retireSubagentObligations = runOwned(controller.retireSubagentObligations);
   controller.resumeAncestorCleanup = runOwned(controller.resumeAncestorCleanup);
   controller.resumeRequesterSettleWake = runOwned(controller.resumeRequesterSettleWake);
   controller.runRequesterSettleWake = runOwned(controller.runRequesterSettleWake);

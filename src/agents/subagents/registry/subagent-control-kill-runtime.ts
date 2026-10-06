@@ -41,10 +41,10 @@ import {
   SubagentRegistryWriteError,
 } from "./subagent-registry-persistence.js";
 import {
-  cancelSubagentRequesterSettleWake,
   claimSubagentRunKill,
   markSubagentRunTerminated,
   releaseSubagentRunKillClaim,
+  retireSubagentObligations,
 } from "./subagent-registry.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -138,8 +138,8 @@ export async function mutateSubagentRunForKill(
     return { killed: false, superseded: true };
   }
   if (resolveSubagentKillTargetState(initial)) {
-    if (params.suppressTaskDelivery && initial.requesterSettleWake) {
-      await cancelSubagentRequesterSettleWake(initial, () => {
+    if (params.suppressTaskDelivery) {
+      await retireSubagentObligations(initial, () => {
         params.cancellationControl.assertCurrent();
         if (!isCurrent()) {
           throw new Error("Subagent ownership changed during cancellation; retry.");
@@ -524,11 +524,11 @@ export async function mutateSubagentRunForKill(
         if (killedTarget && (!killClaim || claimedCurrentKill)) {
           await markKilledBestEffort();
         }
-        return {
+        return await killSettlement.retireObligations({
           killed: killedTarget && claimedCurrentKill,
           targetState: targetStateAfterAdmission,
           ...(readFailure ? { error: formatErrorMessage(readFailure.error) } : {}),
-        };
+        });
       }
       const declined = readFailure ? undefined : declineRevokedCancellation();
       if (declined && !stopAcceptance.accepted) {
@@ -581,9 +581,7 @@ export async function mutateSubagentRunForKill(
           // Loading can yield; repeat authority checks inside the retained mutation.
           return await run();
         }
-        const active =
-          capturedStop?.operations.some((operation) => !operation.result) ||
-          (sessionId ? runtime.isTargetSessionRunActive(sessionId, target) : false);
+        const active = capturedStop?.operations.some((operation) => !operation.result) === true;
         if (!killSettlement.ownsSessionIncarnation()) {
           return killSettlement.releaseChangedSession(claimedKill);
         }
@@ -602,15 +600,10 @@ export async function mutateSubagentRunForKill(
               reason: createAgentRunDirectAbortError(),
             })
           : undefined;
-        const aborted =
-          (stopped?.activeCancelled ?? 0) > 0 ||
-          (!capturedStop?.inputs.length &&
-          !capturedStop?.operations.length &&
-          sessionId &&
-          params.requiredSessionId === undefined
-            ? runtime.abortEmbeddedAgentRun(sessionId, target)
-            : false);
-        stopAcceptance.accepted ||= aborted;
+        stopAcceptance.accepted ||= (stopped?.activeCancelled ?? 0) > 0;
+        // Without a captured controller record nothing is cancelled here; the kill
+        // settles registry state alone and never re-selects a turn by session ID.
+        const noControllerRecord = !capturedStop?.inputs.length && !capturedStop?.operations.length;
         // Native cancellation is a request. Only the captured producer can settle its raw work;
         // a producer that ignores it must not hold the caller's Stop past the drain bound.
         const refused =
@@ -690,9 +683,13 @@ export async function mutateSubagentRunForKill(
               };
             }
           }
-          return { killed: killedTarget, targetState: settledTarget };
+          return await killSettlement.retireObligations({
+            killed: killedTarget,
+            targetState: settledTarget,
+          });
         }
-        return await killSettlement.settle(claimedKill);
+        const settled = await killSettlement.settle(claimedKill);
+        return noControllerRecord ? { ...settled, reason: "no_controller_record" } : settled;
       } catch (error) {
         if (hasSqliteWorkerOutcomeUnknown(error)) {
           throw error;

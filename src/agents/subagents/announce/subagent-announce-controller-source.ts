@@ -1,6 +1,8 @@
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import {
+  abortSessionControllerInput,
   reserveSessionControllerSource,
+  sessionControllerMailboxes,
   type SessionControllerInput,
 } from "../../../sessions/session-controller.mailbox.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
@@ -39,6 +41,23 @@ export function reserveSubagentControllerSource(
       incarnation: requester.entry.sessionId,
     }),
   });
+}
+
+/** Withdraws every unclaimed input that delivers this run; claimed turns revalidate at execution. */
+export function retireSubagentControllerInputs(entry: SubagentRunRecord, reason?: unknown): void {
+  const completionId = subagentCompletionSourceId(entry);
+  for (const mailbox of sessionControllerMailboxes()) {
+    for (const input of mailbox.entries.slice()) {
+      const id = input.sourceTurnId;
+      if (
+        !input.claim &&
+        (id === completionId ||
+          (id?.startsWith("requester-settle:") === true && id.includes(entry.runId)))
+      ) {
+        abortSessionControllerInput(input, reason ?? new Error("Subagent obligation retired"));
+      }
+    }
+  }
 }
 
 export const reserveSubagentCompletionControllerSource = (
