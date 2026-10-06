@@ -234,7 +234,6 @@ async function ensureSessionRuntimeCleanup(params: {
     });
   };
 
-  assertCurrent();
   if (isSessionRunActive(sessionId)) {
     return errorShape(
       ErrorCodes.UNAVAILABLE,
@@ -644,7 +643,6 @@ export async function performGatewaySessionReset(params: {
           }
         }
         resetPreparationError = resolveFastModeSelectionError(currentEntry);
-
         if (resetPreparationError) {
           return;
         }
@@ -679,14 +677,12 @@ export async function performGatewaySessionReset(params: {
         if (params.prepareLifecycle) {
           const prepared = await params.prepareLifecycle({
             agentId: resetTarget.target.agentId,
-
             entry: currentEntry,
             key: resetTarget.target.canonicalKey,
             storePath: resetTarget.storePath,
           });
           if (!prepared.ok) {
             resetPreparationError = prepared.error;
-
             return;
           }
           preparedLifecycle = prepared.value;
@@ -861,7 +857,6 @@ export async function performGatewaySessionReset(params: {
               storePath,
             })
           : undefined;
-
         const {
           prepareSubagentSessionCleanupRevocation,
           SubagentSessionCleanupRevocationChangedError,
