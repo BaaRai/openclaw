@@ -73,6 +73,10 @@ import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 // Single-target lifecycle owner: reset, guarded delete, and trusted rollback.
 
+function collectControllerIdentities(storePath: string): string[] {
+  return [...(collectSessionControllerTargets(undefined, storePath).get(storePath) ?? [])];
+}
+
 async function withCommittedHistoryMaintenance<T>(
   { agentId, env, storePath }: { agentId?: string; env?: NodeJS.ProcessEnv; storePath: string },
   run: (
@@ -289,11 +293,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
           input: {
             deleteParams,
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
-            admissionIdentities: [
-              ...(collectSessionControllerTargets(undefined, params.storePath).get(
-                params.storePath,
-              ) ?? []),
-            ],
+            admissionIdentities: collectControllerIdentities(params.storePath),
             allowLockedEntryRemoval,
             expectedPluginOwnerId,
           },
@@ -376,11 +376,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                   sessionId,
                   archiveDirectory: prepared.archiveDirectory,
                   archiveTranscript: params.archiveTranscript,
-                  admissionIdentities: [
-                    ...(collectSessionControllerTargets(undefined, params.storePath).get(
-                      params.storePath,
-                    ) ?? []),
-                  ],
+                  admissionIdentities: collectControllerIdentities(params.storePath),
                 },
               },
               assertDeletionCurrent,
@@ -408,11 +404,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                   input: {
                     validation: generationValidation,
                     sessionId,
-                    admissionIdentities: [
-                      ...(collectSessionControllerTargets(undefined, params.storePath).get(
-                        params.storePath,
-                      ) ?? []),
-                    ],
+                    admissionIdentities: collectControllerIdentities(params.storePath),
                   },
                 },
                 assertDeletionCurrent,

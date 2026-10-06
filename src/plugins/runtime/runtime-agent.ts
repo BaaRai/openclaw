@@ -217,7 +217,6 @@ async function createSessionEntry(
   };
   const identities = new Set([target.canonicalKey, ...target.storeKeys]);
   return await runSessionMutation({
-
     scope: target.storePath,
     identities,
     prepare: async () => {
@@ -598,8 +597,7 @@ async function runWithSessionWorkAdmission<T>(
       if (operation) {
         bindSessionControllerTarget(operation, target);
       }
-      // The shipped SDK adapter still validates under the physical store writer.
-      // Its callback borrows the same turn; no turn lease survives this boundary.
+      // The SDK adapter validates under the store writer; its callback borrows this turn.
       const effect = await beginSessionEffect({
         target,
         operation,

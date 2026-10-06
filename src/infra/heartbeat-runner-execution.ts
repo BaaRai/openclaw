@@ -315,8 +315,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     return skippedHeartbeatStage(preflight.skipReason, startedAt);
   }
   const { sessionKey } = preflight.session;
-  // One controller owns both direct/native and dispatched turns. Injected
-  // lists remain authoritative for embedders without creating a second vote.
+  // One controller owns native and dispatched turns; injected lists stay authoritative.
   const isSessionActive = opts.deps?.listActiveSessionRunKeys
     ? (key: string) => hasActiveRunForSession(key, listActiveEmbeddedRuns)
     : (key: string) => resolveActiveSessionRunId(key) !== undefined;
@@ -342,8 +341,7 @@ export type ReadyHeartbeatWake = StageResult<ReturnType<typeof resolveHeartbeatW
 
 export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const { cfg, agentId, heartbeat, preflight } = wake;
-  const { scheduledTasks, startedAt } = wake;
-  const { isSessionActive } = wake;
+  const { scheduledTasks, startedAt, isSessionActive } = wake;
   const { entry, sessionKey, run, conversationEntry } = preflight.session;
   const previousUpdatedAt = entry?.updatedAt;
   const projectionSessionKey = run.kind === "isolated" ? run.baseSessionKey : sessionKey;

@@ -652,7 +652,6 @@ export function getTotalQueueSize() {
   return total;
 }
 
-
 /**
  * SIGUSR2 may abandon finally blocks. Retire old active generations while
  * preserving and immediately draining queued user work under the reset state.

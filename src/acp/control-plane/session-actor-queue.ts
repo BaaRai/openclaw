@@ -79,8 +79,7 @@ export class SessionActorQueue {
         }
         let actor = captured.get(key);
         if (!actor) {
-          // An uncached idle session may be opened, but never adopt work admitted
-          // while routing was suspended. No ID comparison grants actor authority.
+          // Open an uncached idle session, but never adopt work admitted during routing.
           if (this.lanes.has(key)) {
             throw new Error("ACP session actor changed during selection.");
           }

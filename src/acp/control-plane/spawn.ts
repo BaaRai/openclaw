@@ -86,7 +86,6 @@ export async function cleanupFailedAcpSpawn(params: {
     }
     if (!deletionStarted && params.closeRuntimeOnFailure) {
       await runSessionMutation({
-
         scope: storePath,
         identities: [params.sessionKey, sessionId],
         run: async () => {

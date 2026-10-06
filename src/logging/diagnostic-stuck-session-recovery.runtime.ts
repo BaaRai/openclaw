@@ -5,7 +5,6 @@ import {
   type StuckSessionRecoveryRequest,
 } from "./diagnostic-session-recovery.js";
 
-
 /** Diagnostics may request a tick, but never decide admission, cancel by ID or clear custody. */
 export async function recoverStuckDiagnosticSession(
   params: StuckSessionRecoveryRequest,
@@ -30,7 +29,6 @@ export async function recoverStuckDiagnosticSession(
             released: 0,
           }
         : decision.action === "blocked" || state.recovery?.status === "blocked"
-
           ? {
               ...base,
               status: "failed",

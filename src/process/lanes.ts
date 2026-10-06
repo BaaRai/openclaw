@@ -25,8 +25,7 @@ export type CommandLaneConfiguration = {
   readonly maxConcurrent: number;
 };
 
-// Keep the exported diagnostics inventory closed so dynamic lanes cannot turn
-// a saturation snapshot into an unbounded payload.
+// Closed inventory: dynamic lanes must not turn a saturation snapshot unbounded.
 export const STATIC_COMMAND_LANES = [
   CommandLane.Main,
   CommandLane.SystemAgent,

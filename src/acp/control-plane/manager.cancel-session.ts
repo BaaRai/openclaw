@@ -135,7 +135,6 @@ export function captureManagerCancellation(params: {
 }
 
 /** Cancels either the active ACP turn or the idle runtime handle for a session. */
-
 export async function runManagerCancelSession(params: {
   assertActive?: () => void;
   cfg: OpenClawConfig;
