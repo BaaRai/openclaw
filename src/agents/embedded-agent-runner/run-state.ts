@@ -238,8 +238,7 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   forcedTerminalSettlements: new WeakMap<EmbeddedAgentQueueHandle, () => Promise<void>>(),
 }));
 
-// Detached/sessionless attempts retain native authority without creating a session
-// scheduling identity. Scoped attempts exist only on their exact controller turn.
+// Sessionless attempts only; scoped attempts live on their exact controller turn.
 const detachedAttempts = embeddedRunState.detachedAttempts;
 
 export function getControllerEmbeddedAttachment(
@@ -327,12 +326,8 @@ export async function waitForEmbeddedRunOwnerSettlement(
   ]);
 }
 
-export const ACTIVE_EMBEDDED_RUNS_BY_RUN_ID =
-  embeddedRunState.activeRunsByRunId ??
-  (embeddedRunState.activeRunsByRunId = new Map<string, ActiveEmbeddedRunAttachment>());
-export const EMBEDDED_RUN_COMPLETION_CLAIMS =
-  embeddedRunState.completionClaims ??
-  (embeddedRunState.completionClaims = new Map<string, EmbeddedRunCompletionClaim>());
+export const ACTIVE_EMBEDDED_RUNS_BY_RUN_ID = embeddedRunState.activeRunsByRunId;
+export const EMBEDDED_RUN_COMPLETION_CLAIMS = embeddedRunState.completionClaims;
 
 /** Identity-only dispatch must resolve the same participant owner as in-process tools. */
 export function captureActiveEmbeddedRunPersonalToolParticipants(
@@ -340,26 +335,24 @@ export function captureActiveEmbeddedRunPersonalToolParticipants(
   options?: { allowMissingRegistry?: boolean },
 ) {
   const instance = identity.operationalRunInstance;
-  const attachment = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId);
-  if (!attachment) {
+  const registration = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId);
+  if (!registration) {
     return undefined;
   }
-  const handle = attachment.handle;
-  const registration = attachment;
-  const toolAuthority = registration?.toolAuthority;
+  const handle = registration.handle;
+  const toolAuthority = registration.toolAuthority;
   // Session fencing only applies to runs that admitted personal-tool participants.
   if (options?.allowMissingRegistry && !toolAuthority?.personalToolParticipants) {
     return undefined;
   }
-  const delegatedAuthority = registration?.delegatedAuthority;
+  const delegatedAuthority = registration.delegatedAuthority;
   const ownsRegistration = () =>
-    registration !== undefined &&
     registration.operationalRunInstance?.instanceId === instance.instanceId &&
     registration.operationalRunInstance.runId === instance.runId &&
     registration.sessionKey === identity.sessionKey &&
     registration.agentId === identity.agentId &&
     handle.runId === instance.runId &&
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId) === attachment &&
+    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId) === registration &&
     getActiveNativeAttempt(registration.sessionId) === handle &&
     getEmbeddedRunAttachment(handle) === registration &&
     registration.delegatedAuthority === delegatedAuthority &&
@@ -477,27 +470,15 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
     ? "runtime_owned_wait"
     : undefined;
 }
-export const ACTIVE_EMBEDDED_RUN_SNAPSHOTS =
-  embeddedRunState.snapshots ??
-  (embeddedRunState.snapshots = new Map<string, ActiveEmbeddedRunSnapshot>());
-export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE =
-  embeddedRunState.sessionIdsByFile ??
-  (embeddedRunState.sessionIdsByFile = new Map<string, string>());
-export const ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID =
-  embeddedRunState.abandonedRunsBySessionId ??
-  (embeddedRunState.abandonedRunsBySessionId = new Map<string, AbandonedEmbeddedRun>());
 
+export const ACTIVE_EMBEDDED_RUN_SNAPSHOTS = embeddedRunState.snapshots;
+export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE = embeddedRunState.sessionIdsByFile;
+export const ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID = embeddedRunState.abandonedRunsBySessionId;
 export const ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY =
   embeddedRunState.abandonedRunSessionIdsByKey;
 export const ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_FILE =
-  embeddedRunState.abandonedRunSessionIdsByFile ??
-  (embeddedRunState.abandonedRunSessionIdsByFile = new Map<string, string>());
-export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS =
-  embeddedRunState.forcedTerminalSettlements ??
-  (embeddedRunState.forcedTerminalSettlements = new WeakMap<
-    EmbeddedAgentQueueHandle,
-    () => Promise<void>
-  >());
+  embeddedRunState.abandonedRunSessionIdsByFile;
+export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS = embeddedRunState.forcedTerminalSettlements;
 
 function evictPriorLifecycleEmbeddedRuns(): void {
   const staleHandles = new Set<EmbeddedAgentQueueHandle>();
@@ -519,10 +500,8 @@ function evictPriorLifecycleEmbeddedRuns(): void {
     ) {
       controllerOwnedHandles.add(handle);
     }
-    if (getActiveNativeAttempt(sessionId) === handle) {
-      if (attachment) {
-        detachNativeAttempt(attachment);
-      }
+    if (attachment && getActiveNativeAttempt(sessionId) === handle) {
+      detachNativeAttempt(attachment);
     }
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
   }
@@ -545,11 +524,9 @@ function evictPriorLifecycleEmbeddedRuns(): void {
       EMBEDDED_RUN_COMPLETION_CLAIMS.delete(sessionId);
     }
   }
-  for (const index of [ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE]) {
-    for (const [key, sessionId] of index) {
-      if (!getActiveNativeAttempt(sessionId)) {
-        index.delete(key);
-      }
+  for (const [key, sessionId] of ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE) {
+    if (!getActiveNativeAttempt(sessionId)) {
+      ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE.delete(key);
     }
   }
   const abortErrors: unknown[] = [];
@@ -557,8 +534,7 @@ function evictPriorLifecycleEmbeddedRuns(): void {
   // replacement without the cleanup above erasing that current-generation run.
   for (const handle of staleHandles) {
     if (controllerOwnedHandles.has(handle)) {
-      // The controller cancels its exact attached backend. This adapter only
-      // revokes native indexes; detached or superseded attempts still cancel here.
+      // The controller cancels its attached backend; only detached/superseded abort here.
       continue;
     }
     try {

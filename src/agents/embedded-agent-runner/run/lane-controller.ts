@@ -27,7 +27,12 @@ import {
   assertSessionControllerOperation,
   markReplyOperationExecutionStarted,
 } from "../../../sessions/session-controller.state.js";
-import { createSessionControllerWatchdog } from "../../../sessions/session-controller.watchdog.js";
+import {
+  createSessionControllerWatchdog,
+  type SessionControllerWatchdog,
+  type SessionControllerWatchdogAttempt,
+  type SessionWatchdogWait,
+} from "../../../sessions/session-controller.watchdog.js";
 import { getAdmittedRunDelegatedAuthority } from "../../admitted-run-context.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { beginForegroundSessionMaintenance } from "../../session-maintenance/coordinator.js";
@@ -82,6 +87,8 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
   ]);
   let laneTaskProgressAtMs = Date.now();
   let laneTaskDeadline: CommandQueueTaskDeadline | undefined;
+  const boundedLaneDeadline = () =>
+    laneTaskDeadline?.kind === "bounded" ? laneTaskDeadline.deadlineAtMs : undefined;
   const setLaneTaskDeadline = (deadline: CommandQueueTaskDeadline | undefined) => {
     laneTaskDeadline =
       deadline?.kind === "bounded"
@@ -90,18 +97,18 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
             deadlineAtMs: deadline.deadlineAtMs + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS,
           }
         : deadline;
-    activeWatchdogAttempt?.setExecutionDeadline(
-      laneTaskDeadline?.kind === "bounded" ? laneTaskDeadline.deadlineAtMs : undefined,
-    );
+    activeWatchdogAttempt?.setExecutionDeadline(boundedLaneDeadline());
   };
-  let executionWatchdog:
-    | import("../../../sessions/session-controller.watchdog.js").SessionControllerWatchdog
-    | undefined;
-  let activeWatchdogAttempt:
-    | import("../../../sessions/session-controller.watchdog.js").SessionControllerWatchdogAttempt
-    | undefined;
+  let executionWatchdog: SessionControllerWatchdog | undefined;
+  let activeWatchdogAttempt: SessionControllerWatchdogAttempt | undefined;
   let ownedGlobalCapacityWaits = 0;
   const pendingGlobalExecutions = new Set<Promise<unknown>>();
+  const trackGlobalExecution = <T>(run: Promise<T>): Promise<T> => {
+    const release = () => pendingGlobalExecutions.delete(run);
+    pendingGlobalExecutions.add(run);
+    void run.then(release, release);
+    return run;
+  };
   let releaseQueuedRunContext: ReturnType<typeof retainQueuedAgentRunContext>;
   let queuedRunAbortSignal: AbortSignal | undefined;
   let releaseCapacityWait: (() => void) | undefined;
@@ -174,16 +181,12 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       onAttemptDeadlineChanged(deadline);
     }
     return {
-      bindWatchdogAttempt: (
-        attempt: import("../../../sessions/session-controller.watchdog.js").SessionControllerWatchdogAttempt,
-      ) => {
+      bindWatchdogAttempt: (attempt: SessionControllerWatchdogAttempt) => {
         if (!isCurrent()) {
           return;
         }
         activeWatchdogAttempt = attempt;
-        attempt.setExecutionDeadline(
-          laneTaskDeadline?.kind === "bounded" ? laneTaskDeadline.deadlineAtMs : undefined,
-        );
+        attempt.setExecutionDeadline(boundedLaneDeadline());
       },
       isCurrent,
       abortSignal: signal,
@@ -193,8 +196,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
           return;
         }
         timeoutCleanupRequested = true;
-        // Publish native timeout unwind onto the operation's timer. Replacement
-        // controls close this exact deadline; no separate force-release timer.
+        // Native timeout unwind uses the operation's timer; replacements close this deadline.
         deadlineOwned = true;
         setLaneTaskDeadline({ kind: "bounded", deadlineAtMs: Date.now() });
       },
@@ -281,8 +283,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
     if (!params.enqueue) {
       noteLaneWaitIfBusy(lane);
     }
-    // Global capacity is retained until raw task settlement. Timeouts belong to
-    // the operation and cannot release this slot while its producer can write.
+    // Global capacity is held until raw task settlement; operation timeouts cannot release it.
     const queueOptions = withRunLaneWait({
       taskIdentity,
       abortSignal,
@@ -304,9 +305,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
     // staleness and stuck recovery fenced until this queue grants capacity.
     let waitingForGlobalLaneAdmission = true;
     const waitingWatchdog = options.getParams().replyOperation?.watchdog ?? executionWatchdog;
-    let capacityWait:
-      | import("../../../sessions/session-controller.watchdog.js").SessionWatchdogWait
-      | undefined;
+    let capacityWait: SessionWatchdogWait | undefined;
     let ownsCapacityWait = false;
     const beginCapacityWait = () => {
       if (ownsCapacityWait || !waitingForGlobalLaneAdmission || abortSignal.aborted) {
@@ -443,32 +442,19 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
         params.replyOperation?.registerTerminalProducerFence(() => writerClaim.revoke());
       return await laneExecution.finally(() => releaseTerminalProducerFence?.());
     };
-    const params = options.getParams();
     let queuedRun: Promise<EmbeddedAgentRunResult>;
     try {
       queuedRun = enqueue(
-        params,
+        options.getParams(),
         options.globalLane,
-        () => {
-          const raw = taskWithCurrentLifecycle();
-          pendingGlobalExecutions.add(raw);
-          void raw.then(
-            () => pendingGlobalExecutions.delete(raw),
-            () => pendingGlobalExecutions.delete(raw),
-          );
-          return raw;
-        },
+        () => trackGlobalExecution(taskWithCurrentLifecycle()),
         globalOpts,
       );
     } catch (error) {
       finishGlobalLaneAdmission();
       throw error;
     }
-    pendingGlobalExecutions.add(queuedRun);
-    void queuedRun.then(
-      () => pendingGlobalExecutions.delete(queuedRun),
-      () => pendingGlobalExecutions.delete(queuedRun),
-    );
+    void trackGlobalExecution(queuedRun);
     return queuedRun.finally(finishGlobalLaneAdmission).catch((error: unknown) => {
       if (isCommandLaneTaskTimeoutError(error)) {
         laneTaskAbortController.abort(error);
@@ -513,8 +499,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
       if (!operation) {
         watchdog.start();
       }
-      // Sessionless execution has no controller attempt to publish semantic
-      // progress. Its explicit execution deadline remains the sole expiry owner.
+      // Sessionless execution publishes no semantic progress; its deadline owns expiry.
       const detachedExecutionWait = operation
         ? undefined
         : watchdog.beginWait({
@@ -525,11 +510,9 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
         if (
           ownedGlobalCapacityWaits > 0 ||
           operation?.phase === "waiting_for_deferred_maintenance" ||
-          operation?.phase === "waiting_for_global_lane"
+          operation?.phase === "waiting_for_global_lane" ||
+          laneTaskDeadline?.kind === "unlimited"
         ) {
-          return undefined;
-        }
-        if (laneTaskDeadline?.kind === "unlimited") {
           return undefined;
         }
         return (
@@ -614,8 +597,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
             try {
               return await enqueueAdmittedSession(task, opts);
             } finally {
-              // A fail-fast caller promise cannot complete the operation while a
-              // concurrent admitted task or its placement cleanup can still write.
+              // Never complete the operation while an admitted task or its cleanup can write.
               while (pendingGlobalExecutions.size) {
                 await Promise.allSettled(pendingGlobalExecutions);
               }

@@ -779,8 +779,7 @@ export function abortEmbeddedAgentRun(
     ) {
       return false;
     }
-    // Detached runtimes deliberately have no session turn. Their exact native
-    // handle still owns cancellation and must not be replaced by an ID lookup.
+    // Detached runtimes have no session turn; their exact handle owns cancellation.
     handle.abort();
     revokeCompletionClaim(sessionId, handle.runId);
     return true;
@@ -1007,18 +1006,14 @@ function projectActiveEmbeddedRunOwner(
       return "finalizing";
     }
     try {
-      const aborted = registration.operation
-        ? registration.operation.abortByUser()
-        : (() => {
-            if (handle.cancel) {
-              handle.cancel("user_abort");
-            } else {
-              handle.abort();
-            }
-            return true;
-          })();
-      if (!aborted) {
-        return "unchanged";
+      if (registration.operation) {
+        if (!registration.operation.abortByUser()) {
+          return "unchanged";
+        }
+      } else if (handle.cancel) {
+        handle.cancel("user_abort");
+      } else {
+        handle.abort();
       }
       revokeCompletionClaim(registration.sessionId, runId);
       return "aborted";
@@ -1120,20 +1115,14 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
     ? waitForReplyOperationOwnerSettlement(operation, settleMs)
     : Promise.resolve(true);
   let aborted = false;
-  if (params.reason === "stuck_recovery") {
-    if (operation) {
-      const wasAborted = operation.abortSignal.aborted;
-      const decision = await operation.watchdog.tick();
-      // A committed Stop can correctly finish its tick as cleanup-blocked.
-      // Report that accepted cancellation without mistaking it for settlement.
-      aborted =
-        (!wasAborted && operation.abortSignal.aborted) ||
-        decision.action === "stop" ||
-        decision.action === "expire_cleanup";
-    } else if (handle) {
-      handle.abort();
-      aborted = true;
-    }
+  if (params.reason === "stuck_recovery" && operation) {
+    const wasAborted = operation.abortSignal.aborted;
+    const decision = await operation.watchdog.tick();
+    // A committed Stop may tick as cleanup-blocked; report it as accepted, not settled.
+    aborted =
+      (!wasAborted && operation.abortSignal.aborted) ||
+      decision.action === "stop" ||
+      decision.action === "expire_cleanup";
   } else if (operation) {
     aborted = operation.abortByUser();
   } else if (handle) {
@@ -1219,18 +1208,18 @@ export function setActiveEmbeddedRun(
     }
   } else if (sessionKey && toolAuthority?.detached === true) {
     // A prepared detached attempt can carry a policy key without owning that session.
-    toolAuthority?.assertActive();
+    toolAuthority.assertActive();
   } else if (sessionKey) {
     throw new Error("Native session registration requires controller turn admission");
   }
-  const previousAttachment =
-    (operation ? getControllerEmbeddedAttachment(operation) : undefined) ??
-    (operation ? undefined : getActiveNativeAttempt(sessionId)?.[embeddedRunCleanupAttachment]);
-  const previousHandle = previousAttachment?.handle;
+  const previousAttachment = operation
+    ? getControllerEmbeddedAttachment(operation)
+    : getActiveNativeAttempt(sessionId)?.[embeddedRunCleanupAttachment];
   const wasActive = previousAttachment !== undefined;
-  if (previousAttachment && previousHandle) {
-    previousAttachment?.watchdogAttempt?.close();
-    previousAttachment?.closeWatchdogWait?.();
+  if (previousAttachment) {
+    const previousHandle = previousAttachment.handle;
+    previousAttachment.watchdogAttempt?.close();
+    previousAttachment.closeWatchdogWait?.();
     previousHandle.closeDiagnostics?.();
     clearEmbeddedRunAbortability(previousHandle);
     detachNativeAttempt(previousAttachment);
@@ -1342,7 +1331,6 @@ export function setActiveEmbeddedRun(
   if (handle.runId) {
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, attachment);
   }
-
   clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
   const normalizedSessionFile = normalizeSessionFileRegistryKey(sessionFile);
   if (normalizedSessionFile) {
@@ -1423,13 +1411,11 @@ export function clearActiveEmbeddedRun(
   if (operation && backend) {
     operation.detachBackend(backend);
   }
-  // The exact attachment retains its diagnostic generation after controller completion.
-  // Closing it is generation-fenced and cannot retire a successor's diagnostic owner.
+  // Generation-fenced: closing cannot retire a successor's diagnostic owner.
   handle.closeDiagnostics?.();
   if (ownsSessionProjection) {
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
     clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
-
     logSessionStateChange({
       sessionId,
       sessionKey,
@@ -1454,11 +1440,9 @@ export function clearActiveEmbeddedRun(
   registration.settlement.resolve();
 }
 
-const testing = createEmbeddedRunsTestApi(clearActiveEmbeddedRun);
-
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.embeddedRunsTestApi")] =
-    testing;
+    createEmbeddedRunsTestApi(clearActiveEmbeddedRun);
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

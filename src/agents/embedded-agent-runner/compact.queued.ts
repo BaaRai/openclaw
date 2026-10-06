@@ -96,8 +96,12 @@ function lockedCompactionRuntimeFailure(runtime?: string): EmbeddedAgentCompactR
   };
 }
 
-const MANUAL_COMPACTION_ACTIVE_RUN_REASON =
-  "manual compaction unavailable while another embedded run is active";
+const manualCompactionActiveRunFailure = (): EmbeddedAgentCompactResult => ({
+  ok: false,
+  compacted: false,
+  reason: "manual compaction unavailable while another embedded run is active",
+  failure: { reason: "active_run" },
+});
 
 function assertQueuedCompactionPreparationActive(
   params: CompactEmbeddedAgentSessionParams,
@@ -172,12 +176,7 @@ export async function compactEmbeddedAgentSession(
         }),
       )
     ) {
-      return {
-        ok: false,
-        compacted: false,
-        reason: MANUAL_COMPACTION_ACTIVE_RUN_REASON,
-        failure: { reason: "active_run" },
-      };
+      return manualCompactionActiveRunFailure();
     }
     return await withQueuedCompactionCancellationResult(params, () =>
       withQueuedCompactionTurn(
@@ -230,18 +229,12 @@ export async function compactEmbeddedAgentSession(
               ),
             );
           }
-          // The native compactor borrows this exact turn; it must not overlap
-          // an already attached writer in that turn.
+          // The native compactor borrows this turn and must not overlap its attached writer.
           const attachment = operation
             ? getSessionControllerEntryForOperation(operation).attachment
             : undefined;
           if (attachment && "handle" in attachment) {
-            return {
-              ok: false,
-              compacted: false,
-              reason: MANUAL_COMPACTION_ACTIVE_RUN_REASON,
-              failure: { reason: "active_run" },
-            };
+            return manualCompactionActiveRunFailure();
           }
 
           const controller = new AbortController();

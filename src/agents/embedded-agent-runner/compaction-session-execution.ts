@@ -315,7 +315,6 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           workKey: diagnosticCompactionRunId,
           owner: diagnosticOwner,
         });
-
         session.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(session.agent.streamFn, {
           config: params.config,
           runId: diagnosticCompactionRunId,

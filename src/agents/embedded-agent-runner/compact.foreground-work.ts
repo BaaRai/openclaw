@@ -46,8 +46,7 @@ export async function withQueuedCompactionTurn(
         }
         throw error;
       } finally {
-        // A borrowed caller cannot proceed to another attempt while this one still writes.
-        // Standalone callers may receive a logical result, but retain this exact turn.
+        // Standalone callers may get a result early, but this turn retains raw work.
         await AsyncWorkScope.runWhenAllIdle(
           () => [work],
           () => work.drain(),

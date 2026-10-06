@@ -24,6 +24,7 @@ import { enqueueCommandInLane } from "../../process/command-queue.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
+import type { SessionWatchdogWait } from "../../sessions/session-controller.watchdog.js";
 import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
@@ -144,10 +145,9 @@ function enqueueCompactionInLanes<T>(
   const globalLane = resolveGlobalLane(params.lane, params);
   const enqueueGlobal =
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
-  const options = { abortSignal: params.abortSignal };
   const operation = getCurrentSessionControllerOwner();
   let queued = true;
-  let wait: import("../../sessions/session-controller.watchdog.js").SessionWatchdogWait | undefined;
+  let wait: SessionWatchdogWait | undefined;
   const beginWait = () => {
     if (wait || !queued) {
       return;
@@ -178,13 +178,12 @@ function enqueueCompactionInLanes<T>(
         operation?.watchdog.progress("semantic", "compaction:capacity_admitted");
         return await run();
       },
-      { ...options, onQueued: beginWait },
+      { abortSignal: params.abortSignal, onQueued: beginWait },
     ).finally(finishWait);
   } catch (error) {
     finishWait();
     throw error;
   }
-
 }
 
 export async function runPrimaryNativeCompactionInLanes<T>(

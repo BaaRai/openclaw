@@ -345,9 +345,8 @@ async function runEmbeddedAgentInternal(
         };
         startupStages.mark("harness-selection");
         const callerResult = createDeferredCore<EmbeddedAgentRunResult>();
-        const generationCleanupSettlement = createDeferredCore<void>();
-        // Cleanup can outlive every attachment consumer; observe a late failure without
-        // retaining the generation solely so a process-global test owner can acknowledge it.
+        const generationCleanupSettlement = createDeferredCore();
+        // Cleanup can outlive every attachment consumer; observe its late failure here.
         void generationCleanupSettlement.promise.catch(() => {});
         const trackOwner = captureAsyncWorkTracker();
         const parentSignal = getAsyncWorkSignal();
