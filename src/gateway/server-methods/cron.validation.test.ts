@@ -2659,19 +2659,14 @@ describe("cron method validation", () => {
           sessionKey: "agent:agent-456:discord:thread-xyz",
           agentId: "agent-456",
         },
-        caller: undefined,
       },
       {
         name: "blank session key",
         params: { mode: "now", text: "ping", sessionKey: "   " },
         expected: { mode: "now", text: "ping" },
-        caller: undefined,
       },
-    ])("resolves wake target for $name", async ({ params, expected, caller }) => {
-      const { context, respond } = await invokeWake(
-        params,
-        caller ? callerClient(caller) : undefined,
-      );
+    ])("resolves wake target for $name", async ({ params, expected }) => {
+      const { context, respond } = await invokeWake(params);
       const expectedWake = {
         ...expected,
         commitGuard: expect.any(Function),
