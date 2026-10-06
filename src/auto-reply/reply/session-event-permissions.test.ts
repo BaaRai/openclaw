@@ -28,7 +28,14 @@ await Promise.all([
   ),
 ]);
 
-it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgrade"] as const)(
+it.for([
+  "allowed",
+  "new-session",
+  "downgrade",
+  "upgrade",
+  "retained-tool-downgrade",
+  "retained-config-downgrade",
+] as const)(
   "bounds a production background completion by current and retained permissions: %s",
   async (change, { signal, onTestFinished }) => {
     const fixtureWork = withOpenClawTestState(
@@ -75,6 +82,8 @@ it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgra
         let attempted = false;
         let observedMode: SessionEntry["permissionMode"];
         let retainedWriteRejected = false;
+        const retainedDowngrade =
+          change === "retained-tool-downgrade" || change === "retained-config-downgrade";
         runEmbeddedAgentMock
           .mockReset()
           .mockImplementation(async (params: RunEmbeddedAgentParams) => {
@@ -155,6 +164,10 @@ it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgra
               if (change === "retained-tool-downgrade") {
                 expect(write).toBeDefined();
                 await setMode("read-only");
+              } else if (change === "retained-config-downgrade") {
+                expect(write).toBeDefined();
+                config.tools = { ...config.tools, deny: ["write"] };
+                setRuntimeConfigSnapshot(config);
               }
               if (write) {
                 attempted = true;
@@ -164,10 +177,12 @@ it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgra
                     content: "completed\n",
                   });
                 } catch (error) {
-                  if (change !== "retained-tool-downgrade") {
+                  if (!retainedDowngrade) {
                     throw error;
                   }
-                  expect(String(error)).toMatch(/authority|permission|active/i);
+                  expect(String(error)).toMatch(
+                    /authority|permission|active|configuration changed/i,
+                  );
                   retainedWriteRejected = true;
                 }
               }
@@ -195,17 +210,19 @@ it.for(["allowed", "new-session", "downgrade", "upgrade", "retained-tool-downgra
               : "full",
         );
         expect(attempted).toBe(
-          change === "allowed" || change === "new-session" || change === "retained-tool-downgrade",
+          change === "allowed" || change === "new-session" || retainedDowngrade,
         );
-        expect(retainedWriteRejected).toBe(change === "retained-tool-downgrade");
+        expect(retainedWriteRejected).toBe(retainedDowngrade);
         if (change === "new-session") {
           expect(target.sessionId).toBe("");
           expect(loadSessionEntry(scope)?.sessionId).toEqual(expect.any(String));
         } else {
           expect(loadSessionEntry(scope)).toMatchObject({ sessionId, lifecycleRevision });
         }
-        if (change === "retained-tool-downgrade") {
-          expect(loadSessionEntry(scope)?.permissionMode).toBe("read-only");
+        if (retainedDowngrade) {
+          expect(loadSessionEntry(scope)?.permissionMode).toBe(
+            change === "retained-tool-downgrade" ? "read-only" : "full",
+          );
           expect(outcome.executionStarted).toBe(true);
         } else {
           expect(outcome.status, outcome.error).toBe("completed");

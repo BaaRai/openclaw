@@ -2,7 +2,10 @@ import "../../test-utils/prepare-compiled-subprocesses.js";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
-import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import {
+  getRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
@@ -236,6 +239,31 @@ describe("session event target custody", () => {
       });
     },
   );
+
+  it("rejects a queued event when its runtime policy changes before dispatch", async () => {
+    await withTargetFixture(async ({ env }) => {
+      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+      const receipt = enqueueSessionEventForHost("Process completed", {
+        agentId: "main",
+        sessionKey,
+        source: "exec",
+        expectedTarget: target,
+      });
+      setRuntimeConfigSnapshot({
+        ...getRuntimeConfigSnapshot(),
+        tools: { deny: ["write", "message"] },
+      });
+
+      await expect(receipt.settled).resolves.toMatchObject({
+        status: "failed",
+        executionStarted: false,
+        delivered: false,
+        error: expect.stringContaining("configuration changed"),
+      });
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+    });
+  });
 
   it("retires a reset generation's deferred notice without poisoning its automation", async () => {
     await withTargetFixture(async ({ env, storePath }) => {

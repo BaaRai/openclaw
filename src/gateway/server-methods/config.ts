@@ -790,8 +790,7 @@ export const configHandlers: GatewayRequestHandlers = {
       if (recovery === recoveryAtStart && snapshot.exists && snapshot.valid) {
         configWriteRecovery.delete(gateway);
       } else {
-        respond(true, { ...response, writeError: recovery.error }, undefined);
-        return;
+        return respond(true, { ...response, writeError: recovery.error }, undefined);
       }
     }
     respond(true, response, undefined);

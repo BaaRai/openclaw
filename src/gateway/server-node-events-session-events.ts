@@ -7,6 +7,7 @@ import {
   enqueueSessionEventForHost,
 } from "../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { getRuntimeConfigSnapshotMetadata } from "../config/runtime-snapshot.js";
 import { resolveSystemMainSessionTarget } from "../config/sessions/main-session.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
@@ -69,6 +70,19 @@ function compactNodeEventText(raw: string, maxChars: number) {
   return truncateUtf16WithEllipsis(raw.replace(/\s+/g, " ").trim(), maxChars);
 }
 
+function captureNodeEventConfig() {
+  const cfg = getRuntimeConfig();
+  const publication = getRuntimeConfigSnapshotMetadata();
+  return {
+    cfg,
+    assertCurrent: () => {
+      if (getRuntimeConfigSnapshotMetadata() !== publication) {
+        throw new Error("Node event configuration changed during preparation");
+      }
+    },
+  };
+}
+
 export async function handleNodeSessionEvent(
   ctx: NodeEventContext,
   nodeId: string,
@@ -90,11 +104,12 @@ export async function handleNodeSessionEvent(
         return undefined;
       }
       const requestedSessionKey = normalizeOptionalString(obj.sessionKey);
+      const config = captureNodeEventConfig();
       let target: { sessionKey: string; agentId?: string };
       try {
         target = requestedSessionKey
           ? { sessionKey: requestedSessionKey }
-          : resolveSystemMainSessionTarget(getRuntimeConfig());
+          : resolveSystemMainSessionTarget(config.cfg);
       } catch (error) {
         ctx.logGateway.warn(
           `notification event not delivered node=${nodeId}: ${formatErrorMessage(error)}`,
@@ -107,10 +122,11 @@ export async function handleNodeSessionEvent(
         store,
         storeKeys,
       } = await resolveGatewaySessionStoreTargetInWorker({
-        cfg: getRuntimeConfig(),
+        cfg: config.cfg,
         key: target.sessionKey,
         agentId: target.agentId,
       });
+      config.assertCurrent();
       const entry = resolveCanonicalSessionEntryFromStoreKeys(store, storeKeys);
       if (resolveAgentHarnessSessionContextError(sessionKey, entry)) {
         return undefined;
@@ -138,9 +154,11 @@ export async function handleNodeSessionEvent(
       }
 
       const expectedTarget = await captureSessionEventTargetForHost(agentId, sessionKey);
+      config.assertCurrent();
       if (!(await isNodeEventConnectionCurrent(opts))) {
         return pairingChangedResult(evt.event);
       }
+      config.assertCurrent();
       const eventOptions = withSystemEventOwner(
         {
           sessionKey,
@@ -182,18 +200,22 @@ export async function handleNodeSessionEvent(
         return undefined;
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
-      const cfg = getRuntimeConfig();
+      const config = captureNodeEventConfig();
+      const { cfg } = config;
       const { canonicalKey: sessionKey, agentId } = await resolveGatewaySessionStoreTargetInWorker({
         cfg,
         key: sessionKeyRaw,
       });
+      config.assertCurrent();
       const runId = normalizeOptionalString(obj.runId) ?? "";
       const eventRouting = resolveEventSessionRoutingPolicy({ cfg, sessionKey });
       const eventSessionKey = resolveEventSessionKeyForPolicy(sessionKey, eventRouting);
       const expectedTarget = await captureSessionEventTargetForHost(agentId, eventSessionKey);
+      config.assertCurrent();
       if (!(await isNodeEventConnectionCurrent(opts))) {
         return pairingChangedResult(evt.event);
       }
+      config.assertCurrent();
       if (
         !ctx.authorizeNodeSystemRunEvent({
           nodeId,

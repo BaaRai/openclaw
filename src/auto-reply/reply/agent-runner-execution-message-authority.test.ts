@@ -192,9 +192,11 @@ describe("channel reply message authority", () => {
       const turn = channelTurn();
       if (mode === "event") {
         turn.followupRun.run.internalEventExecution = { onStarted: vi.fn(), onTerminal: vi.fn() };
+        turn.followupRun.run.senderId = undefined;
       }
+      let observedCapability: string | undefined;
       state.runCliAgentMock.mockImplementationOnce(async (run: RunCliAgentParams) => {
-        expect(run.messageActionTurnCapability).toBeUndefined();
+        observedCapability = run.messageActionTurnCapability;
         return { payloads: [{ text: "done" }], meta: {} };
       });
       const execute = await getExecuteAgentTurnForTest();
@@ -203,10 +205,19 @@ describe("channel reply message authority", () => {
         opts: { ...turn.opts, internalEventExecution: turn.followupRun.run.internalEventExecution },
         sessionCtx: {
           ...turn.sessionCtx,
-          Provider: mode === "untrusted-ingress" ? "webchat" : "event",
+          Provider: mode === "untrusted-ingress" ? "webchat" : "discord",
+          ...(mode === "event"
+            ? {
+                InternalTurnSource: "event" as const,
+                InputProvenance: { kind: "internal_system" as const, sourceTool: "exec" },
+                MessageSid: "event-occurrence",
+                SenderId: undefined,
+              }
+            : {}),
         },
       });
       expect(state.runCliAgentMock).toHaveBeenCalledOnce();
+      expect(observedCapability).toBeUndefined();
     },
   );
 });

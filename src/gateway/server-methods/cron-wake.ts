@@ -3,6 +3,7 @@ import {
   errorShape,
   validateWakeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { isSubagentSessionKey, normalizeAgentId } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
@@ -39,12 +40,10 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
   const sessionKey = p.sessionKey?.trim() || undefined;
   const agentId = p.agentId?.trim() || undefined;
   const callerScope = readCronCallerScope(client);
+  const cfg = context.getRuntimeConfig();
+  const configPublication = getRuntimeConfigSnapshotMetadata();
   const requestedOwner = sessionKey
-    ? resolveRequestedSessionAgentId(
-        context.getRuntimeConfig(),
-        sessionKey,
-        agentId ?? callerScope?.agentId,
-      )
+    ? resolveRequestedSessionAgentId(cfg, sessionKey, agentId ?? callerScope?.agentId)
     : undefined;
   if (requestedOwner && !requestedOwner.ok) {
     respond(false, undefined, requestedOwner.error);
@@ -127,6 +126,12 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
       throw new Error("Gateway caller authority is no longer active");
     }
     assertActiveAgentRuntimeAuthority(client, context);
+    if (
+      context.getRuntimeConfig() !== cfg ||
+      getRuntimeConfigSnapshotMetadata() !== configPublication
+    ) {
+      throw new Error("Wake configuration changed during preparation; retry the request");
+    }
     const accessError = authorizeWake();
     if (accessError) {
       throw new Error(accessError.message);

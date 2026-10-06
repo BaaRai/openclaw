@@ -2,6 +2,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isAgentDeletionBlocked } from "../../agents/agent-lifecycle-registry.js";
 import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
 import { attachToolAllowlistIntersection } from "../../agents/tool-policy-shared.js";
+import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import {
@@ -81,6 +82,7 @@ export function enqueueSessionEventForHost(
   options.assertCurrent?.();
   options.expectedTarget?.assertCurrent?.();
   const cfg = getSessionEventRuntimeConfig();
+  const configPublication = getRuntimeConfigSnapshotMetadata();
   const agentId = normalizeAgentId(options.agentId);
   resolveConfiguredAgentId(cfg, agentId);
   const sessionKey = resolveSessionEventKey(agentId, options.sessionKey);
@@ -184,6 +186,9 @@ export function enqueueSessionEventForHost(
     options.expectedTarget?.assertCurrent?.();
     assertAgentRunLifecycleGenerationCurrent(generation);
     const currentConfig = getSessionEventRuntimeConfig();
+    if (currentConfig !== cfg || getRuntimeConfigSnapshotMetadata() !== configPublication) {
+      throw new Error("Session event configuration changed; retry under the current policy");
+    }
     resolveConfiguredAgentId(currentConfig, agentId);
     if (resolveSessionStorePathCore(currentConfig.session?.store, { agentId, env }) !== storePath) {
       throw new Error("Session event destination store changed before settlement");
