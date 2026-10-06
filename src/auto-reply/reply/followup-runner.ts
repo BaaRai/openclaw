@@ -179,14 +179,7 @@ export function createFollowupRunner(
           admissionNotices.push(payload);
           return;
         }
-        await deliverFollowupDecision({
-          decision: { kind: "deliver", payloads: [payload] },
-          turn,
-          defaults,
-          runId: turn.runId,
-          runFollowup,
-          kind: "block",
-        });
+        await deliverProgress(turn, [payload], "block");
       };
       const admission = await prepareReplyAgentTurn({
         queued,

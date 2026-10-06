@@ -191,7 +191,6 @@ export function createDispatchReplyOperationCoordinator(params: {
   let preDispatchAbortOperation: ReplyOperation | undefined;
   let preDispatchLifecycleAdmission: SessionEffectRef | undefined;
   let removePreDispatchLifecycleAbortListener: (() => void) | undefined;
-
   let preDispatchLifecycleAbortController: AbortController | undefined;
   let dispatchLifecycleAbortController: AbortController | undefined;
   let preDispatchLifecycleInterrupted = false;
@@ -379,9 +378,9 @@ export function createDispatchReplyOperationCoordinator(params: {
       params.operationSessionStoreEntry.entry?.sessionId ??
       crypto.randomUUID();
     const replyTurnKind = resolveReplyTurnKind(params.replyOptions);
-    const sourceInput = readReplySourceInput(params.replyOptions);
-    const activeReplyOperation = sourceInput
-      ? sourceInput.mailbox.owner.active
+    const input = readReplySourceInput(params.replyOptions);
+    const activeReplyOperation = input
+      ? input.mailbox.owner.active
       : getSessionControllerOperation(dispatchOperationSessionKey);
     const commandRequiresTurn =
       (isExplicitCommandTurnContext(params.ctx, params.cfg) ||
@@ -397,7 +396,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     const allowGatewayQueueResolution =
       phase !== "pre_dispatch" &&
       allowQueuePreparation &&
-      (sourceInput !== undefined || params.allowActiveQueueResolution === true) &&
+      (input !== undefined || params.allowActiveQueueResolution === true) &&
       activeReplyOperation !== undefined &&
       activeReplyOperation.turnKind !== "heartbeat";
     if (allowGatewayQueueResolution) {
@@ -418,7 +417,6 @@ export function createDispatchReplyOperationCoordinator(params: {
       preDispatchLifecycleInterrupted = true;
       lifecycleOnlyAbortController?.abort();
     };
-    const input = sourceInput;
     // Queue/steer/question completion may already have handed this exact input
     // off without a dispatch operation. Final delivery must not reacquire it.
     if (input && (input.custody.enqueued || input.phase === "consumed" || input.injection)) {
@@ -466,67 +464,62 @@ export function createDispatchReplyOperationCoordinator(params: {
         }
       }
     }
-    const admitCurrentReplyTurn = async () => {
-      try {
-        const admission = await admitReplyTurn({
-          mailboxClaim,
-          runId: params.replyOptions?.runId,
-
-          assertRequestCurrent: () => params.replyOptions?.operatorAuthority?.assertCurrent(),
-          providerReviewAcknowledgment: params.replyOptions?.providerReviewAcknowledgment,
-          agentId: params.agentId,
-          sessionKey: dispatchOperationSessionKey,
-          resolveGatewayContext:
-            readChannelContextGatewayContextResolver(params.ctx) ??
-            getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
-          sessionId: operationSessionId,
-          expectedSessionId:
-            params.replyOptions?.expectedExistingSessionId ??
-            params.resolveOperationExpectedSessionId(),
-          expectedActiveOperations: [
-            params.replyOptions?.expectedActiveReplyOperation,
-            params.initialDispatchReplyOperation,
-          ].filter((operation): operation is ReplyOperation => operation !== undefined),
-          storePath: params.operationSessionStoreEntry.storePath,
-          kind: replyTurnKind,
-          resetTriggered: dispatchResetTriggered,
-          allowRestartTombstoneParentFork,
-          allowRestartTombstoneReset,
-          routeThreadId: params.routeThreadId,
-          originatingLeafEntryId:
-            params.replyOptions?.turnAdoptionLifecycle?.originatingLeafEntryId,
-          upstreamAbortSignal: input?.abortSignal ?? params.replyOptions?.abortSignal,
-          waitForActive: !allowActiveResolution && !allowSlackRoutedThreadBypass,
-          retainLifecycleAdmissionOnActive: allowActiveResolution || allowSlackRoutedThreadBypass,
-          onLifecycleInterrupt,
-        });
-        if (mailboxClaim) {
-          const claim = mailboxClaim;
-          if (admission.status === "owned") {
-            // Keep adoption open while preparation binds the actual FollowupRun.
-            // Only raw settlement releases the selected claim, not callbacks.
-            const releaseClaim = () => releaseSessionControllerClaim(claim);
-            void admission.operation.ownerSettlement.then(releaseClaim, releaseClaim);
-          } else {
-            releaseSessionControllerClaim(claim);
-          }
+    let admission: Awaited<ReturnType<typeof admitReplyTurn>>;
+    try {
+      admission = await admitReplyTurn({
+        mailboxClaim,
+        runId: params.replyOptions?.runId,
+        assertRequestCurrent: () => params.replyOptions?.operatorAuthority?.assertCurrent(),
+        providerReviewAcknowledgment: params.replyOptions?.providerReviewAcknowledgment,
+        agentId: params.agentId,
+        sessionKey: dispatchOperationSessionKey,
+        resolveGatewayContext:
+          readChannelContextGatewayContextResolver(params.ctx) ??
+          getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
+        sessionId: operationSessionId,
+        expectedSessionId:
+          params.replyOptions?.expectedExistingSessionId ??
+          params.resolveOperationExpectedSessionId(),
+        expectedActiveOperations: [
+          params.replyOptions?.expectedActiveReplyOperation,
+          params.initialDispatchReplyOperation,
+        ].filter((operation): operation is ReplyOperation => operation !== undefined),
+        storePath: params.operationSessionStoreEntry.storePath,
+        kind: replyTurnKind,
+        resetTriggered: dispatchResetTriggered,
+        allowRestartTombstoneParentFork,
+        allowRestartTombstoneReset,
+        routeThreadId: params.routeThreadId,
+        originatingLeafEntryId: params.replyOptions?.turnAdoptionLifecycle?.originatingLeafEntryId,
+        upstreamAbortSignal: input?.abortSignal ?? params.replyOptions?.abortSignal,
+        waitForActive: !allowActiveResolution && !allowSlackRoutedThreadBypass,
+        retainLifecycleAdmissionOnActive: allowActiveResolution || allowSlackRoutedThreadBypass,
+        onLifecycleInterrupt,
+      });
+      if (mailboxClaim) {
+        const claim = mailboxClaim;
+        if (admission.status === "owned") {
+          // Keep adoption open while preparation binds the actual FollowupRun.
+          // Only raw settlement releases the selected claim, not callbacks.
+          const releaseClaim = () => releaseSessionControllerClaim(claim);
+          void admission.operation.ownerSettlement.then(releaseClaim, releaseClaim);
+        } else {
+          releaseSessionControllerClaim(claim);
         }
-        return admission;
-      } catch (error) {
-        if (mailboxClaim) {
-          releaseSessionControllerClaim(mailboxClaim);
-        }
-        if (
-          phase === "pre_dispatch" &&
-          replyTurnKind === "visible" &&
-          isSessionWorkStartInvalidatedError(error)
-        ) {
-          throw new DispatchSessionRefreshRequiredError(error);
-        }
-        throw error;
       }
-    };
-    const admission = await admitCurrentReplyTurn();
+    } catch (error) {
+      if (mailboxClaim) {
+        releaseSessionControllerClaim(mailboxClaim);
+      }
+      if (
+        phase === "pre_dispatch" &&
+        replyTurnKind === "visible" &&
+        isSessionWorkStartInvalidatedError(error)
+      ) {
+        throw new DispatchSessionRefreshRequiredError(error);
+      }
+      throw error;
+    }
     // Admission has verified the predecessor's lineage in this physical store.
     // Carry that identity through initialization even when the active run still owns the slot.
     admittedExpectedSessionId =

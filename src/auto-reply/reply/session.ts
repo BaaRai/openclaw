@@ -374,7 +374,6 @@ async function initSessionStateAttempt(params: InitSessionStateParams): Promise<
       sessionKey: candidate.sessionKey,
       sessionId: candidate.sessionId,
       explicitReset: candidate.resetTriggered,
-
       signal: params.signal,
       shouldPreempt: () => preparedOutcome === undefined,
       stopChildren: async (applyParentStop) => await stopResetSubagents(applyParentStop),

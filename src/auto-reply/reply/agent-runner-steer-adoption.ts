@@ -106,21 +106,14 @@ export async function runActiveReplySteer(
     typing.cleanup();
     return "handled";
   }
-  const scheduleParkedFallback = () => {
-    const owner = followupRun.controllerInput
-      ? followupRun.controllerInput.mailbox.owner.active
-      : getSessionControllerOperation(queueKey);
-    if (owner) {
-      scheduleFollowupDrainAfterReplyOperationClear({
-        operation: owner,
-        queueKey,
-        runFollowup,
-      });
-    } else {
-      scheduleFollowupDrain(queueKey, runFollowup);
-    }
-  };
-  scheduleParkedFallback();
+  const owner = followupRun.controllerInput
+    ? followupRun.controllerInput.mailbox.owner.active
+    : getSessionControllerOperation(queueKey);
+  if (owner) {
+    scheduleFollowupDrainAfterReplyOperationClear({ operation: owner, queueKey, runFollowup });
+  } else {
+    scheduleFollowupDrain(queueKey, runFollowup);
+  }
   releaseAdmissionTicket();
   let custodyFinished = false;
   const fallback = async (reason?: string): Promise<"handled"> => {
