@@ -3,11 +3,9 @@ import type { SessionControllerMailbox } from "../../../sessions/session-control
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import type { FollowupRun } from "./types.js";
 
-type FollowupQueueState = SessionControllerMailbox;
-
 export function consumeQueueSummaryDelivery(
   queue: Pick<
-    FollowupQueueState,
+    SessionControllerMailbox,
     "summarySources" | "summaryLines" | "summaryElisions" | "droppedCount"
   >,
   delivery: { droppedCount: number; sources: readonly FollowupRun[] },
@@ -40,7 +38,6 @@ export function consumeQueueSummaryDelivery(
           }
         }
         entry.count = entry.sources.length;
-
         consumedCount += 1;
         if (entry.sources.length === 0) {
           queue.summaryElisions.splice(elisionIndex, 1);

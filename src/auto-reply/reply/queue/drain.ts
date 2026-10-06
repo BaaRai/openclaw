@@ -77,8 +77,7 @@ function bindRestart(): void {
     "abort",
     () => {
       // Capture owners before cleanup can mutate the registry or publish a successor.
-      const capturedOwners = Array.from(sessionControllerMailboxes());
-      for (const mailbox of capturedOwners) {
+      for (const mailbox of Array.from(sessionControllerMailboxes())) {
         clearFollowupQueue(mailbox.key, mailbox);
       }
     },
@@ -142,6 +141,12 @@ async function executeClaim(
         items: sources,
         renderItem: renderCollectItem,
       });
+  const settleSources = async (outcome?: "consumed") => {
+    for (const item of sources) {
+      completeFollowupRunLifecycle(item, outcome);
+    }
+    await Promise.all(sources.flatMap((item) => item.controllerInput?.custody.settling ?? []));
+  };
   let run = source;
   if (claim.summary || sources.length > 1) {
     const recorder = claim.summary
@@ -176,28 +181,8 @@ async function executeClaim(
           (item) => item.turnAdoptionLifecycle?.cronCreatorAuthorityUnavailable,
         )?.turnAdoptionLifecycle?.cronCreatorAuthorityUnavailable,
         onAdopted: adopt,
-        onAbandoned: async () => {
-          for (const item of sources) {
-            completeFollowupRunLifecycle(item);
-          }
-          await Promise.all(
-            sources.flatMap((item) => {
-              const settling = item.controllerInput?.custody.settling;
-              return settling ? [settling] : [];
-            }),
-          );
-        },
-        onSettled: async () => {
-          for (const item of sources) {
-            completeFollowupRunLifecycle(item, "consumed");
-          }
-          await Promise.all(
-            sources.flatMap((item) => {
-              const settling = item.controllerInput?.custody.settling;
-              return settling ? [settling] : [];
-            }),
-          );
-        },
+        onAbandoned: () => settleSources(),
+        onSettled: () => settleSources("consumed"),
       },
     };
   }

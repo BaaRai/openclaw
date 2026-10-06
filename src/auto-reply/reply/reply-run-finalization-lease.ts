@@ -12,5 +12,4 @@ export function beginReplyOperationFinalizationWork(
   timeoutMs: number,
 ): () => void {
   return owner.watchdog.beginFinalizationWork(timeoutMs);
-
 }

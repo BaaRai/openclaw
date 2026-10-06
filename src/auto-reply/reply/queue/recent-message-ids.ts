@@ -6,7 +6,6 @@ import type { FollowupRun } from "./types.js";
 const TTL = 5 * 60 * 1000;
 const MAX = 10_000;
 export function peekRecentQueueMessageId(
-
   key: string,
   mailbox: SessionControllerMailbox | undefined,
   now = Date.now(),

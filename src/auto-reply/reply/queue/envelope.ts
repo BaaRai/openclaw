@@ -145,10 +145,6 @@ export function collectQueuedPromptMedia(
   };
 }
 
-function hasRuntimeOnlyFollowupMetadata(item: FollowupRun): boolean {
-  return item.currentInboundEventKind === "room_event" || item.currentInboundAudio === true;
-}
-
 export function buildCollectTranscriptInput(
   items: FollowupRun[],
   messages?: (PersistedUserTurnMessage | undefined)[],
@@ -279,7 +275,8 @@ export function requiresIndividualCollectDrain(item: FollowupRun): boolean {
     item.disableCollectBatching === true ||
     item.run.skillWorkshopProposalRevision !== undefined ||
     item.run.skillLibraryAuthoring !== undefined ||
-    hasRuntimeOnlyFollowupMetadata(item)
+    item.currentInboundEventKind === "room_event" ||
+    item.currentInboundAudio === true
   );
 }
 
@@ -301,22 +298,9 @@ export function createAggregateCancellation(items: readonly FollowupRun[]): Aggr
     sourceSignals.set(item.abortSignal, owners);
   }
   const signals = new Set(sourceSignals.keys());
-  if (signals.size === 0) {
-    return {
-      signal: undefined,
-      admit: () => undefined,
-      dispose: () => undefined,
-    };
-  }
   const onlySignal = signals.size === 1 ? signals.values().next().value : undefined;
-  const onlySignalOwned =
-    onlySignal && owner ? sourceSignals.get(onlySignal)?.has(owner) === true : false;
-  if (onlySignal && onlySignalOwned) {
-    return {
-      signal: onlySignal,
-      admit: () => undefined,
-      dispose: () => undefined,
-    };
+  if (signals.size === 0 || (onlySignal && owner && sourceSignals.get(onlySignal)?.has(owner))) {
+    return { signal: onlySignal, admit: () => undefined, dispose: () => undefined };
   }
   const controller = new AbortController();
   const listeners = new Map<AbortSignal, () => void>();

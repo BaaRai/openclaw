@@ -18,14 +18,12 @@ import { normalizeThinkLevel } from "../../thinking.js";
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import type { FollowupRun, QueueDropPolicy, QueueSettings } from "./types.js";
 
-type FollowupQueueState = SessionControllerMailbox;
-
 export const DEFAULT_QUEUE_DEBOUNCE_MS = 500;
 export const DEFAULT_QUEUE_CAP = 20;
 export const DEFAULT_QUEUE_DROP: QueueDropPolicy = "summarize";
 
 export function* followupQueueSources(
-  queue: Pick<FollowupQueueState, "items" | "summarySources" | "summaryElisions">,
+  queue: Pick<SessionControllerMailbox, "items" | "summarySources" | "summaryElisions">,
 ): Generator<FollowupRun> {
   yield* queue.items;
   yield* queue.summarySources;
@@ -37,7 +35,7 @@ export function* followupQueueSources(
 export function getExistingFollowupQueue(
   key: string,
   target?: SessionTarget,
-): FollowupQueueState | undefined {
+): SessionControllerMailbox | undefined {
   const cleaned = key.trim();
   if (!cleaned) {
     return undefined;
@@ -65,7 +63,7 @@ export function hasPendingFollowupQueueWork(keys: Iterable<string | undefined>):
 }
 
 type SummaryElisionCapState = Pick<
-  FollowupQueueState,
+  SessionControllerMailbox,
   "activeSummarySources" | "cap" | "evictedSummaryCount" | "summaryElisions" | "droppedCount"
 >;
 
@@ -116,7 +114,7 @@ export function getFollowupQueue(
   key: string,
   settings: QueueSettings,
   target?: SessionTarget,
-): FollowupQueueState {
+): SessionControllerMailbox {
   const mailbox = getSessionControllerMailbox(key, target);
   applyQueueRuntimeSettings({ target: mailbox, settings });
   trimSummaryElisionsToCap(mailbox);

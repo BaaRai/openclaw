@@ -8,7 +8,6 @@ import {
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./state.js";
 
-
 export type ClearSessionQueueResult = {
   followupCleared: number;
   keys: string[];
@@ -23,7 +22,6 @@ export function clearSessionQueues(
   const clearedQueues = new Set<NonNullable<ReturnType<typeof getExistingFollowupQueue>>>();
   let followupCleared = 0;
   const clearedKeys: string[] = [];
-
   for (const key of keys) {
     const cleaned = normalizeOptionalString(key);
     if (!cleaned || seen.has(cleaned)) {
@@ -39,7 +37,5 @@ export function clearSessionQueues(
         : clearFollowupQueue(cleaned, queue);
     }
   }
-
   return { followupCleared, keys: clearedKeys };
-
 }

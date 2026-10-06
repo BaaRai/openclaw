@@ -104,7 +104,6 @@ type QueuedFollowupReplyDisposition =
   | { kind: "deliver"; deliver: QueuedFollowupReplyDelivery }
   | { kind: "drop"; reason: "source-unavailable" };
 
-
 export type FollowupRun = {
   /** Controller-owned immutable input identity and mutable source custody. */
   controllerInput?: SessionControllerInput;

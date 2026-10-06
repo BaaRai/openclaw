@@ -102,13 +102,10 @@ function appendQueueItem(params: {
   const lifecycle = params.run.turnAdoptionLifecycle;
   if (signal && runFollowup) {
     const onAbort = () => {
-      const queue = params.queue;
-      if (queue) {
-        // Cancellation must release pending ownership even while normal draining is dormant.
-        void dropAbortedFollowups(queue, runFollowup).catch((error: unknown) => {
-          defaultRuntime.error?.(`followup queue cancellation failed: ${String(error)}`);
-        });
-      }
+      // Cancellation must release pending ownership even while normal draining is dormant.
+      void dropAbortedFollowups(params.queue, runFollowup).catch((error: unknown) => {
+        defaultRuntime.error?.(`followup queue cancellation failed: ${String(error)}`);
+      });
     };
     const onSettled = lifecycle?.onSettled;
     if (lifecycle) {
@@ -164,39 +161,17 @@ export function enqueueFollowupRun(
     return false;
   }
   const queue = getFollowupQueue(key, settings, input.mailbox.owner.target);
-
-  const dedupe = dedupeMode === "none" ? undefined : isRunAlreadyQueued;
-
-  // Deduplicate: skip if the same message is already queued.
-  if (dedupe?.(run, queue.items)) {
+  if (dedupeMode !== "none" && isRunAlreadyQueued(run, queue.items)) {
     retireSessionControllerInput(input);
     return false;
   }
   // Preserve later prompts while an older steer decides between same-turn
   // delivery and fallback; overflow resumes when the gate resolves.
-  if (options.steerCandidate || queue.entries.some((item) => item.injection)) {
-    if (!markFollowupRunEnqueued(run)) {
-      retireSessionControllerInput(input);
-      return false;
-    }
-    appendQueueItem({
-      key,
-      queue,
-      run,
-      recentMessageIdKey,
-      runFollowup,
-      restartIfIdle,
-      front: options.steerCandidate === true && options.position === "front",
-    });
-    if (!options.steerCandidate) {
-      settleSessionControllerSourceInjectionOrder(input, false);
-    }
-    return true;
-  }
+  const deferOverflow = options.steerCandidate || queue.entries.some((item) => item.injection);
   // drop:new rejects this source without mutating the existing queue. Do not
   // publish an external queued identity for work that will never be admitted.
   const pendingCount = countPendingQueueItems(queue.items, queue.inFlight);
-  if (queue.dropPolicy === "new" && queue.cap > 0 && pendingCount >= queue.cap) {
+  if (!deferOverflow && queue.dropPolicy === "new" && queue.cap > 0 && pendingCount >= queue.cap) {
     run.onQueueDisposition?.("queue-cap-new");
     completeFollowupRunLifecycle(run);
     return false;
@@ -205,7 +180,7 @@ export function enqueueFollowupRun(
     retireSessionControllerInput(input);
     return false;
   }
-  if (!applyFollowupQueueOverflow(queue, run)) {
+  if (!deferOverflow && !applyFollowupQueueOverflow(queue, run)) {
     return false;
   }
   appendQueueItem({
@@ -215,9 +190,11 @@ export function enqueueFollowupRun(
     recentMessageIdKey,
     runFollowup,
     restartIfIdle,
-    front: options.position === "front",
+    front: options.position === "front" && (!deferOverflow || options.steerCandidate === true),
   });
-  settleSessionControllerSourceInjectionOrder(input, false);
+  if (!options.steerCandidate) {
+    settleSessionControllerSourceInjectionOrder(input, false);
+  }
   return true;
 }
 
@@ -311,10 +288,7 @@ function applyFollowupQueueOverflow(
 
 export function getFollowupQueueDepth(key: string): number {
   const queue = getExistingFollowupQueue(key);
-  if (!queue) {
-    return 0;
-  }
-  return countPendingQueueItems(queue.items, queue.inFlight);
+  return queue ? countPendingQueueItems(queue.items, queue.inFlight) : 0;
 }
 
 /** Claims the next pending user request from the same route and principal. */
@@ -452,13 +426,13 @@ export function reserveSteerCandidate(
         run.operatorAuthority?.assertCurrent();
         return "steer";
       } catch (error) {
-        if (isFollowupRunAborted(run) || input.abortSignal.aborted) {
-          finish(true);
-          return "cancelled";
-        }
+        const cancelled = isFollowupRunAborted(run) || input.abortSignal.aborted;
         // Failed original execution authority is cancellation, not a new
         // runnable fallback. No native handoff has occurred in this frame.
         finish(true);
+        if (cancelled) {
+          return "cancelled";
+        }
         throw error;
       }
     },
