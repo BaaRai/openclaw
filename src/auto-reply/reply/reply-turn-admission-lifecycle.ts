@@ -67,12 +67,8 @@ export function bindReplyAdmissionRelease(params: {
     });
   }
   if (admission) {
-    // The lifecycle fence follows hooks, media work, agent execution, and
-    // final delivery. Reset/delete interrupts the operation and waits until
-    // its actual owner clears it before mutating the persisted session.
-    // Adoption rebinds the map to this target lease; the source-key lease
-    // stays registered via its own after-clear callback (release is
-    // idempotent), so both identities free on operation clear.
+    // The lifecycle fence spans hooks, media, execution, and final delivery;
+    // reset/delete waits for the owner to clear before mutating the session.
     let recoveryOwnerRelease: Promise<MainSessionRecoveryPendingTarget | undefined> | undefined;
     const releaseRecoveryOwner = () =>
       (recoveryOwnerRelease ??= releaseReplyRecoveryOwner(recoveryOwnerLease));

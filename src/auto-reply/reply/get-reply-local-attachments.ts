@@ -15,7 +15,6 @@ export function canSelfServeLocalPaths(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
   agentId: string;
-  agentDir?: string;
   sessionKey?: string;
   workspaceDir: string;
   provider: string;

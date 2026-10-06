@@ -497,18 +497,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   preparedSessionState = resolvePreparedSessionState();
   const currentRouteThreadId = resolveRoutedDeliveryThreadId({ ctx, sessionKey });
   const applySlackRouteThreadSteeringGuard = isSlackDirectRoutedThreadTurn(ctx);
-  const resolveActiveRunAcceptsCurrentThread = (busy: { isActive: boolean }) => {
-    if (!busy.isActive || !sessionKey || !applySlackRouteThreadSteeringGuard) {
-      return true;
-    }
-    return routeThreadIdsMatch(
-      sourceInput
-        ? sourceInput.mailbox.owner.active?.routeThreadId
-        : resolveActiveSessionRunThreadId(sessionKey),
-      currentRouteThreadId,
-    );
-  };
-
   const resolveActiveReplyOperationSessionId = () =>
     sourceInput
       ? sourceInput.mailbox.owner.active?.sessionId
@@ -557,7 +545,16 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
             (entry) => entry !== sourceInput && entry.phase !== "consumed",
           ) || sourceInput.mailbox.droppedCount > 0
         : hasPendingFollowupQueueWork([queueKey]);
-  const activeRunAcceptsCurrentThread = resolveActiveRunAcceptsCurrentThread({ isActive });
+  const activeRunAcceptsCurrentThread =
+    !isActive ||
+    !sessionKey ||
+    !applySlackRouteThreadSteeringGuard ||
+    routeThreadIdsMatch(
+      sourceInput
+        ? sourceInput.mailbox.owner.active?.routeThreadId
+        : resolveActiveSessionRunThreadId(sessionKey),
+      currentRouteThreadId,
+    );
 
   const shouldSteer =
     !isRoomEvent &&
@@ -635,7 +632,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       if (prioritySource) {
         retireSessionControllerInput(prioritySource);
       }
-
       typing.cleanup();
       return { kind: "reply", reply: queueReply } as const;
     }
