@@ -299,10 +299,8 @@ export function resolveRpcSourceSessionProgressState(
   }
   const claim = ref.input.claim;
   const operation = claim?.operation;
-  if (ref.input.custody.rpcAccepted !== true && claim === undefined) {
-    return undefined;
-  }
   if (
+    (ref.input.custody.rpcAccepted !== true && claim === undefined) ||
     claim?.released ||
     operation?.result ||
     (operation !== undefined &&
@@ -324,15 +322,11 @@ export function getRpcSourceProjectSessionActive(
     return false;
   }
   const operation = ref?.input.claim?.operation;
-  if (!operation) {
-    return ref?.input.retirementRequested === true ? false : undefined;
+  const attachment = operation && getSessionControllerEntryForOperation(operation).attachment;
+  if (attachment && attachment.operation === operation) {
+    return attachment.projectSessionActive;
   }
-  const attachment = getSessionControllerEntryForOperation(operation).attachment;
-  return attachment?.operation === operation
-    ? attachment.projectSessionActive
-    : ref?.input.retirementRequested === true
-      ? false
-      : undefined;
+  return ref?.input.retirementRequested === true ? false : undefined;
 }
 
 /** Updates presentation on the exact operation attachment without creating a second owner. */
@@ -401,31 +395,20 @@ export function listRpcSourceEntriesForSession(params: {
   const ids = new Set(params.sessionIds ?? []);
   return listRpcSourceEntries().flatMap(([runId, entry]) => {
     const identity = getRpcSourceIdentity(entry);
-    if (params.queuedOnly && !isRpcSourceQueued(entry)) {
-      return [];
-    }
-    if (!keys.has(identity.sessionKey) && !ids.has(identity.sessionId)) {
-      return [];
-    }
-    if (
-      params.requiredSessionId !== undefined &&
-      (!keys.has(identity.sessionKey) || identity.sessionId !== params.requiredSessionId)
-    ) {
-      return [];
-    }
-    if (
-      params.agentId &&
-      !chatRunBelongsToAgent(
-        {
-          agentId: identity.agentId,
-          sessionKey: identity.sessionKey,
-          defaultAgentId: params.defaultAgentId,
-        },
-        params.agentId,
-      )
-    ) {
-      return [];
-    }
-    return [{ runId, entry }];
+    const matches =
+      (!params.queuedOnly || isRpcSourceQueued(entry)) &&
+      (keys.has(identity.sessionKey) || ids.has(identity.sessionId)) &&
+      (params.requiredSessionId === undefined ||
+        (keys.has(identity.sessionKey) && identity.sessionId === params.requiredSessionId)) &&
+      (!params.agentId ||
+        chatRunBelongsToAgent(
+          {
+            agentId: identity.agentId,
+            sessionKey: identity.sessionKey,
+            defaultAgentId: params.defaultAgentId,
+          },
+          params.agentId,
+        ));
+    return matches ? [{ runId, entry }] : [];
   });
 }
