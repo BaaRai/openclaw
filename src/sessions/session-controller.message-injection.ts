@@ -30,7 +30,6 @@ import {
   type ReplyMessageInjectionResolution,
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
-  type ReplyToolAuthorityOverlay,
   type ReplyTurnParticipants,
 } from "./session-controller.contracts.js";
 import {
@@ -56,23 +55,22 @@ export function captureReplyMessageInjectionTarget(
     attachment?.operation === operation && "toolAuthority" in attachment
       ? attachment.toolAuthority
       : undefined;
-  const projectToolAuthorityFingerprint = toolAuthority
-    ? (overlay: ReplyToolAuthorityOverlay) => toolAuthority.project(overlay)
-    : (overlay: ReplyToolAuthorityOverlay) => operation.projectToolAuthorityFingerprint(overlay);
-  const assertToolAuthorityActive = toolAuthority ? () => toolAuthority.assertActive() : undefined;
   const sourceTurnId = entry.sourceTurnId;
   return {
     [replyMessageInjectionTargetOwner]: {
       acceptParticipant: (overlay) => operation.personalToolParticipants?.accept(overlay),
-      projectToolAuthorityFingerprint: (overlay) => projectToolAuthorityFingerprint?.(overlay),
+      projectToolAuthorityFingerprint: (overlay) =>
+        toolAuthority
+          ? toolAuthority.project(overlay)
+          : operation.projectToolAuthorityFingerprint(overlay),
       resolve: (params) =>
         resolveReplyMessageInjectionRejection({
           ...params,
           assertCurrent:
-            params.assertCurrent || assertToolAuthorityActive
+            params.assertCurrent || toolAuthority
               ? () => {
                   params.assertCurrent?.();
-                  assertToolAuthorityActive?.();
+                  toolAuthority?.assertActive();
                 }
               : undefined,
           operation,
@@ -216,14 +214,11 @@ function resolveReplyMessageInjectionRejection(params: {
     return { reason: "stale_run" };
   }
   const backend = getAttachedBackend(operation);
-  const canInject = () => {
-    return (
-      isCurrentSessionControllerOperation(operation) &&
-      !operation.result &&
-      operation.phase === "running" &&
-      getAttachedBackend(operation) === backend
-    );
-  };
+  const canInject = () =>
+    isCurrentSessionControllerOperation(operation) &&
+    !operation.result &&
+    operation.phase === "running" &&
+    getAttachedBackend(operation) === backend;
   return resolveReplyBackendMessageInjectionRejection({
     ...params,
     sessionId: operation.sessionId,
@@ -603,6 +598,7 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
     ...(adoptionError === undefined ? {} : { adoptionError }),
   };
 }
+
 /** Captures injection authority from the current direct operation owner. */
 export function captureCurrentReplyMessageInjectionTarget(
   sessionKey: string,

@@ -8,7 +8,7 @@ import type {
   TaskSuggestionDeliveryMode,
 } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
-import type * as replyRunSettle from "../auto-reply/reply/reply-run-finalization-lease.js";
+import type { ReplyOperationStaleReason } from "../auto-reply/reply/reply-run-finalization-lease.js";
 import type { OriginatingChannelType } from "../auto-reply/templating.js";
 import type { ChatType } from "../channels/chat-type.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -417,8 +417,6 @@ export type ReplyOperation = {
 };
 
 export const REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS = 15_000;
-
-type ReplyOperationStaleReason = replyRunSettle.ReplyOperationStaleReason;
 
 export class ReplyRunAlreadyActiveError extends Error {
   constructor(sessionKey: string) {
