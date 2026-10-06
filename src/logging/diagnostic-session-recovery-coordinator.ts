@@ -29,14 +29,17 @@ export function requestStuckSessionRecovery(params: RequestStuckSessionRecoveryP
         ? resolveActiveReplyOperationForSessionId(params.request.sessionId)
         : undefined);
   const request = { ...params.request, ...(operation ? { operation } : {}) };
-  emitDiagnosticEvent({
-    type: "session.recovery.requested",
+  const sessionFields = {
     sessionId: request.sessionId,
     sessionKey: request.sessionKey,
     state: request.expectedState ?? "processing",
     stateGeneration: request.stateGeneration,
     ageMs: request.ageMs,
     queueDepth: request.queueDepth,
+  };
+  emitDiagnosticEvent({
+    type: "session.recovery.requested",
+    ...sessionFields,
     reason: params.classification.reason,
     activeWorkKind: params.classification.activeWorkKind,
     allowActiveAbort: request.allowActiveAbort,
@@ -48,12 +51,7 @@ export function requestStuckSessionRecovery(params: RequestStuckSessionRecoveryP
     // This is a projection only. Completion never declares idle or changes queue counts.
     emitDiagnosticEvent({
       type: "session.recovery.completed",
-      sessionId: request.sessionId,
-      sessionKey: request.sessionKey,
-      state: request.expectedState ?? "processing",
-      stateGeneration: request.stateGeneration,
-      ageMs: request.ageMs,
-      queueDepth: request.queueDepth,
+      ...sessionFields,
       activeWorkKind: outcome.activeWorkKind,
       status: outcome.status,
       action: outcome.action,
