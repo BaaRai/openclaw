@@ -76,7 +76,6 @@ export async function removeCronRunContinuationSessionIfIdle(
     return;
   }
   await runSessionMutation({
-
     scope: storePath,
     identities: [sessionKey, original.sessionId],
     run: async () => {

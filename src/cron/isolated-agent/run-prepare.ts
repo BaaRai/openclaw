@@ -9,10 +9,7 @@ import {
   type PreparedModelRuntimeLease,
 } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
-import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
-import type { SourceDeliveryPlan } from "../../infra/outbound/source-delivery-plan.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -20,16 +17,12 @@ import {
   isAgentHarnessSessionKey,
 } from "../../sessions/agent-harness-session-key.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
-import type { SessionEffectRef } from "../../sessions/session-controller.lifecycle.js";
 import { resolveCronSkillsSnapshot } from "../../skills/runtime/cron-snapshot.js";
-import type { SkillSnapshot } from "../../skills/types.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
-import type { CronDeliveryPlan } from "../delivery-plan.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import { isDetachedCronSessionTarget } from "../session-target.js";
 import { resolveCronRunToolsAllow } from "../tools-allow.js";
-import type { CronJob, CronRunDiagnostics } from "../types.js";
 import {
   resolveCronModelSelection,
   resolveCronModelSelectionOwner,
@@ -40,7 +33,6 @@ import { resolveCronActiveRuntimeConfig, resolveCronAgentConfig } from "./run-co
 import { buildCurrentConversationContextBlock } from "./run-current-context.js";
 import {
   createCronToolsAllowPreflightDiagnostics,
-  type ResolvedCronDeliveryTarget,
   resolveCronDeliveryContext,
 } from "./run-delivery-trace.js";
 import { resolveCronPreflight } from "./run-fallback-policy.js";
@@ -60,10 +52,7 @@ import {
   createPersistCronSessionEntry,
   setCronSessionRuntimeModel,
   persistCronSkillsSnapshotIfChanged,
-  type CronRunContinuationSession,
   type CronSessionRowWriter,
-  type MutableCronSession,
-  type PersistCronSessionEntry,
 } from "./run-session-state.js";
 import { resolveCronRunTimeoutOverrideMs } from "./run-timeout.js";
 import { prepareCronSessionWorkspace, type CronWorkspaceLease } from "./run-workspace.js";
@@ -82,71 +71,19 @@ import {
   resolveSessionRuntimeOverrideForProvider,
   resolveThinkingSelection,
 } from "./run.runtime.js";
-import type { RunCronAgentTurnResult } from "./run.types.js";
 import { resolveCronAgentSessionKey } from "./session-key.js";
 import { prepareCronSession } from "./session.js";
 
-export type PreparedCronRunContext = {
-  input: RunCronAgentTurnParams;
-  cfgWithAgentDefaults: OpenClawConfig;
-  agentId: string;
-  agentCfg: AgentDefaultsConfig;
-  agentDir: string;
-  agentSessionKey: string;
-  sourceSessionKey?: string;
-  sourceSessionGeneration?: { sessionId: string; lifecycleRevision: string | undefined };
-  runSessionId: string;
-  currentRunSessionId: () => string;
-  runSessionKey: string;
-  usesDetachedRunSession: boolean;
-  workspaceDir: string;
-  cwd?: string;
-  workspaceLease?: CronWorkspaceLease;
-  executionRoot?: RunCronAgentTurnParams["executionRoot"];
-  commandBody: string;
-  inputProvenance?: InputProvenance;
-  cronSession: MutableCronSession;
-  sessionPreparationEffect: SessionEffectRef;
-  persistSessionEntry: PersistCronSessionEntry;
-  runContinuationSession?: CronRunContinuationSession;
-  withRunSession: WithRunSession;
-  agentPayload: Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
-  deliveryPlan: CronDeliveryPlan;
-  resolvedDelivery: ResolvedCronDeliveryTarget;
-  deliveryRequested: boolean;
-  /** Trusted delivery-channel formatting metadata; absent without a resolved chat delivery. */
-  deliverySystemPrompt?: string;
-  /** Message-tool formatting contract for a run without a reply route; applied once tools resolve. */
-  messageToolFormatPrompt?: string;
-  sourceDelivery: SourceDeliveryPlan;
-  suppressExecNotifyOnExit: boolean;
-  skillsSnapshot: SkillSnapshot;
-  liveSelection: LiveSessionModelSelection;
-  useSubagentFallbacks: boolean;
-  inheritDefaultFallbacksForAgentStringModel: boolean;
-  modelFallbacksOverride?: string[];
-  thinkingSelection: Awaited<ReturnType<typeof resolveCronThinkingSelection>>;
-  timeoutMs: number;
-  preflightDiagnostics?: CronRunDiagnostics;
-  /**
-   * Set when the cron payload's `timeoutSeconds` was explicitly configured
-   * for this run (independent of whether its numeric value happens to equal
-   * `agents.defaults.timeoutSeconds`). Forwarded to the embedded runner so
-   * the LLM idle watchdog can honor the cron's per-run choice.
-   */
-  runTimeoutOverrideMs?: number;
-  preparedModelRuntimeLease: PreparedModelRuntimeLease;
-};
-
-type CronPreparationResult =
-  | { ok: true; context: PreparedCronRunContext }
-  | { ok: false; result: RunCronAgentTurnResult };
+export type PreparedCronRunContext = Extract<
+  Awaited<ReturnType<typeof prepareCronRunContext>>,
+  { ok: true }
+>["context"];
 
 export async function prepareCronRunContext(params: {
   input: RunCronAgentTurnParams;
   isFastTestEnv: boolean;
   onLifecycleInterrupt: () => void;
-}): Promise<CronPreparationResult> {
+}) {
   const { input } = params;
   const commandPromptPreflight = resolveCronCommandPromptPreflight(input.job);
   if (commandPromptPreflight) {

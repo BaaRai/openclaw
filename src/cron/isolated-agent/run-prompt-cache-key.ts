@@ -21,7 +21,6 @@ export function resolveIsolatedCronPromptCacheKey(params: {
     model: params.model,
   });
   const digest = createHash("sha256").update(material).digest("hex").slice(0, 32);
-  // Isolated cron rotates transcript/session ids per run; keep cache affinity
-  // on stable job identity without sending raw local session labels upstream.
+  // Per-run session ids rotate; key on stable job identity without leaking local labels.
   return `openclaw-cron-${digest}`;
 }
