@@ -56,9 +56,6 @@ function waitForSessionControllerEntryIdle(
       signal.addEventListener("abort", abortHandler, { once: true });
     }
     waiters.add(waiter);
-    if (!owner.active) {
-      waiter.finish(true);
-    }
   });
 }
 
@@ -80,25 +77,30 @@ export function waitForSessionRunIdle(
 
 type ReplyRunAdmissionSettlement = { settled: boolean; sources?: ReplyRunAdmissionSource[] };
 
-async function waitForReplyRunAdmissionBarrier(params: {
-  barrierKind: "followupBarrier" | "successorBarrier";
-  minimumTimeoutMs: number;
-  sessionKey: string;
-  signal?: AbortSignal;
-  target?: SessionTarget;
-  timeoutMs?: number | null;
-}): Promise<ReplyRunAdmissionSettlement> {
+type ReplyRunAdmissionWaitOptions = { signal?: AbortSignal; target?: SessionTarget };
+
+async function waitForReplyRunAdmissionBarrier(
+  barrierKind: "followupBarrier" | "successorBarrier",
+  minimumTimeoutMs: number,
+  sessionKey: string,
+  timeoutMs: number | null | undefined,
+  opts: ReplyRunAdmissionWaitOptions | undefined,
+): Promise<ReplyRunAdmissionSettlement> {
+  const normalizedSessionKey = normalizeOptionalString(sessionKey);
+  if (!normalizedSessionKey) {
+    return { settled: true };
+  }
+  const signal = opts?.signal;
   const deadline =
-    typeof params.timeoutMs === "number"
-      ? Date.now() +
-        resolveTimerTimeoutMs(params.timeoutMs, params.minimumTimeoutMs, params.minimumTimeoutMs)
+    typeof timeoutMs === "number"
+      ? Date.now() + resolveTimerTimeoutMs(timeoutMs, minimumTimeoutMs, minimumTimeoutMs)
       : undefined;
   const sources = new Map<ReplyRunAdmissionSource["databaseIdentity"], ReplyRunAdmissionSource>();
   while (true) {
-    if (params.signal?.aborted) {
+    if (signal?.aborted) {
       return { settled: false };
     }
-    const barrier = getSessionControllerEntry(params.sessionKey, params.target)[params.barrierKind];
+    const barrier = getSessionControllerEntry(normalizedSessionKey, opts?.target)[barrierKind];
     if (!barrier) {
       return { settled: true, ...(sources.size ? { sources: [...sources.values()] } : {}) };
     }
@@ -118,14 +120,11 @@ async function waitForReplyRunAdmissionBarrier(params: {
             }),
           ]
         : []),
-      ...(params.signal
+      ...(signal
         ? [
             new Promise<boolean>((resolve) => {
               abortHandler = () => resolve(false);
-              params.signal?.addEventListener("abort", abortHandler, { once: true });
-              if (params.signal?.aborted) {
-                abortHandler();
-              }
+              signal.addEventListener("abort", abortHandler, { once: true });
             }),
           ]
         : []),
@@ -134,7 +133,7 @@ async function waitForReplyRunAdmissionBarrier(params: {
       clearTimeout(timer);
     }
     if (abortHandler) {
-      params.signal?.removeEventListener("abort", abortHandler);
+      signal?.removeEventListener("abort", abortHandler);
     }
     if (!outcome) {
       return { settled: false };
@@ -154,35 +153,15 @@ async function waitForReplyRunAdmissionBarrier(params: {
 export async function waitForReplyRunFollowupAdmission(
   sessionKey: string,
   timeoutMs: number,
-  opts?: { signal?: AbortSignal; target?: SessionTarget },
+  opts?: ReplyRunAdmissionWaitOptions,
 ): Promise<ReplyRunAdmissionSettlement> {
-  const normalizedSessionKey = normalizeOptionalString(sessionKey);
-  return normalizedSessionKey
-    ? await waitForReplyRunAdmissionBarrier({
-        barrierKind: "followupBarrier",
-        minimumTimeoutMs: 100,
-        sessionKey: normalizedSessionKey,
-        signal: opts?.signal,
-        target: opts?.target,
-        timeoutMs,
-      })
-    : { settled: true };
+  return await waitForReplyRunAdmissionBarrier("followupBarrier", 100, sessionKey, timeoutMs, opts);
 }
 
 export async function waitForReplyRunSuccessorAdmission(
   sessionKey: string,
   timeoutMs?: number | null,
-  opts?: { signal?: AbortSignal; target?: SessionTarget },
+  opts?: ReplyRunAdmissionWaitOptions,
 ): Promise<ReplyRunAdmissionSettlement> {
-  const normalizedSessionKey = normalizeOptionalString(sessionKey);
-  return normalizedSessionKey
-    ? await waitForReplyRunAdmissionBarrier({
-        barrierKind: "successorBarrier",
-        minimumTimeoutMs: 0,
-        sessionKey: normalizedSessionKey,
-        signal: opts?.signal,
-        target: opts?.target,
-        timeoutMs,
-      })
-    : { settled: true };
+  return await waitForReplyRunAdmissionBarrier("successorBarrier", 0, sessionKey, timeoutMs, opts);
 }

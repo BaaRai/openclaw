@@ -135,20 +135,21 @@ export function refreshSessionControllerEntryAliases(entry: SessionControllerEnt
       entry.aliases.add(id);
     }
   }
-  for (const alias of previousAliases) {
+  unindexSessionControllerAliases(entry, previousAliases);
+  if (controllerStorage.sessionControllers.get(entry.id) !== entry) {
+    return;
+  }
+  for (const alias of entry.aliases) {
+    addSessionControllerEntryAlias(entry, alias);
+  }
+}
+function unindexSessionControllerAliases(entry: SessionControllerEntry, aliases: Set<string>) {
+  for (const alias of aliases) {
     const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias);
     entries?.delete(entry);
     if (entries?.size === 0) {
       controllerStorage.sessionControllerEntriesByAlias.delete(alias);
     }
-  }
-  if (controllerStorage.sessionControllers.get(entry.id) !== entry) {
-    return;
-  }
-  for (const alias of entry.aliases) {
-    const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias) ?? new Set();
-    entries.add(entry);
-    controllerStorage.sessionControllerEntriesByAlias.set(alias, entries);
   }
 }
 
@@ -201,8 +202,7 @@ export {
   hasSessionControllerIdentity,
   isCurrentSessionControllerOperation,
 } from "./session-controller.identity.js";
-/** Empty lifecycle entries do not retain historical session keys. Mailbox/mutation
- * owners release their entry field after their final effect; absence means no custody. */
+/** Drops an entry that holds no custody so historical session keys are not retained. */
 export function pruneSessionControllerEntry(entry: SessionControllerEntry): void {
   if (
     !entry.active &&
@@ -216,13 +216,7 @@ export function pruneSessionControllerEntry(entry: SessionControllerEntry): void
     !entry.lifecycle &&
     controllerStorage.sessionControllers.get(entry.id) === entry
   ) {
-    for (const alias of entry.aliases) {
-      const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias);
-      entries?.delete(entry);
-      if (entries?.size === 0) {
-        controllerStorage.sessionControllerEntriesByAlias.delete(alias);
-      }
-    }
+    unindexSessionControllerAliases(entry, entry.aliases);
     if (entry.target) {
       const entries = controllerStorage.sessionControllerEntriesByStore.get(
         entry.target.storeScope,
@@ -271,14 +265,12 @@ export {
 /** Observe owner departures only for the lifetime of one awaited admission attempt. */
 export function observeReplyRunCompletions(sessionKey: string) {
   const entry = getSessionControllerEntry(sessionKey);
-  const observations = entry.observations;
   const observation: ReplyRunCompletionObservation = { changed: false, sources: new Map() };
-  const pending = observations;
-  pending.add(observation);
+  entry.observations.add(observation);
   return {
     read: () => (observation.changed ? [...observation.sources.values()] : undefined),
     dispose: () => {
-      pending.delete(observation);
+      entry.observations.delete(observation);
       observation.sources.clear();
       pruneSessionControllerEntry(entry);
     },
@@ -337,11 +329,7 @@ export function prepareReplyRunKeyUpdate(
   return { sessionKey: nextKey, agentId: nextAgentId };
 }
 
-export function notifyReplyRunEnded(owner: string | SessionControllerEntry): void {
-  const entry = typeof owner === "string" ? findSessionControllerEntry(owner) : owner;
-  if (!entry) {
-    return;
-  }
+export function notifyReplyRunEnded(entry: SessionControllerEntry): void {
   for (const observation of entry.observations) {
     observation.changed = true;
   }
@@ -380,10 +368,6 @@ export function markReplyOperationExecutionStarted(operation: ReplyOperation): v
 export function hasReplyOperationExecutionStarted(operation: ReplyOperation): boolean {
   return controllerStorage.executionStartedOperations.has(operation);
 }
-// Alias-keyed fences registered for one lane rotate together. Rekeyed command
-// operations retain prior-lane identities so source successors do not adopt
-// the target session.
-
 export function getAttachedBackend(operation: ReplyOperation): ReplyBackendHandle | undefined {
   const entry = controllerStorage.controllerEntryByOperation.get(operation);
   return entry?.active === operation && entry.attachment?.operation === operation
@@ -456,9 +440,8 @@ export function mergeReplyRunAdmissionSource<T extends ReplyRunAdmissionSource>(
   source: T,
   previous?: ReplyRunAdmissionSource,
 ): T {
-  // Only a connected UUID lineage in the same physical store can carry old work.
-  // Restart invalidation cannot disappear when the next owner replaces the source.
-  // Keep valid pending source references stable for retained clear callbacks.
+  // Only a connected, non-restarted lineage in one store merges, in place so retained
+  // clear callbacks keep a stable source reference.
   if (
     previous &&
     !isReplyOperationAbortedForRestart(previous.operation) &&
