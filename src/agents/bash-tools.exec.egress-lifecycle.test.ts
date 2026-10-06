@@ -10,6 +10,7 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
+import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { drainSystemEvents, peekSystemEventEntries } from "../infra/system-events.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
@@ -22,6 +23,8 @@ import {
   clearSecretEgressProxy,
   publishSecretEgressProxy,
 } from "../secrets/egress-proxy/registry.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -252,6 +255,12 @@ beforeEach(async () => {
   };
   await state.writeConfig(config);
   setRuntimeConfigSnapshot(config);
+  openOpenClawStateDatabase({ env: state.env });
+  writeSessionEntry(openOpenClawAgentDatabase({ agentId: "probe", env: state.env }), sessionKey, {
+    sessionId: "egress-origin",
+    lifecycleRevision: "original-revision",
+    updatedAt: Date.now(),
+  });
   // A real child retains its inherited proxy environment across caller turns.
   await state.writeText(
     "watcher.cjs",
@@ -354,6 +363,7 @@ describe.skipIf(process.platform === "win32")("background exec egress lifetime",
     await vi.waitFor(() => expect(hasExitEvent(survivor.sessionId)).toBe(true), {
       timeout: 10_000,
     });
+    await expect([...notificationReceipts][0]?.accepted).resolves.toEqual({ ok: true });
     const exited = await later.process({ action: "poll", sessionId: survivor.sessionId });
     expect(exited.details).toMatchObject({ status: "completed", exitCode: 0 });
     await expect(requestWithGrant(survivor.grant)).resolves.toBe(407);
@@ -366,6 +376,7 @@ describe.skipIf(process.platform === "win32")("background exec egress lifetime",
     await vi.waitFor(() => expect(hasExitEvent(watcher.sessionId)).toBe(true), {
       timeout: 10_000,
     });
+    await expect([...notificationReceipts][0]?.accepted).resolves.toEqual({ ok: true });
     const result = await owner.process({ action: "poll", sessionId: watcher.sessionId });
     expect(result.details).toMatchObject({ status: "failed", exitReason: "overall-timeout" });
     await expect(requestWithGrant(watcher.grant)).resolves.toBe(407);

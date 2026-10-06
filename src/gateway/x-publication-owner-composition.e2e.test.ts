@@ -20,7 +20,7 @@ import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
-import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
+import { getReplyFromConfigInternal } from "../auto-reply/reply/get-reply.js";
 import { readChildSessionPublication } from "../channels/message-access/child-session-publication.js";
 import { importBundledChannelContractSourceArtifact } from "../channels/plugins/contracts/test-helpers/runtime-artifacts.js";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
@@ -270,7 +270,7 @@ describe("X publication production-owner composition", () => {
       "registered X channel",
     );
     // Standard Gateway fixture defaults to a no-op reply; explicitly restore the owner.
-    gatewayReplyMock.mockImplementation(getReplyFromConfig);
+    gatewayReplyMock.mockImplementation(getReplyFromConfigInternal);
     console.info("[x-proof] preparing model runtime");
     await prepareGatewayReplyRuntimeForTest({ config: cfg() });
     console.info("[x-proof] model runtime prepared");

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
+import { resolveDefaultSessionStorePath } from "../config/sessions/paths.js";
 import type { HooksConfig } from "../config/types.hooks.js";
 import { saveCronJobsStore } from "../cron/store.js";
 import {
@@ -33,6 +34,7 @@ import {
   testState,
   withGatewayServer,
   waitForSystemEvent,
+  writeSessionStore,
 } from "./test-helpers.js";
 import { setTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 
@@ -437,6 +439,10 @@ describe("gateway server hooks", () => {
     setHookAgentRoster();
 
     await withScheduledHookReceivers(async ({ port }) => {
+      await writeSessionStore({
+        storePath: resolveDefaultSessionStorePath("main"),
+        entries: { [resolveMainKey()]: { sessionId: "hook-terminal-origin" } },
+      });
       cronIsolatedRun.mockClear();
       for (const wakeMode of ["now", "next-heartbeat"] as const) {
         mockIsolatedRunAfterStartOnce({ status: "error", summary: "boom", delivered: false });
@@ -653,6 +659,8 @@ describe("gateway server hooks", () => {
       await waitForSystemEventTexts("agent:hooks:global");
       expect(peekSystemEvents("agent:hooks:global")).toContain("Mapped wake: Global");
       expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("Mapped wake: Global", {
+        createIfMissing: true,
+        assertAcceptanceCurrent: expect.any(Function),
         agentId: "hooks",
         sessionKey: "global",
         source: "hook",

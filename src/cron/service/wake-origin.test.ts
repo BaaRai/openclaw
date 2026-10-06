@@ -63,6 +63,9 @@ describe("cron service wake() origin capture", () => {
       agentId: "\t",
     });
     expect(result).toEqual({ ok: true });
-    expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("x", undefined);
+    expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("x", {
+      createIfMissing: undefined,
+      assertAcceptanceCurrent: undefined,
+    });
   });
 });

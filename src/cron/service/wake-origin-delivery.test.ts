@@ -140,6 +140,9 @@ describe("cron wake() origin delivery-context carry", () => {
     expect(result).toEqual({ ok: true });
 
     expect(resolveOriginDeliveryContext).not.toHaveBeenCalled();
-    expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("no origin", undefined);
+    expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("no origin", {
+      createIfMissing: undefined,
+      assertAcceptanceCurrent: undefined,
+    });
   });
 });
