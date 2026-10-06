@@ -12,8 +12,6 @@ import {
   isRestartRecoveryTombstone,
   SessionWorkStartChangedError,
   resolveSessionWorkStartError,
-  SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE,
-  SessionRestartRecoveryTombstoneError,
 } from "../../config/sessions/lifecycle.js";
 import {
   hasMainSessionRecoveryClaim,
@@ -66,6 +64,10 @@ import {
   resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
 import {
+  QueuedFollowupLifecycleInvalidatedError,
+  rejectLifecycleInvalidatedWork,
+} from "./reply-turn-admission-errors.js";
+import {
   releaseReplyRecoveryOwner,
   waitForRestartRecoveryProgress,
 } from "./reply-turn-recovery-wait.js";
@@ -86,7 +88,6 @@ type ReplyTurnAdmission =
       lifecycleAdmission?: SessionWorkAdmissionLease;
     };
 
-class QueuedFollowupLifecycleInvalidatedError extends Error {}
 class ReplyOperationChangedDuringAdmissionError extends Error {}
 
 const log = createSubsystemLogger("auto-reply/reply-turn-admission");
@@ -102,28 +103,6 @@ export async function runWithReplyOperationLifecycleAdmission<T>(
   }
   const resolver = getGatewayContextResolver(operation);
   return await withPluginRuntimeGatewayContextResolver(resolver, run);
-}
-
-function rejectLifecycleInvalidatedWork(params: {
-  kind: ReplyTurnKind;
-  message: string;
-  restartRecoveryTombstone?: boolean;
-  transientSessionChange?: boolean;
-}): never {
-  if (params.kind === "queued_followup") {
-    const error = new QueuedFollowupLifecycleInvalidatedError(params.message);
-    if (params.restartRecoveryTombstone === true) {
-      Object.assign(error, { code: SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE });
-    }
-    throw error;
-  }
-  if (params.restartRecoveryTombstone === true) {
-    throw new SessionRestartRecoveryTombstoneError(params.message);
-  }
-  if (params.kind === "visible" && params.transientSessionChange === true) {
-    throw new SessionWorkStartChangedError(params.message);
-  }
-  throw new Error(params.message);
 }
 
 function isAbortSignalAborted(signal: AbortSignal | undefined): boolean {
