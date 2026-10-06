@@ -172,7 +172,6 @@ export function abortSessionRunTargetWithOutcome(params: {
   const resolveCapture = () =>
     (selectedCapture ??= typeof params.capture === "function" ? params.capture() : params.capture);
   const retiring = new Set<string>();
-  const retirements = params.retirements;
   const retire = (sessionIds: readonly string[]) => {
     for (const sessionId of sessionIds) {
       if (retiring.has(sessionId)) {
@@ -188,7 +187,7 @@ export function abortSessionRunTargetWithOutcome(params: {
         },
       );
       void retirement.catch(() => {});
-      retirements.push(retirement);
+      params.retirements.push(retirement);
     }
   };
   let joined = false;
@@ -211,9 +210,9 @@ export function abortSessionRunTargetWithOutcome(params: {
       // actual return. A finishing refusal must not make queued-only Stop wait for it.
       if (capture.mcpSessionIds.has(target) && !joined) {
         joined = true;
-        retirements.push(capture.controller.settled);
+        params.retirements.push(capture.controller.settled);
       } else if ("mailbox" in target) {
-        retirements.push(target.settlement.promise);
+        params.retirements.push(target.settlement.promise);
       }
       retire(capture.mcpSessionIds.get(target) ?? []);
     },

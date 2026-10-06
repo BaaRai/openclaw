@@ -2,11 +2,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveSessionStorePathCore, type SessionEntry } from "../../config/sessions.js";
-import {
-  resolveAbortCutoffFromContext,
-  shouldPersistAbortCutoff,
-  type AbortCutoff,
-} from "./abort-cutoff.js";
+import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
 import {
   abortSessionRunTargetWithOutcome,
   captureChannelSessionStop,
@@ -47,61 +43,6 @@ function resolveAbortTarget(params: Parameters<CommandHandler>[0]): AbortTarget 
     entry,
     key,
     sessionId: entry?.sessionId,
-  };
-}
-
-function resolveAbortCutoffForTarget(params: {
-  ctx: Parameters<CommandHandler>[0]["ctx"];
-  commandSessionKey?: string;
-  targetSessionKey?: string;
-}): AbortCutoff | undefined {
-  if (
-    !shouldPersistAbortCutoff({
-      commandSessionKey: params.commandSessionKey,
-      targetSessionKey: params.targetSessionKey,
-    })
-  ) {
-    return undefined;
-  }
-  return resolveAbortCutoffFromContext(params.ctx);
-}
-
-async function recordAbortTarget(params: {
-  isCurrent?: () => boolean;
-  abortTarget: AbortTarget;
-  sessionStore?: Record<string, SessionEntry>;
-  storePath?: string;
-  abortKey?: string;
-  abortCutoff?: AbortCutoff;
-}) {
-  const { abortTarget } = params;
-  if (params.isCurrent?.() === false) {
-    throw new Error("The selected session changed before it could be stopped.");
-  }
-
-  const persisted = await persistAbortTargetEntry({
-    isCurrent: params.isCurrent,
-    entry: abortTarget.entry,
-    key: abortTarget.key,
-    sessionStore: params.sessionStore,
-    storePath: params.storePath,
-    abortCutoff: params.abortCutoff,
-  });
-  if (!persisted && params.abortKey && params.isCurrent?.() !== false) {
-    setAbortMemory(params.abortKey, true);
-  }
-}
-
-function buildAbortTargetApplyParams(
-  params: Parameters<CommandHandler>[0],
-  abortTarget: AbortTarget,
-) {
-  return {
-    isCurrent: params.opts?.isCommandTargetCurrent,
-    abortTarget,
-    sessionStore: params.sessionStore,
-    storePath: params.storePath,
-    abortKey: params.command.abortKey,
   };
 }
 
@@ -146,11 +87,12 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
       throw new Error("The selected session changed before it could be stopped.");
     }
   };
-  const abortCutoff = resolveAbortCutoffForTarget({
-    ctx: params.ctx,
+  const abortCutoff = shouldPersistAbortCutoff({
     commandSessionKey: params.sessionKey,
     targetSessionKey: abortTarget.key,
-  });
+  })
+    ? resolveAbortCutoffFromContext(params.ctx)
+    : undefined;
   const stop = abortSessionRunTargetWithOutcome({
     capture,
     retirements,
@@ -164,10 +106,22 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
     },
     messageIdentity: abortCutoff,
     recordAbortTarget: async ({ recordCutoff }) => {
-      await recordAbortTarget({
-        ...buildAbortTargetApplyParams(params, abortTarget),
+      assertCurrent();
+      const persisted = await persistAbortTargetEntry({
+        isCurrent: params.opts?.isCommandTargetCurrent,
+        entry: abortTarget.entry,
+        key: abortTarget.key,
+        sessionStore: params.sessionStore,
+        storePath: params.storePath,
         abortCutoff: recordCutoff ? abortCutoff : undefined,
       });
+      if (
+        !persisted &&
+        params.command.abortKey &&
+        params.opts?.isCommandTargetCurrent?.() !== false
+      ) {
+        setAbortMemory(params.command.abortKey, true);
+      }
     },
     // The controller invokes this adapter only for sources whose policy stops children.
     stopChildren: (applyParentStop) =>
