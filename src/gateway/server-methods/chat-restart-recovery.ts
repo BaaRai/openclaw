@@ -269,7 +269,6 @@ function isRestartSafeChatSession(params: {
 }
 
 function hasRestartUnsafeChatWork(params: {
-  activeRunScopeKey: string;
   clientRunId: string;
   storePath: string;
   sessionId: string;
@@ -281,17 +280,15 @@ function hasRestartUnsafeChatWork(params: {
     findRestartRecoveryUnsafeChatAdmissionHook(
       resolveSessionDispatchKind(params.sessionKey, params.entry),
     ) !== undefined ||
-    Boolean(
-      findSessionControllerEntry(
-        params.sessionKey,
-        captureSessionTarget({
-          storeScope: params.storePath,
-          sessionKey: params.sessionKey,
-          incarnation: params.sessionId,
-          agentId: params.agentId,
-        }),
-      )?.active,
-    )
+    findSessionControllerEntry(
+      params.sessionKey,
+      captureSessionTarget({
+        storeScope: params.storePath,
+        sessionKey: params.sessionKey,
+        incarnation: params.sessionId,
+        agentId: params.agentId,
+      }),
+    )?.active
   ) {
     return true;
   }

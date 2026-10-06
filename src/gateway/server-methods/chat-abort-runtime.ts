@@ -1,4 +1,3 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
   ErrorCodes,
@@ -41,7 +40,7 @@ import {
   waitForChatAbortAcknowledgment,
   waitForChatAbortTerminalPersistence,
 } from "../chat-abort-lifecycle-internal.js";
-import { createChatAbortOps } from "../chat-abort-ops.js";
+import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
 import {
   abortChatRunById,
   captureChatRunAbortPresentation,
@@ -51,10 +50,7 @@ import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { resolveSessionStoreKey } from "../session-utils.js";
-import {
-  getWorkerInferenceSessionControl,
-  type WorkerInferenceCancellation,
-} from "../worker-environments/inference-control-internal.js";
+import type { WorkerInferenceCancellation } from "../worker-environments/inference-control-internal.js";
 import {
   canRequesterAbortChatRun,
   resolveAuthorizedRunsForSessionKeys,
@@ -285,20 +281,6 @@ export function abortQueuedCollectorSession(
   })();
 }
 
-function captureWorkerInferenceForSession(params: {
-  context: GatewayRequestContext;
-  sessionId?: string;
-  runId?: string;
-}): WorkerInferenceCancellation | undefined {
-  const sessionId = normalizeOptionalString(params.sessionId);
-  if (!sessionId) {
-    return undefined;
-  }
-  return getWorkerInferenceSessionControl(
-    params.context.workerEnvironmentService,
-  )?.captureSessionCancellation(sessionId, params.runId);
-}
-
 export type ChatSessionAbortParams = {
   context: GatewayRequestContext;
   ops: ChatAbortOps;
@@ -354,7 +336,6 @@ function prepareChatSessionAbort(
   };
   const queuedPlan = resolveAuthorizedQueuedTurnsForSession({
     ...ownerScope,
-    context: params.context,
     sessionId: params.sessionId,
   });
   const {
@@ -418,9 +399,7 @@ function prepareChatSessionAbort(
   const controllerStop = params.controllerTargets
     ? captureSessionControllerStop({ targets: params.controllerTargets })
     : undefined;
-  const rpcSourceByInput = new Map(
-    listRpcSourceEntries().map(([runId, entry]) => [entry.input, { runId, entry }] as const),
-  );
+  const rpcSourceByInput = new Map(listRpcSourceEntries().map(([, entry]) => [entry.input, entry]));
   const stopCapture = captureSessionControllerStop({
     inputs: [...targetByInput.keys(), ...(controllerStop?.inputs ?? [])],
     operations: controllerStop?.operations,
@@ -448,11 +427,10 @@ function prepareChatSessionAbort(
     // The synchronous abort owner must return before persistence settles. Observe
     // rejection now, but finish() still joins the original operation and its cause.
     void workerCancellationPersistence?.catch(() => undefined);
-    return workerCancellation?.runIds.length ? "aborted" : "unchanged";
   };
   const abortAuthorizedRuns = () => {
     params.assertCurrent?.();
-    params.onControllerTargets?.([...queuedPlan.authorized, ...authorizedRuns]);
+    params.onControllerTargets?.([...capturedTargets]);
     if (!hasAuthorizedGatewayRuns) {
       // A persisted session id must not bypass a matching connection or protected run owner.
       if (hasUnauthorizedOwner || hasUnauthorizedLifecycleOwner) {
@@ -461,13 +439,9 @@ function prepareChatSessionAbort(
       }
     }
     const onCancelled: NonNullable<SessionStopRequest["onCancelled"]> = (target) => {
-      if ("instance" in target) {
-        const source = targetByInput.get(target);
-        if (source) {
-          recordRun(source.runId);
-        } else {
-          result.aborted = true;
-        }
+      const source = "instance" in target ? targetByInput.get(target) : undefined;
+      if (source) {
+        recordRun(source.runId);
       } else {
         result.aborted = true;
       }
@@ -475,45 +449,28 @@ function prepareChatSessionAbort(
     const cancelInput: NonNullable<SessionStopRequest["cancelInput"]> = (input, cancel) => {
       const target = targetByInput.get(input);
       if (!target) {
-        if (controllerStop?.inputs.includes(input)) {
-          params.assertCurrent?.();
-          if (!inputMatchesSessionId(input, params.requiredSessionId)) {
-            return false;
-          }
-          const source = rpcSourceByInput.get(input);
-          if (source) {
-            const identity = getRpcSourceIdentity(source.entry);
-            const adapter = source.entry.adapter;
-            if (
-              !isRpcSourceRegistered(source.entry) ||
-              (params.includeProtectedRuns !== true &&
-                (adapter.controlUiVisible === false ||
-                  (params.preserveSideRuns && adapter.turnKind === "btw"))) ||
-              !canRequesterAbortChatRun(
-                { ...identity, requester: adapter.requester },
-                params.requester,
-              )
-            ) {
-              return false;
-            }
-          } else {
-            const identity = getSessionControllerSourceIdentity(input);
-            const adapter = input.sourceAdapter;
-            if (
-              (params.includeProtectedRuns !== true &&
-                (adapter?.controlUiVisible === false ||
-                  (params.preserveSideRuns && adapter?.turnKind === "btw"))) ||
-              !canRequesterAbortChatRun(
-                { ...identity, requester: adapter?.requester },
-                params.requester,
-              )
-            ) {
-              return false;
-            }
-          }
-          return cancel();
+        if (!controllerStop?.inputs.includes(input)) {
+          return false;
         }
-        return false;
+        params.assertCurrent?.();
+        if (!inputMatchesSessionId(input, params.requiredSessionId)) {
+          return false;
+        }
+        const source = rpcSourceByInput.get(input);
+        const adapter = source ? source.adapter : input.sourceAdapter;
+        if (
+          (source && !isRpcSourceRegistered(source)) ||
+          (params.includeProtectedRuns !== true &&
+            (adapter?.controlUiVisible === false ||
+              (params.preserveSideRuns && adapter?.turnKind === "btw"))) ||
+          !canRequesterAbortChatRun(
+            { ...getSessionControllerSourceIdentity(input), requester: adapter?.requester },
+            params.requester,
+          )
+        ) {
+          return false;
+        }
+        return cancel();
       }
       const { runId, sessionKey, sessionId, agentId, entry } = target;
       const identity = getRpcSourceIdentity(entry);
@@ -544,21 +501,22 @@ function prepareChatSessionAbort(
     const afterParent = () => {
       if (!result.unauthorized && !result.error) {
         params.assertCurrent?.();
-        cancelUnrepresentedWorker();
+        if (
+          params.requester.isAdmin &&
+          canCancelWorkerSession &&
+          workerCancellation?.runIds.length
+        ) {
+          cancelWorker();
+        }
         params.onCancellationStarted?.();
       }
     };
-    if (
-      !params.hookContext &&
-      ["channel-user", "client-session", "client-run"].includes(params.stopSource)
-    ) {
+    const isCommandStop = ["channel-user", "client-session", "client-run"].includes(
+      params.stopSource,
+    );
+    if (!params.hookContext && isCommandStop) {
       throw new Error(`Stop source ${params.stopSource} requires command hook context`);
     }
-    const cancelUnrepresentedWorker = () => {
-      if (params.requester.isAdmin && canCancelWorkerSession && workerCancellation?.runIds.length) {
-        cancelWorker();
-      }
-    };
     const stopRequest = {
       capture: stopCapture,
       assertCurrent: params.assertCurrent,
@@ -568,8 +526,7 @@ function prepareChatSessionAbort(
       cancelInput,
       afterParent,
       stopChildren:
-        canRunLifecycleCleanup &&
-        ["channel-user", "client-session", "client-run"].includes(params.stopSource)
+        canRunLifecycleCleanup && isCommandStop
           ? async (applyParentStop) => {
               result.descendants = await abortControlledSubagents({
                 cfg:
@@ -632,22 +589,15 @@ function prepareChatSessionAbort(
               })
             : undefined,
           Promise.all(
-            [...queuedPlan.authorized, ...authorizedRuns]
-              .filter(({ runId }) => abortedRunIds.has(runId))
+            capturedTargets
+              .filter(
+                ({ runId, entry }) => abortedRunIds.has(runId) && entry.adapter.kind !== "agent",
+              )
               .flatMap(({ runId, entry }) => {
                 const settlement = sourceSettlements.get(entry.input);
-                const pending =
-                  entry.adapter.kind === "agent"
-                    ? []
-                    : [waitForChatAbortTerminalPersistence(entry)];
-                if (
-                  entry.adapter.kind !== "agent" &&
-                  settlement !== undefined &&
-                  !handedOffRunIds.has(runId)
-                ) {
-                  pending.push(settlement);
-                }
-                return pending;
+                return settlement !== undefined && !handedOffRunIds.has(runId)
+                  ? [waitForChatAbortTerminalPersistence(entry), settlement]
+                  : [waitForChatAbortTerminalPersistence(entry)];
               }),
           ),
         ]),

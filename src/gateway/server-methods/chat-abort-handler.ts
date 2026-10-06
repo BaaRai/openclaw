@@ -249,6 +249,15 @@ export async function handleChatAbortRequestWithLifecycle(
     return;
   }
   const normalizedAgentIdOverride = normalizeAgentId(abortAgentId);
+  // Runs the command Stop sequence when no exact run source was captured.
+  const stopWithoutCapturedRun = (reason?: string) =>
+    stopSession({
+      source: "client-run",
+      capture: captureSessionControllerStop({}),
+      assertCurrent,
+      reason,
+      hookContext: stopHookContext,
+    }).completed;
   const authorizeRunTarget = (
     target: Parameters<typeof resolveChatAbortTargetRejection>[0]["target"],
   ): boolean => {
@@ -309,12 +318,7 @@ export async function handleChatAbortRequestWithLifecycle(
       active.input.claim ||
       active.input.retirementRequested
     ) {
-      await stopSession({
-        source: "client-run",
-        capture: captureSessionControllerStop({}),
-        assertCurrent,
-        hookContext: stopHookContext,
-      }).completed;
+      await stopWithoutCapturedRun();
       respond(true, { ok: true, aborted: false, runIds: [] });
       return;
     }
@@ -358,10 +362,8 @@ export async function handleChatAbortRequestWithLifecycle(
             { ...captured, reason: "agent.input.settled" },
             { accessChanged: false },
           );
+          await captureSessionControllerSourceSettlement(active.input);
         }
-      }
-      if (inputWithdrawn) {
-        await captureSessionControllerSourceSettlement(active.input);
       }
     } finally {
       hold();
@@ -453,12 +455,7 @@ export async function handleChatAbortRequestWithLifecycle(
       if (!abortSession.ok) {
         throw abortSession.error;
       }
-      await stopSession({
-        source: "client-run",
-        capture: captureSessionControllerStop({}),
-        assertCurrent,
-        hookContext: stopHookContext,
-      }).completed;
+      await stopWithoutCapturedRun();
       respond(true, { ok: true, aborted: false, runIds: [] });
       return;
     }
@@ -467,13 +464,7 @@ export async function handleChatAbortRequestWithLifecycle(
       return;
     }
     cancelWorker();
-    await stopSession({
-      source: "client-run",
-      capture: captureSessionControllerStop({}),
-      assertCurrent,
-      reason: "rpc",
-      hookContext: stopHookContext,
-    }).completed;
+    await stopWithoutCapturedRun("rpc");
     await respondWithWorkerRuns([]);
     return;
   }
@@ -487,111 +478,109 @@ export async function handleChatAbortRequestWithLifecycle(
   const presentation = captureChatRunAbortPresentation(ops, runId);
   const { sessionKey, sessionId, agentId } = getRpcSourceIdentity(active);
   const { controlUiVisible } = active.adapter;
-  {
-    assertCurrent();
-    const partialText = context.chatRunState.resolveBuffer(runId, { final: true }).text;
-    const snapshot =
-      controlUiVisible !== false && partialText?.trim()
-        ? captureAbortedPartial({
-            runId,
-            sessionKey,
-            sessionId,
-            agentId: agentId ?? abortAgentId,
-            text: partialText,
-            abortOrigin: "rpc",
-            resolveTerminalProducer: active.adapter.resolveTerminalProducer,
-            ...(sessionKey === rawSessionKey || sessionKey === canonicalAbortSessionKey
-              ? { session: abortSession }
-              : {}),
-          })
-        : undefined;
-    let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
-    let failure: { error: unknown } | undefined;
-    let warning: string | undefined;
-    try {
-      const stopped = stopSession({
-        source: "client-run",
-        capture: stopCapture,
-        assertCurrent,
-        reason: "rpc",
-        hookContext: { ...stopHookContext, sessionKey, sessionId },
-        afterParent: cancelWorker,
-        onCancelled: (target) => {
-          if (target === active.input) {
-            aborted = true;
-          }
-        },
-        cancelInput: (_input, cancel) =>
-          abortChatRunById(ops, {
-            runId,
-            sessionKey,
-            expectedEntry: active,
-            presentation,
-            cancel,
-            assertCurrent,
-            stopReason: "rpc",
-            onAbortPrepared: () => deferAbortedPartialPersistence(snapshot, context),
-            onAbortCommitted: () => {
-              aborted = true;
-            },
-          }).aborted,
-        stopChildren: async (applyParentStop) => {
-          descendants = await abortControlledSubagents({
-            cfg: abortCfg,
-            sessionKey,
-            agentId,
-            requesterTurnRunId: runId,
-            beforeKill: applyParentStop,
-          });
-          return {
-            stopped: descendants?.killed ?? 0,
-            failed: descendants?.status === "error" ? descendants.failed : 0,
-          };
-        },
-      });
-      await stopped.completed;
-    } catch (error) {
-      failure = { error };
-    }
-    // A later child fence can reject after the parent consumed its buffer. The
-    // transcript owner must still settle that already-committed cancellation.
-    if (aborted) {
-      const settled = await waitForChatAbortAcknowledgment(
-        Promise.allSettled([
-          snapshot ? persistAbortedPartials({ context, snapshots: [snapshot] }) : undefined,
-          active.adapter.kind === "agent" ? undefined : waitForChatAbortTerminalPersistence(active),
-        ]),
-      );
-      warning = settled[0].status === "fulfilled" ? settled[0].value : undefined;
-      const errors = settled.flatMap((item) => (item.status === "rejected" ? [item.reason] : []));
-      if (errors.length) {
-        if (failure) {
-          errors.unshift(failure.error);
+  assertCurrent();
+  const partialText = context.chatRunState.resolveBuffer(runId, { final: true }).text;
+  const snapshot =
+    controlUiVisible !== false && partialText?.trim()
+      ? captureAbortedPartial({
+          runId,
+          sessionKey,
+          sessionId,
+          agentId: agentId ?? abortAgentId,
+          text: partialText,
+          abortOrigin: "rpc",
+          resolveTerminalProducer: active.adapter.resolveTerminalProducer,
+          ...(sessionKey === rawSessionKey || sessionKey === canonicalAbortSessionKey
+            ? { session: abortSession }
+            : {}),
+        })
+      : undefined;
+  let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
+  let failure: { error: unknown } | undefined;
+  let warning: string | undefined;
+  try {
+    const stopped = stopSession({
+      source: "client-run",
+      capture: stopCapture,
+      assertCurrent,
+      reason: "rpc",
+      hookContext: { ...stopHookContext, sessionKey, sessionId },
+      afterParent: cancelWorker,
+      onCancelled: (target) => {
+        if (target === active.input) {
+          aborted = true;
         }
-        throw abortedPartialPersistenceError(
-          errors.length === 1
-            ? errors[0]
-            : new AggregateError(errors, "Chat cancellation and persistence failed"),
-          warning,
-        );
+      },
+      cancelInput: (_input, cancel) =>
+        abortChatRunById(ops, {
+          runId,
+          sessionKey,
+          expectedEntry: active,
+          presentation,
+          cancel,
+          assertCurrent,
+          stopReason: "rpc",
+          onAbortPrepared: () => deferAbortedPartialPersistence(snapshot, context),
+          onAbortCommitted: () => {
+            aborted = true;
+          },
+        }).aborted,
+      stopChildren: async (applyParentStop) => {
+        descendants = await abortControlledSubagents({
+          cfg: abortCfg,
+          sessionKey,
+          agentId,
+          requesterTurnRunId: runId,
+          beforeKill: applyParentStop,
+        });
+        return {
+          stopped: descendants?.killed ?? 0,
+          failed: descendants?.status === "error" ? descendants.failed : 0,
+        };
+      },
+    });
+    await stopped.completed;
+  } catch (error) {
+    failure = { error };
+  }
+  // A later child fence can reject after the parent consumed its buffer. The
+  // transcript owner must still settle that already-committed cancellation.
+  if (aborted) {
+    const settled = await waitForChatAbortAcknowledgment(
+      Promise.allSettled([
+        snapshot ? persistAbortedPartials({ context, snapshots: [snapshot] }) : undefined,
+        active.adapter.kind === "agent" ? undefined : waitForChatAbortTerminalPersistence(active),
+      ]),
+    );
+    warning = settled[0].status === "fulfilled" ? settled[0].value : undefined;
+    const errors = settled.flatMap((item) => (item.status === "rejected" ? [item.reason] : []));
+    if (errors.length) {
+      if (failure) {
+        errors.unshift(failure.error);
       }
+      throw abortedPartialPersistenceError(
+        errors.length === 1
+          ? errors[0]
+          : new AggregateError(errors, "Chat cancellation and persistence failed"),
+        warning,
+      );
     }
-    if (failure) {
-      throw abortedPartialPersistenceError(failure.error, warning);
-    }
-    if (!abortSession.ok) {
-      throw abortedPartialPersistenceError(abortSession.error, warning);
-    }
-    const descendantError = descendantAbortError(descendants, "Parent run");
-    if (descendantError) {
-      respond(false, undefined, withAbortedPartialPersistenceWarning(descendantError, warning));
-      return;
-    }
-    try {
-      await respondWithWorkerRuns(aborted ? [runId] : [], warning);
-    } catch (error) {
-      throw abortedPartialPersistenceError(error, warning);
-    }
+  }
+  if (failure) {
+    throw abortedPartialPersistenceError(failure.error, warning);
+  }
+  if (!abortSession.ok) {
+    throw abortedPartialPersistenceError(abortSession.error, warning);
+  }
+  const descendantError = descendantAbortError(descendants, "Parent run");
+  if (descendantError) {
+    respond(false, undefined, withAbortedPartialPersistenceWarning(descendantError, warning));
+    return;
+  }
+  try {
+    await respondWithWorkerRuns(aborted ? [runId] : [], warning);
+  } catch (error) {
+    throw abortedPartialPersistenceError(error, warning);
   }
 }
 

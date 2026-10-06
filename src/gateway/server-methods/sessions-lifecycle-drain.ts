@@ -5,7 +5,6 @@ import {
   type ErrorShape,
   type SessionWorkspaceRecoveryRequiredErrorDetails,
 } from "../../../packages/gateway-protocol/src/index.js";
-// Session-owned cancellation and authoritative lifecycle drains.
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withTimeout } from "../../infra/fs-safe.js";
@@ -78,7 +77,6 @@ function hasAuthoritativeSessionWork(
     isCompetingSessionControllerWorkActive(params.storePath, params.lifecycleIdentities) ||
     hasSessionControllerQueuedWork(params.storePath, workIdentities) ||
     hasGatewaySessionAbortOwner({
-      context: params.context,
       sessionKeys: params.sessionKeys,
       sessionId,
       agentId: params.agentId,

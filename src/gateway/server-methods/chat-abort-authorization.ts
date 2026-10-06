@@ -1,5 +1,4 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-// Authorization and pending-run state transitions for chat cancellation.
 import {
   getRpcSourceIdentity,
   listRpcSourceEntriesForSession,
@@ -132,7 +131,6 @@ export function resolveChatAbortTargetRejection(params: {
   requestedAgentId: string;
   defaultAgentId?: string;
   requiredSessionId?: string;
-  includeHidden?: boolean;
   discardPendingInput?: boolean;
   narrow: boolean;
 }): string | undefined {
@@ -246,32 +244,49 @@ export function writePreRegisteredChatAbort(params: {
   return true;
 }
 
-function createChatAbortRunSelection<T extends { runId: string }>() {
-  const authorizedByRunId = new Map<string, T>();
+type AuthorizedRpcSourceRun = RpcSourceIdentity & { runId: string; entry: RpcSourceRef };
+
+function selectAuthorizedRpcSourceRuns(
+  entries: ReadonlyArray<{ runId: string; entry: RpcSourceRef }>,
+  params: {
+    requester: ChatAbortRequester;
+    preserveSideRuns?: boolean;
+    includeProtectedRuns?: boolean;
+  },
+) {
+  const authorizedByRunId = new Map<string, AuthorizedRpcSourceRun>();
   const matchedRunIds = new Set<string>();
   const authorization = {
     hasUnauthorizedRuns: false,
     hasUnauthorizedProtectedRuns: false,
     hasProtectedRuns: false,
   };
+  for (const { runId, entry } of entries) {
+    const { adapter } = entry;
+    const identity = getRpcSourceIdentity(entry);
+    const requesterCanAbort = canRequesterAbortChatRun(
+      { ...identity, requester: adapter.requester },
+      params.requester,
+    );
+    matchedRunIds.add(runId);
+    if (
+      params.includeProtectedRuns !== true &&
+      (adapter.controlUiVisible === false ||
+        (params.preserveSideRuns && adapter.turnKind === "btw"))
+    ) {
+      // Lifecycle cleanup still checks ownership of hidden and preserved work.
+      authorization.hasProtectedRuns = true;
+      authorization.hasUnauthorizedProtectedRuns ||= !requesterCanAbort;
+    } else if (requesterCanAbort) {
+      authorizedByRunId.set(runId, { runId, ...identity, entry });
+    } else {
+      authorization.hasUnauthorizedRuns = true;
+    }
+  }
   return {
-    add(run: T, requesterCanAbort: boolean, isProtected: boolean | undefined) {
-      matchedRunIds.add(run.runId);
-      if (isProtected) {
-        // Lifecycle cleanup still checks ownership of hidden and preserved work.
-        authorization.hasProtectedRuns = true;
-        authorization.hasUnauthorizedProtectedRuns ||= !requesterCanAbort;
-      } else if (requesterCanAbort) {
-        authorizedByRunId.set(run.runId, run);
-      } else {
-        authorization.hasUnauthorizedRuns = true;
-      }
-    },
-    result: () => ({
-      authorizedRuns: [...authorizedByRunId.values()],
-      matchedRunIds: [...matchedRunIds],
-      ...authorization,
-    }),
+    authorizedRuns: [...authorizedByRunId.values()],
+    matchedRunIds: [...matchedRunIds],
+    ...authorization,
   };
 }
 
@@ -285,42 +300,13 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
 }) {
-  const selection = createChatAbortRunSelection<{
-    runId: string;
-    sessionKey: string;
-    sessionId: string;
-    agentId?: string;
-    entry: RpcSourceRef;
-  }>();
-  for (const { runId, entry } of listRpcSourceEntriesForSession(params)) {
-    if (isRpcSourceQueued(entry)) {
-      continue;
-    }
-    const adapter = entry.adapter;
-    const identity = getRpcSourceIdentity(entry);
-    const target = { ...identity, requester: adapter.requester };
-    const requesterCanAbort = canRequesterAbortChatRun(target, params.requester);
-    const isProtected =
-      params.includeProtectedRuns !== true &&
-      (adapter.controlUiVisible === false ||
-        (params.preserveSideRuns && adapter.turnKind === "btw"));
-    selection.add(
-      {
-        runId,
-        ...identity,
-        entry,
-      },
-      requesterCanAbort,
-      isProtected,
-    );
-  }
-  return selection.result();
+  return selectAuthorizedRpcSourceRuns(
+    listRpcSourceEntriesForSession(params).filter(({ entry }) => !isRpcSourceQueued(entry)),
+    params,
+  );
 }
 
-const SESSION_LIFECYCLE_ABORT_REQUESTER: ChatAbortRequester = { isAdmin: true };
-
 export function resolveAuthorizedQueuedTurnsForSession(params: {
-  context: GatewayRequestContext;
   sessionKeys: string[];
   sessionId?: string;
   requiredSessionId?: string;
@@ -338,60 +324,23 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
     agentId: params.agentId,
     defaultAgentId: params.defaultAgentId,
   });
-  const selection = createChatAbortRunSelection<{
-    runId: string;
-    entry: RpcSourceRef;
-    sessionKey: string;
-    sessionId: string;
-    agentId?: string;
-  }>();
-  for (const { runId, entry } of matches) {
-    const adapter = entry.adapter;
-    const identity = getRpcSourceIdentity(entry);
-    const target = { ...identity, requester: adapter.requester };
-    selection.add(
-      {
-        runId,
-        entry,
-        ...identity,
-      },
-      canRequesterAbortChatRun(target, params.requester),
-      params.includeProtectedRuns !== true &&
-        (adapter.controlUiVisible === false ||
-          (params.preserveSideRuns && adapter.turnKind === "btw")),
-    );
-  }
-  const { authorizedRuns, ...result } = selection.result();
+  const { authorizedRuns, ...result } = selectAuthorizedRpcSourceRuns(matches, params);
   return { authorized: authorizedRuns, ...result };
 }
 
-type SessionAbortOwnerParams = {
-  context: GatewayRequestContext;
+/** Authoritative active, pending, or queued Gateway owner for an exact session. */
+export function hasGatewaySessionAbortOwner(params: {
   sessionKeys: string[];
   sessionId?: string;
   agentId?: string;
   defaultAgentId?: string;
-};
-
-/** Authoritative active, pending, or queued Gateway owner for an exact session. */
-export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): boolean {
-  const ownerScope = {
-    sessionKeys: params.sessionKeys,
-    agentId: params.agentId,
-    defaultAgentId: params.defaultAgentId,
-    requester: SESSION_LIFECYCLE_ABORT_REQUESTER,
-  };
+}): boolean {
   return (
-    resolveAuthorizedRunsForSessionKeys({
+    listRpcSourceEntriesForSession({
+      sessionKeys: params.sessionKeys,
       sessionIds: [params.sessionId],
-      ...ownerScope,
-      includeProtectedRuns: true,
-    }).authorizedRuns.length > 0 ||
-    resolveAuthorizedQueuedTurnsForSession({
-      context: params.context,
-      sessionId: params.sessionId,
-      includeProtectedRuns: true,
-      ...ownerScope,
-    }).authorized.length > 0
+      agentId: params.agentId,
+      defaultAgentId: params.defaultAgentId,
+    }).length > 0
   );
 }

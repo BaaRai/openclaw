@@ -14,12 +14,7 @@ export type InFlightRunSnapshot = {
   runId: string;
   text: string;
   startedAt?: number;
-  /**
-   * True when the in-flight run is owned by the embedded-run registry and can
-   * only be cancelled through the session-owned abort path (sessions.abort),
-   * never through run-specific chat.abort. Control UI uses this to keep Stop
-   * routing session-scoped for recovered embedded runs.
-   */
+  /** Embedded-registry run: Control UI must route Stop through sessions.abort, never chat.abort. */
   sessionAbortable?: boolean;
   plan?: ChatRunPlanSnapshot;
   events?: AgentEventPayload[];
@@ -94,13 +89,13 @@ export function resolveInFlightRunSnapshot(params: {
     ) {
       continue;
     }
-    const newer = best === undefined || (getRpcSourceStartedAt(entry) ?? 0) > best.startedAtMs;
-    const tie =
-      best !== undefined &&
-      (getRpcSourceStartedAt(entry) ?? 0) === best.startedAtMs &&
-      runId > best.runId;
-    if (newer || tie) {
-      best = { runId, startedAtMs: getRpcSourceStartedAt(entry) ?? 0 };
+    const startedAtMs = getRpcSourceStartedAt(entry) ?? 0;
+    if (
+      best === undefined ||
+      startedAtMs > best.startedAtMs ||
+      (startedAtMs === best.startedAtMs && runId > best.runId)
+    ) {
+      best = { runId, startedAtMs };
     }
   }
   if (best === undefined) {

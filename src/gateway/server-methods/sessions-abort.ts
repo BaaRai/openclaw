@@ -1,4 +1,3 @@
-// Session active-run cancellation and agent-scope resolution.
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   hasNonEmptyString,
@@ -76,8 +75,6 @@ import { requireSessionKey } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
-export { resolveAbortSessionKey } from "./sessions-abort-target.js";
-
 export const sessionAbortHandlers: GatewayRequestHandlers = {
   "sessions.abort": async (options) => {
     const { params, respond, context, client, sessionMutationAuthorization } = options;
@@ -150,13 +147,12 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         ? normalizeAgentId(inferredRunAgentId)
         : undefined
       : undefined;
-    const scopedInferredActiveRunSessionKey = inferredActiveRunSessionKey
-      ? requestedRunAgentId
-        ? sessionKeyBelongsToAgent(inferredActiveRunSessionKey, requestedRunAgentId, cfg)
-          ? inferredActiveRunSessionKey
-          : undefined
-        : inferredActiveRunSessionKey
-      : undefined;
+    const scopedInferredActiveRunSessionKey =
+      inferredActiveRunSessionKey &&
+      (!requestedRunAgentId ||
+        sessionKeyBelongsToAgent(inferredActiveRunSessionKey, requestedRunAgentId, cfg))
+        ? inferredActiveRunSessionKey
+        : undefined;
     const keyCandidate =
       scopedRequestedKey ??
       scopedInferredActiveRunSessionKey ??
@@ -230,13 +226,12 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
     const activeRunSessionKey = activeRunIdentity?.sessionKey;
     const activeRunAgentId = normalizeOptionalString(activeRunIdentity?.agentId);
-    const scopedActiveRunSessionKey = activeRunSessionKey
-      ? requestedRunAgentId
-        ? sessionKeyBelongsToAgent(activeRunSessionKey, requestedRunAgentId, cfg)
-          ? activeRunSessionKey
-          : undefined
-        : activeRunSessionKey
-      : undefined;
+    const scopedActiveRunSessionKey =
+      activeRunSessionKey &&
+      (!requestedRunAgentId ||
+        sessionKeyBelongsToAgent(activeRunSessionKey, requestedRunAgentId, cfg))
+        ? activeRunSessionKey
+        : undefined;
     const hasExactActiveRun = requestedRunId
       ? (scopedActiveRunSessionKey === key &&
           resolveChatRunOwnerAgentId({
@@ -346,22 +341,23 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       requester.sessionAuthority?.assertCurrent();
       assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
     };
+    const stopHookContext = {
+      sessionKey: canonicalKey,
+      sessionEntry,
+      sessionId: sessionEntry?.sessionId,
+      commandSource: "gateway:sessions.abort",
+      senderId: requester.deviceId ?? requester.connId,
+    };
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
     if (embeddedRun && !activeRun && (!requestedRunId || !hasRpcSource(requestedRunId))) {
       let parentStatus: ReturnType<ActiveEmbeddedRunOwner["stop"]> = "unchanged";
       let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
-      const stopped = stopSession({
+      const { aborted } = await stopSession({
         source: "client-run",
         capture: captureSessionControllerStop({}),
         assertCurrent: assertAbortCurrent,
         reason: "rpc",
-        hookContext: {
-          sessionKey: canonicalKey,
-          sessionEntry,
-          sessionId: sessionEntry?.sessionId,
-          commandSource: "gateway:sessions.abort",
-          senderId: requester.deviceId ?? requester.connId,
-        },
+        hookContext: stopHookContext,
         externalParent: {
           stop: () => {
             assertAbortCurrent();
@@ -384,9 +380,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           };
         },
         continueChildStop: () => parentStatus !== "unchanged",
-      });
-      const outcome = await stopped.completed;
-      const aborted = outcome.aborted;
+      }).completed;
       if (aborted) {
         await Promise.all([persistSessionAbort(embeddedRun), embeddedRun.waitForSettlement()]);
       }
@@ -499,14 +493,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         throw abortedPartialPersistenceError(error, abortWarning);
       }
     };
-    const stopHookContext = {
-      sessionKey: canonicalKey,
-      sessionEntry,
-      sessionId: persistedSessionId,
-      commandSource: "gateway:sessions.abort",
-      senderId: requester.deviceId ?? requester.connId,
-    };
-
     const queuedAbort = abortQueuedCollectorSession({
       context,
       sessionKey: canonicalKey,

@@ -97,6 +97,21 @@ function createChatAbortSignalReason(stopReason: string | undefined): Error | un
   return reason;
 }
 
+function createUnregisteredChatAbortController(
+  existingEntry: RpcSourceRef | undefined,
+): RegisteredChatAbortController {
+  return {
+    controller: new AbortController(),
+    registered: false,
+    ...(existingEntry ? { existingEntry } : {}),
+    markExecutionStarted: () => false,
+    bindAgentRunDelegatedAuthority: () => {
+      throw new Error("Unregistered source cannot own a projected run authority");
+    },
+    cleanup: () => {},
+  };
+}
+
 export function resolveChatRunExpiresAtMs(params: {
   now: number;
   timeoutMs: number;
@@ -173,18 +188,7 @@ export function registerChatAbortController(params: {
 }): RegisteredChatAbortController {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
   if (!params.sessionKey) {
-    const controller = new AbortController();
-    const existingEntry = getRpcSource(params.runId);
-    return {
-      controller,
-      registered: false,
-      ...(existingEntry ? { existingEntry } : {}),
-      markExecutionStarted: () => false,
-      bindAgentRunDelegatedAuthority: () => {
-        throw new Error("Unregistered source cannot own a projected run authority");
-      },
-      cleanup: () => {},
-    };
+    return createUnregisteredChatAbortController(getRpcSource(params.runId));
   }
   if (!params.target) {
     throw new Error("RPC source requires its captured physical session target");
@@ -194,17 +198,7 @@ export function registerChatAbortController(params: {
     if (params.sourceInput) {
       throw new Error("Reserved source cannot adopt an existing RPC registration");
     }
-    const controller = new AbortController();
-    return {
-      controller,
-      registered: false,
-      existingEntry,
-      markExecutionStarted: () => false,
-      bindAgentRunDelegatedAuthority: () => {
-        throw new Error("Unregistered source cannot own a projected run authority");
-      },
-      cleanup: () => {},
-    };
+    return createUnregisteredChatAbortController(existingEntry);
   }
   const adapter: RpcSourceAdapter = {
     authority: params.authority,
@@ -487,6 +481,12 @@ export function abortChatRunById(
     active.adapter.projectSessionTerminalPending = true;
     active.adapter.projectSessionTerminalObservedAt = undefined;
   }
+  const restorePrevious = () => {
+    revokeAbortPreparation?.();
+    Object.assign(active.adapter, previous);
+    setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
+    runProjection.abortMarker = previousMarker;
+  };
   let cancelled: boolean;
   let cancellationFailure: { error: unknown } | undefined;
   try {
@@ -504,19 +504,13 @@ export function abortChatRunById(
         active.input.retirementRequested === true &&
         active.input.abortSignal.aborted);
     if (!cancelled) {
-      revokeAbortPreparation?.();
-      Object.assign(active.adapter, previous);
-      setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
-      runProjection.abortMarker = previousMarker;
+      restorePrevious();
       throw error;
     }
     cancellationFailure = { error };
   }
   if (!cancelled) {
-    revokeAbortPreparation?.();
-    Object.assign(active.adapter, previous);
-    setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
-    runProjection.abortMarker = previousMarker;
+    restorePrevious();
     return { aborted: false };
   }
   // Cancellation is committed. These publication/revocation receipts finish even if

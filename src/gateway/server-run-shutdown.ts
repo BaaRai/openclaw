@@ -56,7 +56,7 @@ function listGatewayRpcSourceEntries(
 }
 
 function listUnabortedRuns(
-  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+  entries: Iterable<readonly [string, RpcSourceRef]>,
 ): Array<[string, RpcSourceRef]> {
   return [...entries].filter(
     (entry): entry is [string, RpcSourceRef] => !entry[1].input.abortSignal.aborted,
@@ -64,7 +64,7 @@ function listUnabortedRuns(
 }
 
 function listRestartDrainRuns(
-  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+  entries: Iterable<readonly [string, RpcSourceRef]>,
 ): Array<[string, RpcSourceRef]> {
   return listUnabortedRuns(entries).filter(
     ([, entry]) => entry.input.phase !== "consumed" && !isRpcSourceQueued(entry),
@@ -72,7 +72,7 @@ function listRestartDrainRuns(
 }
 
 function listRestartRecoveryRuns(
-  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+  entries: Iterable<readonly [string, RpcSourceRef]>,
 ): Array<[string, RpcSourceRef]> {
   return listUnabortedRuns(entries).filter(
     ([, entry]) =>
@@ -158,21 +158,18 @@ async function waitForRestartReplyDrain(params: {
   }
 }
 
-function collectActiveRestartSessionRefs(
-  params: Pick<
-    GatewayRunShutdownParams,
-    "resolveActiveSessionIdForKey" | "restartRecoveryCandidates"
-  > & { entries?: Iterable<readonly [string, RpcSourceRef]> },
-): Array<{
+type CapturedRestartRun = {
   run: RestartRecoveryCandidate;
   source?: RpcSourceRef;
   recoveryCandidate?: RestartRecoveryCandidate;
-}> {
-  const activeRuns: Array<{
-    run: RestartRecoveryCandidate;
-    source?: RpcSourceRef;
-    recoveryCandidate?: RestartRecoveryCandidate;
-  }> = [];
+};
+
+function collectActiveRestartSessionRefs(
+  params: Pick<GatewayRunShutdownParams, "restartRecoveryCandidates"> & {
+    entries: Iterable<readonly [string, RpcSourceRef]>;
+  },
+): CapturedRestartRun[] {
+  const activeRuns: CapturedRestartRun[] = [];
   const observedAt = Date.now();
   const addRun = (
     run: RestartRecoveryCandidate,
@@ -273,16 +270,14 @@ async function markActiveRunsForRestartRecovery(
   if (!params.markMainSessionsAbortedForRestart) {
     return;
   }
-  const activeEntries = params.capturedSources;
   const recoveryCandidates = params.capturedRecoveryCandidates;
   const capturedRuns = collectActiveRestartSessionRefs({
-    ...params,
-    entries: activeEntries,
+    entries: params.capturedSources,
     restartRecoveryCandidates: recoveryCandidates,
   });
   const activeRuns = capturedRuns.map(({ run }) => run);
   const capturedByRun = new Map(capturedRuns.map((captured) => [captured.run, captured]));
-  await settleTerminalSessionPersistenceForRestart(activeEntries);
+  await settleTerminalSessionPersistenceForRestart(params.capturedSources);
   try {
     let markerOutcome!: Promise<void>;
     const timedOut = await raceWithTimeout(
@@ -383,7 +378,7 @@ export async function prepareGatewayRunShutdown(
   const capturedSources = listGatewayRpcSourceEntries(params.resolveGatewayContext);
   const capturedRecoveryCandidates = new Map(params.restartRecoveryCandidates);
   const sourceByInput = new Map(
-    [...capturedSources].map(([runId, entry]) => [
+    capturedSources.map(([runId, entry]) => [
       entry.input,
       { runId, entry, presentation: captureChatRunAbortPresentation(params, runId) },
     ]),
