@@ -467,11 +467,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         signal,
         run: () =>
           assignSessionOwnerInWorker(
-            {
-              agentId: target.agentId,
-              sessionKey: target.storeKey,
-              storePath: target.storePath,
-            },
+            { agentId: target.agentId, sessionKey: target.storeKey, storePath: target.storePath },
             {
               owner,
               assignedBy,

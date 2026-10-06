@@ -15,15 +15,12 @@ import { bindSessionControllerEntryTarget } from "../../sessions/session-control
 // Native initialization may create the SID after admission. Only the original
 // registration can adopt it; retained callbacks cannot bind a successor.
 export function bindChatSendPreparedSession(params: {
-  clientRunId: string;
   sessionKey: string;
   sourceRef: RpcSourceRef;
   lifecycleGeneration: string;
   admission: Pick<SessionEffectRef, "isActive">;
-  progressRefresh: boolean;
 }): (binding: ReplySessionBinding) => void {
   const { sourceRef } = params;
-  const sessionBinding = sourceRef.adapter;
   return (binding) => {
     const input = sourceRef.input;
     const operation = input.claim?.operation;
@@ -41,12 +38,12 @@ export function bindChatSendPreparedSession(params: {
       input.withdrawalHolds > 0 ||
       operation?.abortFrozen ||
       operation?.result ||
-      sessionBinding.projectSessionTerminalPending ||
-      sessionBinding.projectSessionTerminalPersisted
+      sourceRef.adapter.projectSessionTerminalPending ||
+      sourceRef.adapter.projectSessionTerminalPersisted
     ) {
       throw createAbortError("chat session preparation no longer owns its admission");
     }
-    const owner = sourceRef.input.mailbox.owner;
+    const owner = input.mailbox.owner;
     const target = owner.target;
     if (!target) {
       throw new Error("Prepared RPC source lost its physical target");

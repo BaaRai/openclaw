@@ -20,6 +20,8 @@ import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { createChatSendLateReplyFinalizer } from "./chat-send-source-finalization.js";
 import type { GatewayRequestContext } from "./types.js";
 
+type TerminalCompletion = Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>;
+
 export function createChatSendTurnAdoptionLifecycle(params: {
   requesterContext?: WebchatReplyMediaRequesterContext;
   accountId: string | undefined;
@@ -29,8 +31,6 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   controller: AbortController;
   sessionKey: string;
   agentId?: string;
-  ownerConnId?: string;
-  ownerDeviceId?: string;
   ownerKey?: string;
   originatingLeafEntryId?: string | null;
   originatingChannel: string;
@@ -52,15 +52,11 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   onQueuedFollowupReplyBatch: QueuedFollowupReplyDelivery;
 } {
   let terminalKnown = false;
-  let terminalCompletion:
-    | Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>
-    | undefined;
+  let terminalCompletion: TerminalCompletion | undefined;
   let completed = false;
   let settlementRecorded = false;
   let releaseWorkAdmission: (() => void) | undefined;
-  const recordQueuedTerminal = (
-    completion: Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>,
-  ) => {
+  const recordQueuedTerminal = (completion: TerminalCompletion) => {
     // Before deferral, the active dispatch owns terminal recording. Once queued,
     // this producer must publish completion after the exact source's delivery.
     if (

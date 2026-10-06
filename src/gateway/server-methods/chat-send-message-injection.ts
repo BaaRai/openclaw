@@ -212,7 +212,6 @@ export function createChatSendMessageInjectionStarter(params: {
               spawnedBy: entry?.spawnedBy,
               permissionMode: params.admittedSessionSettings?.permissionMode,
               toolOverrides: params.admittedSessionSettings?.toolOverrides,
-
             },
             senderIsOwner: authorization.senderIsOwner,
             operatorAuthority: params.operatorAuthority,
@@ -234,16 +233,11 @@ export function createChatSendMessageInjectionStarter(params: {
       injection.finish(false);
       throw error;
     }
-    const acceptance = attempt.acceptance.then(
-      (accepted) => {
-        injection.accepted(accepted);
-        return accepted;
-      },
-      (error: unknown) => {
-        // Failed acknowledgement does not settle accepted native work.
-        throw error;
-      },
-    );
+    // Failed acknowledgement does not settle accepted native work.
+    const acceptance = attempt.acceptance.then((accepted) => {
+      injection.accepted(accepted);
+      return accepted;
+    });
     void acceptance.catch(() => {});
     const outcome = attempt.outcome.then(
       async (nativeOutcome) => {
@@ -271,7 +265,6 @@ export function createChatSendMessageInjectionStarter(params: {
     );
     void outcome.catch(() => {});
     return { ...attempt, acceptance, outcome };
-
   };
 }
 

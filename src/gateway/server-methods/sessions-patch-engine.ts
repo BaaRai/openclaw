@@ -274,7 +274,6 @@ export async function executeSessionPatchMutations(params: {
             agentId: target.targetAgentId,
           }),
         ),
-
         prepare: async () => {
           for (const target of activePrepared) {
             target.archivePreparation?.drain.handoffToMutation();

@@ -65,7 +65,6 @@ function runExclusiveSharingMutation<T>(
       agentId: target.agentId,
     }),
     policy: "allow-live",
-
     run,
   });
 }

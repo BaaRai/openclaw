@@ -148,9 +148,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     accountId,
     prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
     isAgentRunStarted: () => agentRunStarted,
-    isRunCurrent: () =>
-      isRunCurrent() ||
-      (!activeRunAbort.controller.signal.aborted && isRpcSourceRegistered(admission.sourceRef)),
+    isRunCurrent,
     abortSignal: activeRunAbort.controller.signal,
     onCommandBlock: isInternalTextSlashCommandTurn
       ? (text) =>
@@ -177,8 +175,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     controller: activeRunAbort.controller,
     sessionKey,
     agentId: selectedAgent.agentId,
-    ownerConnId: client?.connId,
-    ownerDeviceId: client?.connect?.device?.id,
     ownerKey: queuedFollowupOwnerKey,
     ...(expectedLeafEntryId !== undefined ? { originatingLeafEntryId: expectedLeafEntryId } : {}),
     originatingChannel: admission.originatingRoute.originatingChannel,
@@ -591,9 +587,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 replyDispatchResult?.assistantTranscript?.agentId === agentId &&
                 replyDispatchResult.assistantTranscript.sessionKey === sessionKey &&
                 replyDispatchResult.assistantTranscript.sessionId ===
-                  (activeRunAbort.entry
-                    ? getRpcSourceIdentity(activeRunAbort.entry).sessionId
-                    : undefined),
+                  getRpcSourceIdentity(activeRunAbort.entry).sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
             });

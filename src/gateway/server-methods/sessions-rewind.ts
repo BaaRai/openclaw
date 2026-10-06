@@ -293,7 +293,6 @@ async function mutateSessionAtMessage(
       incarnation: initialSessionId,
       agentId: requestedAgent.agentId,
     }),
-
     prepare: async () => {
       const current = loadAccessorSessionEntryForGatewayTarget({
         key: sessionKey,

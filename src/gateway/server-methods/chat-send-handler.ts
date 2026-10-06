@@ -276,7 +276,7 @@ async function handleChatSendWithOptions(
           !userTurnRecorder.isPendingInputConsumed?.();
         const disposition =
           activeRunAbort.controller.signal.aborted &&
-          activeRunAbort.entry?.adapter.abortStopReason !== "restart" &&
+          activeRunAbort.entry.adapter.abortStopReason !== "restart" &&
           !isAgentRunRestartAbortReason(activeRunAbort.controller.signal.reason)
             ? "cancelled"
             : "interrupted";
@@ -284,7 +284,7 @@ async function handleChatSendWithOptions(
         if (pending && activeRunAbort.controller.signal.aborted) {
           const reason = resolveChatAbortDiagnosticReason(
             activeRunAbort.controller.signal,
-            activeRunAbort.entry?.adapter,
+            activeRunAbort.entry.adapter,
           );
           context.logGateway.info(`chat pending input aborted: ${reason} (${disposition})`, {
             runId: clientRunId,
@@ -422,15 +422,13 @@ async function handleChatSendWithOptions(
         throw new Error("chat turn was not durably admitted");
       }
       if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
-        if (activeRunAbort.entry) {
-          activeRunAbort.entry.adapter.abortStopReason = "restart";
-        }
+        activeRunAbort.entry.adapter.abortStopReason = "restart";
         activeRunAbort.controller.abort(createAgentRunRestartAbortError());
       }
       if (activeRunAbort.controller.signal.aborted) {
         if (
           !(await terminalizeRestartSafeAdmission({
-            retryable: activeRunAbort.entry?.adapter.abortStopReason === "restart",
+            retryable: activeRunAbort.entry.adapter.abortStopReason === "restart",
             status: "killed",
           }))
         ) {

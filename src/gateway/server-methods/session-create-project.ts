@@ -219,7 +219,7 @@ export async function prepareSessionWorkspace(params: {
     if (
       !isRpcSourceRegistered(activeRun) ||
       activeRun.input.abortSignal !== signal ||
-      activeRunIdentity?.sessionKey !== sessionKey ||
+      activeRunIdentity.sessionKey !== sessionKey ||
       activeRunIdentity.sessionId !== entry.sessionId ||
       entry.sessionId !== admission.admittedSessionId ||
       getRpcSourceLifecycleGeneration(activeRun) !== admission.lifecycleGeneration ||

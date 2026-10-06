@@ -46,11 +46,6 @@ export async function prepareAdmittedChatSendDispatch({
     }
   };
   let startedWork: (() => Promise<unknown>) | undefined;
-  const startOwnedWork = <T>(work: Promise<T>) => {
-    const observed = observeChatSendWork(work);
-    startedWork = observed;
-    return observed;
-  };
   try {
     if (!assertChatSendSessionTargetOrRespond({ assertSessionTargetCurrent, cleanup, respond })) {
       return undefined;
@@ -59,11 +54,11 @@ export async function prepareAdmittedChatSendDispatch({
       runAbort.controller.signal.throwIfAborted();
       // Detached dispatch keeps the live request root through terminal persistence.
       releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
-      return {
-        admission: params.onAdmissionOwned
-          ? startOwnedWork(admission.run(params.onAdmissionOwned))
-          : undefined,
-      };
+      const ownedWork = params.onAdmissionOwned
+        ? observeChatSendWork(admission.run(params.onAdmissionOwned))
+        : undefined;
+      startedWork = ownedWork;
+      return { admission: ownedWork };
     });
     if (pending.admission) {
       if (!(await pending.admission())) {

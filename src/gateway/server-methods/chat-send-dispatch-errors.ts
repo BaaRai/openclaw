@@ -168,7 +168,7 @@ export async function handleChatSendSetupError(params: {
 
 /** Own dispatch settlement and post-cleanup lifecycle persistence. */
 export function createChatSendDispatchErrorLifecycle(params: {
-  admission: ChatSendJobAdmission & Pick<AdmittedChatSend, "activeRunAbort">;
+  admission: ChatSendJobAdmission;
   context: GatewayRequestContext;
   isAgentRunStarted: () => boolean;
   isQueuedFollowupEnqueued: () => boolean;
@@ -194,11 +194,11 @@ export function createChatSendDispatchErrorLifecycle(params: {
   } = params;
   const { activeRunAbort, cleanupAdmittedRun, lifecycleGeneration, restartSafeAdmission } =
     admission;
-  const { agentId, backingSessionId, cfg, clientRunId, now, rawSessionKey, sessionKey } = session;
+  const { agentId, cfg, clientRunId, now, rawSessionKey, sessionKey } = session;
   const captureJobSession = () =>
     captureAgentJobSession({
-      ...getRpcSourceIdentity(admission.activeRunAbort.entry),
-      lifecycleGeneration: getRpcSourceLifecycleGeneration(admission.activeRunAbort.entry),
+      ...getRpcSourceIdentity(activeRunAbort.entry),
+      lifecycleGeneration: getRpcSourceLifecycleGeneration(activeRunAbort.entry),
     });
   // Cleanup releases the run context before delayed failure publication. Keep
   // the original projection policy so maintenance cannot become a visible turn.
@@ -251,9 +251,9 @@ export function createChatSendDispatchErrorLifecycle(params: {
     const abortedAtDispatchReject = activeRunAbort.controller.signal.aborted;
     const abortMarkerAtDispatchReject = context.chatRunState.runs.get(clientRunId)?.abortMarker;
     const agentTerminalPersistenceOwnedAtDispatchReject =
-      activeRunAbort.entry?.adapter.projectSessionTerminalPending === true ||
-      activeRunAbort.entry?.adapter.projectSessionTerminalPersistence !== undefined ||
-      activeRunAbort.entry?.adapter.projectSessionTerminalPersisted === true;
+      activeRunAbort.entry.adapter.projectSessionTerminalPending === true ||
+      activeRunAbort.entry.adapter.projectSessionTerminalPersistence !== undefined ||
+      activeRunAbort.entry.adapter.projectSessionTerminalPersisted === true;
 
     if (abortedAtDispatchReject && abortMarkerAtDispatchReject !== undefined) {
       // chat.abort has already emitted the canonical terminal lifecycle and
@@ -320,14 +320,8 @@ export function createChatSendDispatchErrorLifecycle(params: {
         endedAt: Date.now(),
         error: errorMessage,
         errorKind,
-        sessionId:
-          (activeRunAbort.entry
-            ? getRpcSourceIdentity(activeRunAbort.entry).sessionId
-            : undefined) ??
-          backingSessionId ??
-          clientRunId,
-        startedAt:
-          (activeRunAbort.entry ? getRpcSourceStartedAt(activeRunAbort.entry) : undefined) ?? now,
+        sessionId: getRpcSourceIdentity(activeRunAbort.entry).sessionId,
+        startedAt: getRpcSourceStartedAt(activeRunAbort.entry) ?? now,
       };
     }
     if (!agentTerminalPersistenceOwnedAtDispatchReject || params.isReplyDispatchRun?.()) {
@@ -390,7 +384,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
       if (abortMarker) {
         if (restartSafeAdmission && !params.isAgentRunStarted()) {
           const terminalized = await terminalizeRestartSafeAdmission({
-            retryable: activeRunAbort.entry?.adapter.abortStopReason === "restart",
+            retryable: activeRunAbort.entry.adapter.abortStopReason === "restart",
             status: "killed",
           }).catch((terminalizeError: unknown) => {
             context.logGateway.warn(
@@ -418,7 +412,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
             ok: true,
             payload: buildAbortedChatSendPayload({
               runId: clientRunId,
-              stopReason: activeRunAbort.entry?.adapter.abortStopReason ?? "rpc",
+              stopReason: activeRunAbort.entry.adapter.abortStopReason ?? "rpc",
               endedAt,
             }),
           },

@@ -191,7 +191,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           incarnation: sessionId,
           agentId: target.agentId,
         }),
-
         kind: "compaction",
         policy: "preempt",
         preempt: {

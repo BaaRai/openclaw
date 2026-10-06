@@ -215,10 +215,10 @@ export async function deleteGatewaySession({
         });
       } catch (error) {
         assertCurrent();
-        if (error instanceof SessionMutationPreemptTimeoutError) {
-          throw error;
-        }
-        if (error instanceof SessionDeletionError) {
+        if (
+          error instanceof SessionMutationPreemptTimeoutError ||
+          error instanceof SessionDeletionError
+        ) {
           throw error;
         }
         if (error instanceof SessionLifecycleWorkspaceRecoveryError) {
@@ -247,9 +247,7 @@ export async function deleteGatewaySession({
           activeRun: "abort",
           waitingInputs: "cancel",
         },
-        // The lifecycle drain hands its external worker and terminal closures to
-        // the mutation here; controller preemption is owned by runSessionMutation.
-
+        // The drain hands worker and terminal closures to this mutation; it owns preemption.
         prepare: async () => drain?.handoffToMutation(),
         finalize: async () => drain?.release(),
         run: async () => {

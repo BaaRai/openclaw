@@ -130,7 +130,6 @@ export function captureApprovalWorkerOwner(
 }
 
 /** Registers an approval record and converts manager registration errors to gateway errors. */
-
 export async function registerPendingApprovalRecord<TPayload>(params: {
   manager: ExecApprovalManager<TPayload>;
   record: ExecApprovalRecord<TPayload>;
