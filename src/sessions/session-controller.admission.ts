@@ -121,7 +121,7 @@ export async function withSessionTurn<T>(
     if (!params.sessionId?.trim()) {
       return undefined;
     }
-    const operation = createReplyOperation({
+    return createReplyOperation({
       sessionKey,
       sessionId: params.sessionId,
       agentId: params.agentId,
@@ -131,7 +131,6 @@ export async function withSessionTurn<T>(
       mailboxClaim: claim,
       target,
     });
-    return operation;
   };
   const invoke = (claim: SessionControllerMailboxClaim) => {
     const operation = materialize(claim);

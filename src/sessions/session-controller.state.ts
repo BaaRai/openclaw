@@ -3,12 +3,10 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { isEmbeddedRunHandleCompacting } from "../agents/embedded-agent-runner/runs.probes.js";
 import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
-import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
+import { assertTurnAdmission } from "./session-controller.admission-rule.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   ReplyRunAlreadyActiveError,
-  ReplyRunFollowupAdmissionBlockedError,
-  ReplyRunSuccessorAdmissionBlockedError,
   type ReplyBackendHandle,
   type ReplyOperation,
   type ReplyOperationPhase,
@@ -309,21 +307,12 @@ export function prepareReplyRunKeyUpdate(
   if (targetOwner !== operation) {
     const owner = mailboxClaim?.mailbox.owner ?? findSessionControllerEntry(nextKey, target);
     if (owner) {
-      const admission = evaluateTurnAdmission(owner, {
+      assertTurnAdmission(owner, {
         kind: operation.turnKind,
         sessionKey: nextKey,
         registeredEntry: controllerStorage.sessionControllers.get(owner.id),
         claim: mailboxClaim,
       });
-      if (!admission.admitted) {
-        if (admission.reason === "followup-barrier") {
-          throw new ReplyRunFollowupAdmissionBlockedError(nextKey);
-        }
-        if (admission.reason === "successor-barrier") {
-          throw new ReplyRunSuccessorAdmissionBlockedError(nextKey);
-        }
-        throw new ReplyRunAlreadyActiveError(nextKey);
-      }
     }
   }
   return { sessionKey: nextKey, agentId: nextAgentId };

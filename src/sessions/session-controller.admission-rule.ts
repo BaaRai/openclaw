@@ -1,4 +1,9 @@
-import type { ReplyTurnKind } from "./session-controller.contracts.js";
+import {
+  ReplyRunAlreadyActiveError,
+  ReplyRunFollowupAdmissionBlockedError,
+  ReplyRunSuccessorAdmissionBlockedError,
+  type ReplyTurnKind,
+} from "./session-controller.contracts.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
@@ -26,14 +31,7 @@ const waitsForFollowupBarrier = {
   direct: true,
 } as const satisfies Record<ReplyTurnKind, boolean>;
 
-/**
- * Decides whether one turn may acquire a controller entry.
- *
- * No turn kind bypasses retained delivery custody. The queued-followup contract
- * in docs/concepts/session-controller.md and the queued/heartbeat regressions in
- * reply-turn-admission.test.ts require the barrier; no existing contract grants
- * visible or direct turns a bypass.
- */
+/** Decides whether a turn may acquire a controller entry; no kind bypasses delivery custody. */
 export function evaluateTurnAdmission(
   entry: SessionControllerEntry,
   options: {
@@ -120,4 +118,22 @@ export function evaluateTurnAdmission(
     return { admitted: false, reason: "waiting-inputs" };
   }
   return { admitted: true };
+}
+
+/** Throws the caller-facing admission error when the turn is refused. */
+export function assertTurnAdmission(
+  entry: SessionControllerEntry,
+  options: Parameters<typeof evaluateTurnAdmission>[1],
+): void {
+  const admission = evaluateTurnAdmission(entry, options);
+  if (admission.admitted) {
+    return;
+  }
+  if (admission.reason === "followup-barrier") {
+    throw new ReplyRunFollowupAdmissionBlockedError(options.sessionKey);
+  }
+  if (admission.reason === "successor-barrier") {
+    throw new ReplyRunSuccessorAdmissionBlockedError(options.sessionKey);
+  }
+  throw new ReplyRunAlreadyActiveError(options.sessionKey);
 }

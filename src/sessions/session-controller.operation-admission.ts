@@ -4,14 +4,8 @@ import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
-import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
-import {
-  ReplyRunAlreadyActiveError,
-  ReplyRunFollowupAdmissionBlockedError,
-  ReplyRunSuccessorAdmissionBlockedError,
-  type ReplyOperation,
-  type ReplyTurnKind,
-} from "./session-controller.contracts.js";
+import { assertTurnAdmission } from "./session-controller.admission-rule.js";
+import type { ReplyOperation, ReplyTurnKind } from "./session-controller.contracts.js";
 import {
   bindSessionControllerTarget,
   retainSessionControllerOperation,
@@ -53,21 +47,12 @@ export function prepareReplyOperationAdmission(params: CreateReplyOperationParam
   if (params.target) {
     bindSessionControllerEntryTarget(owner, params.target);
   }
-  const admission = evaluateTurnAdmission(owner, {
+  assertTurnAdmission(owner, {
     kind: params.turnKind ?? "visible",
     sessionKey,
     registeredEntry: sessionControllers.get(owner.id),
     claim: params.mailboxClaim,
   });
-  if (!admission.admitted) {
-    if (admission.reason === "followup-barrier") {
-      throw new ReplyRunFollowupAdmissionBlockedError(sessionKey);
-    }
-    if (admission.reason === "successor-barrier") {
-      throw new ReplyRunSuccessorAdmissionBlockedError(sessionKey);
-    }
-    throw new ReplyRunAlreadyActiveError(sessionKey);
-  }
   return { sessionKey, sessionId, owner };
 }
 
