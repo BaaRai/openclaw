@@ -21,9 +21,7 @@ export function prepareReplyStreamingDelivery(
     applyReplyToMode: ReturnType<typeof createReplyToModeFilterForChannel>;
   },
 ) {
-  const { opts, sessionCtx, cfg, applyReplyToMode, blockStreamingEnabled, blockReplyChunking } =
-    params;
-  const { blockReplyTimeoutMs } = params;
+  const { opts, sessionCtx, cfg, applyReplyToMode, blockStreamingEnabled } = params;
   const compactionNoticeMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
   const sendDirectCompactionNotice = shouldNotifyUserAboutCompaction(cfg)
     ? async (phase: CompactionNoticePhase, text?: string) => {
@@ -43,15 +41,6 @@ export function prepareReplyStreamingDelivery(
         }
       }
     : undefined;
-  const blockReplyCoalescing =
-    blockStreamingEnabled && (opts?.onPreparedBlockReply || opts?.onBlockReply)
-      ? resolveEffectiveBlockStreamingConfig({
-          cfg,
-          provider: sessionCtx.Provider,
-          accountId: sessionCtx.AccountId,
-          chunking: blockReplyChunking,
-        }).coalescing
-      : undefined;
   const blockReplyPipeline =
     blockStreamingEnabled && (opts?.onPreparedBlockReply || opts?.onBlockReply)
       ? createBlockReplyPipeline({
@@ -64,8 +53,13 @@ export function prepareReplyStreamingDelivery(
             }
             await opts.onBlockReply?.(payload, context);
           },
-          timeoutMs: blockReplyTimeoutMs,
-          coalescing: blockReplyCoalescing,
+          timeoutMs: params.blockReplyTimeoutMs,
+          coalescing: resolveEffectiveBlockStreamingConfig({
+            cfg,
+            provider: sessionCtx.Provider,
+            accountId: sessionCtx.AccountId,
+            chunking: params.blockReplyChunking,
+          }).coalescing,
           isAudioPayload,
         })
       : null;
