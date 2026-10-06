@@ -121,7 +121,8 @@ prepare_baseline_materialize() (
   source .local/prep-context.env || return 1
   [ "$PREP_REVIEW_MODE" = correction ] && [ "$PR_NUMBER" = "$pr" ] &&
     [ "$PREP_BRANCH" = "pr-$pr-prep" ] || return 1
-  local snapshot target helper root observation prepared binding
+  local snapshot target helper root observation prepared binding source_directory
+  source_directory=$(pwd -P) || return 1
   root=$(repo_root) || return 1
   helper="$(dirname "$(review_artifacts_helper_path)")/baseline-refresh.mjs"
   snapshot=$(correction_review_snapshot "$pr") || return 1
@@ -130,11 +131,10 @@ prepare_baseline_materialize() (
   require_baseline_source() {
     revalidate_pr_publication "$pr" "$observation" "$PR_HEAD" \
       "$PR_HEAD_SHA_BEFORE" "$PR_HEAD_SHA_BEFORE" || return 1
-    pr_operation_lock_owner_is_current "$root" "$PR_OPERATION_LOCK_REF" "$PR_OPERATION_LOCK_OWNER_OID" &&
-      [ "$(pr_git symbolic-ref --short HEAD)" = "$PREP_BRANCH" ] &&
-      [ "$(pr_git rev-parse HEAD)" = "$expected" ] &&
-      pr_git diff --quiet && pr_git diff --cached --quiet && require_no_foreign_untracked "$pr" &&
-      verify_correction_review_snapshot "$pr" "$snapshot"
+    # The initial snapshot and create owner already validate the signed review.
+    # After the live observation compare exact bytes, never replay that history.
+    printf '%s' "$snapshot" | node "$helper" check-source "$pr" "$expected" "$source_directory" \
+      "$root" "$PR_OPERATION_LOCK_REF" "$PR_OPERATION_LOCK_OWNER_OID"
   }
   if [ "$successor" = true ] && {
     [ "$PREP_BASELINE_REFRESH_HEAD" != "$predecessor_head" ] ||
