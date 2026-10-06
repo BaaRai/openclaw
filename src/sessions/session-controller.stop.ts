@@ -54,8 +54,7 @@ export function captureSessionControllerStop(params: {
         if (input.phase === "consumed") {
           continue;
         }
-        const selected = Boolean(input.claim);
-        if (selected ? params.includeActive !== false : params.includeQueued !== false) {
+        if (input.claim ? params.includeActive !== false : params.includeQueued !== false) {
           inputs.add(input);
         }
       }

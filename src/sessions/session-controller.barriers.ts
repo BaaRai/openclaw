@@ -105,6 +105,15 @@ export function registerReplyOperationSuccessorBarrier(params: {
     publish();
   }
   let started = false;
+  // A failed handoff leaves the fence closed so callers never observe a partial release.
+  const logHandoffFailed = () =>
+    logSessionControllerPhase({
+      phase: "successor-barrier",
+      status: "failed",
+      sessionKey: params.operation.key,
+      sessionId: params.sessionId,
+      reason: "handoff-failed-fence-retained",
+    });
   const start = () => {
     if (started) {
       return;
@@ -116,26 +125,10 @@ export function registerReplyOperationSuccessorBarrier(params: {
       }
       void Promise.resolve(params.start()).then(
         () => settlement.resolve(undefined),
-        () => {
-          logSessionControllerPhase({
-            phase: "successor-barrier",
-            status: "failed",
-            sessionKey: params.operation.key,
-            sessionId: params.sessionId,
-            reason: "handoff-failed-fence-retained",
-          });
-        },
+        logHandoffFailed,
       );
     } catch {
-      logSessionControllerPhase({
-        phase: "successor-barrier",
-        status: "failed",
-        sessionKey: params.operation.key,
-        sessionId: params.sessionId,
-        reason: "handoff-failed-fence-retained",
-      });
-      // A failed handoff leaves the fence closed. Visible callers stay
-      // abortably blocked; bounded queued callers cannot observe a partial release.
+      logHandoffFailed();
     }
   };
   if (!isCurrentSessionControllerOperation(params.operation)) {
@@ -262,9 +255,7 @@ export function registerFollowupAdmissionBarrier(
   // wait for this operation's own delivery before releasing admission.
   const afterClear: ReplyOperationAfterClear = controllerStorage.afterClearByOperation.get(
     operation,
-  ) ?? {
-    callbacks: new Set<(sessionId: string) => void>(),
-  };
+  ) ?? { callbacks: new Set() };
   afterClear.barrier = entry;
   controllerStorage.afterClearByOperation.set(operation, afterClear);
   return entry;

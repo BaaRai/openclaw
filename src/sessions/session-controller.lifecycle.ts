@@ -218,8 +218,7 @@ export function bindSessionControllerTarget(
   };
   void operation.ownerSettlement.then(released, released);
 }
-/** Mutation requests are queued on the canonical entries, not on store-writer locks.
- * Ingress closes synchronously, before any awaited preemption or physical drain. */
+/** Queues a mutation on canonical entries; ingress closes before awaited preemption or drain. */
 export async function runSessionMutation<T>(
   params: {
     requiredSessionId?: string;
@@ -362,8 +361,7 @@ export async function runSessionMutation<T>(
         targets,
         signal: params.signal,
       });
-      // Only effects that actually started can write. Pending validators remain owned
-      // through their real return, even if their signal was cancelled while awaiting.
+      // Only started effects can write; pending validators stay owned through their real return.
       const effects = new Set(
         entries.flatMap((entry) =>
           [...(entry.lifecycle?.effects ?? [])].filter(
@@ -395,8 +393,7 @@ export async function runSessionMutation<T>(
           run: params.run,
         });
       }
-      // Until its body starts, a waiting mutation has written nothing, so its caller may
-      // cancel it. An inherited turn signal does not: the mutation may be stopping that turn.
+      // Only the caller's signal cancels this wait; an inherited turn signal may be the target.
       await waitUnlessAborted(effectsSettled, params.signal);
       if (waitForCompetitors) {
         return await runAfterRetiringSessionSources(
@@ -537,8 +534,7 @@ export async function beginSessionEffect(
     if (closure && !admission().finishingCapturedTurn) {
       throw closure.reason;
     }
-    // Preparing accepted bytes owns no turn. The mailbox still fences execution
-    // behind the predecessor's raw settlement, while mutations fence preparation.
+    // Source preparation owns no turn; the mailbox still fences execution behind the predecessor.
     while (!admission().allowed) {
       const pendingClosure = state.closures.values().next().value;
       if (pendingClosure) {
@@ -549,8 +545,7 @@ export async function beginSessionEffect(
     signal.throwIfAborted();
     effect.phase = "validating";
     logAdmission("waiting", "validation");
-    // No cancellation race once arbitrary validator I/O starts: the controller
-    // retains custody until that exact invocation and writer barrier settle.
+    // Once validator I/O starts, custody is retained until it and the writer barrier settle.
     await ref.run(async () => await params.assertAllowed(signal));
     signal.throwIfAborted();
     if (isGatewaySubordinateWorkAdmissionClosed()) {
@@ -624,20 +619,8 @@ export function closeSessionControllerAdmission(
   const entry = bindTarget(target);
   const closure = { reason: params.reason };
   lifecycle(entry).closures.add(closure);
-  try {
-    for (const effect of selectedEffects([target])) {
-      if (effect.phase === "queued") {
-        interruptEffect(effect, params.reason);
-      }
-    }
-  } catch (error) {
-    entry.lifecycle?.closures.delete(closure);
-    releaseTarget(entry, target);
-    notify(entry);
-    throw error;
-  }
   let released = false;
-  return () => {
+  const release = () => {
     if (released) {
       return;
     }
@@ -646,6 +629,17 @@ export function closeSessionControllerAdmission(
     releaseTarget(entry, target);
     notify(entry);
   };
+  try {
+    for (const effect of selectedEffects([target])) {
+      if (effect.phase === "queued") {
+        interruptEffect(effect, params.reason);
+      }
+    }
+  } catch (error) {
+    release();
+    throw error;
+  }
+  return release;
 }
 /** Capture first, then interrupt: a replacement cannot inherit the cancellation. */
 export function startSessionControllerInterruption(
@@ -655,8 +649,7 @@ export function startSessionControllerInterruption(
   interruptedRunIds: ReadonlySet<string>;
 } {
   const target = targetFrom(params);
-  // Unspecified lifecycle interruption retains restart recovery semantics;
-  // explicit Stop and supersession reasons remain the captured caller's reason.
+  // Unspecified interruption keeps restart recovery semantics.
   const reason = params.reason ?? createAgentRunRestartAbortError();
   const { effects, operations, claims } = selectSessionControllerInterruptionOwners(
     target,

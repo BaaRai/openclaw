@@ -314,6 +314,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       watchdog.beginTerminal();
     }
   };
+  // Agent-run abort codes on the reason select the cancel reason and result code.
   const abortWithReason = (reason: unknown) => {
     const restart = isAgentRunRestartAbortReason(reason);
     const superseded = isAgentRunSupersededAbortReason(reason);
@@ -322,6 +323,13 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       reason,
       restart ? "aborted_for_restart" : superseded ? "aborted_for_supersession" : "aborted_by_user",
     );
+  };
+  const abortIfAbortable = (reason: () => unknown) => {
+    if (!isReplyOperationAbortable(operation)) {
+      return false;
+    }
+    abortWithReason(reason());
+    return true;
   };
 
   const operation: ReplyOperation = {
@@ -598,31 +606,10 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       }
       watchdog.beginTerminal();
     },
-    abort(reason) {
-      if (!isReplyOperationAbortable(operation)) {
-        return false;
-      }
-      abortWithReason(reason ?? createAbortError("Reply operation aborted by user"));
-      return true;
-    },
-    abortByUser() {
-      if (!isReplyOperationAbortable(operation)) {
-        return false;
-      }
-      abortOperation(
-        "user_abort",
-        createAbortError("Reply operation aborted by user"),
-        "aborted_by_user",
-      );
-      return true;
-    },
-    abortForRestart() {
-      if (!isReplyOperationAbortable(operation)) {
-        return false;
-      }
-      abortOperation("restart", createAgentRunRestartAbortError(), "aborted_for_restart");
-      return true;
-    },
+    abort: (reason) =>
+      abortIfAbortable(() => reason ?? createAbortError("Reply operation aborted by user")),
+    abortByUser: () => abortIfAbortable(() => createAbortError("Reply operation aborted by user")),
+    abortForRestart: () => abortIfAbortable(createAgentRunRestartAbortError),
     abortForStall() {
       if (!isReplyOperationAbortable(operation)) {
         return false;
