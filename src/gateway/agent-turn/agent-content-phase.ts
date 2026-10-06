@@ -223,9 +223,6 @@ export async function prepareAgentContentPhase(params: {
           provider: params.providerOverride || baseProvider,
           model: params.modelOverride || baseModel,
         });
-  }
-
-  if (params.normalizedAttachments.length > 0) {
     params.assertAdmissionCurrent?.();
     try {
       const parsed = await parseMessageWithAttachments(message, params.normalizedAttachments, {

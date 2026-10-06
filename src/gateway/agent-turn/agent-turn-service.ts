@@ -1,14 +1,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, type AgentWaitParams } from "../../../packages/gateway-protocol/src/index.js";
-import { createOperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import type { MainSessionRecoveryOwnerLease } from "../../agents/main-session-recovery/main-session-recovery-store.js";
-import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { mergeSessionEntry, type SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
-import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import { isRpcSourceRegistered } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -38,9 +34,10 @@ import { persistAgentSessionPhase } from "./agent-session-persist.js";
 import { finishAgentTurnPreparation } from "./agent-turn-admission-cleanup.js";
 import {
   authorizeAgentTurnSession,
+  registerAgentTurnRunAbort,
   registerAgentTurnSourceAdmission,
 } from "./agent-turn-source-admission.js";
-import { prepareAgentTurnWait } from "./agent-turn-wait.js";
+import { prepareAgentWaitForTurn } from "./agent-wait.js";
 import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
 import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
@@ -175,6 +172,18 @@ export function createAgentTurnService(
         throw new Error("Agent request no longer owns its RPC source");
       }
     };
+    const runAbortSource = {
+      preflight,
+      io,
+      sourceWork: sourceWork.promise,
+      lifecycleGeneration,
+      ownerConnId,
+      ownerDeviceId,
+      assertAdmissionCurrent,
+      isSourcePreparationComplete: () => sourcePreparationComplete,
+      onCancelled: dedupeLifecycle.cancelOwnedReservation,
+      controllerInput,
+    };
     let agentId = routing.agentId;
     let requestedSessionKey = routing.requestedSessionKey;
     let gatewayAdmissionTransferred = false;
@@ -210,21 +219,12 @@ export function createAgentTurnService(
         onTargetResolved: (target) =>
           registerAgentTurnSourceAdmission({
             ...target,
-            preflight,
+            ...runAbortSource,
             principal,
-            io,
-            sourceWork: sourceWork.promise,
-            lifecycleGeneration,
-            ownerConnId,
-            ownerDeviceId,
             assertRequestCurrent,
-            assertAdmissionCurrent,
-            isSourcePreparationComplete: () => sourcePreparationComplete,
             onRegistered: (registration) => {
               earlyRunAbort = registration;
             },
-            onCancelled: dedupeLifecycle.cancelOwnedReservation,
-            controllerInput,
           }),
       }).catch(dedupeLifecycle.handlePreparationFailure(assertAdmissionCurrent));
       if (!content) {
@@ -403,47 +403,24 @@ export function createAgentTurnService(
         resolvedSessionKey = canonicalSessionKey;
         resolvedSessionAgentId = sessionAgentId;
         if (!admissionController.getAdmittedRunAbort()) {
-          earlyRunAbort = registerChatAbortController({
-            sourceWork: sourceWork.promise,
-            runId,
-            sessionKey: canonicalSessionKey,
-            sessionId: resolvedSessionId ?? "",
-            target: captureSessionTarget({
+          registerAgentTurnRunAbort(
+            {
+              ...runAbortSource,
+              onRegistered: (registration) => {
+                earlyRunAbort = registration;
+                admissionController.setAdmittedRunAbort(registration);
+              },
+            },
+            {
+              cfg: cfgLocal,
               storeScope: storePath,
               sessionKey: canonicalSessionKey,
               aliases: [requestedSessionKey],
               agentId: sessionAgentId,
+              sessionId: resolvedSessionId,
               incarnation: entry?.sessionId,
-            }),
-            authority: {
-              assertCurrent: () => {
-                if (!sourcePreparationComplete) {
-                  assertAdmissionCurrent?.();
-                }
-              },
             },
-            agentId: sessionAgentId,
-            timeoutMs: resolveAgentTimeoutMs({ cfg: cfgLocal, overrideSeconds: request.timeout }),
-            ownerConnId,
-            ownerDeviceId,
-            kind: "agent",
-            lifecycleGeneration,
-            controlUiVisible:
-              !suppressVisibleSessionEffects &&
-              !isSubagentCoordinationInputProvenance(inputProvenance),
-            operationalRunInstance: createOperationalRunInstanceRef(runId),
-            onCancel: (stopReason) =>
-              dedupeLifecycle.cancelOwnedReservation({
-                agentId: sessionAgentId,
-                sessionKey: canonicalSessionKey,
-                stopReason,
-              }),
-            sourceInput: controllerInput,
-          });
-          admissionController.setAdmittedRunAbort(earlyRunAbort);
-          if (earlyRunAbort.entry) {
-            io.emitStartOwner?.(runId, earlyRunAbort.entry);
-          }
+          );
         }
         try {
           await admissionController.acquire(storePath);
@@ -703,8 +680,8 @@ export function createAgentTurnService(
     }
   };
 
-  const prepareWaitForTurn = (params: AgentWaitParams) => prepareAgentTurnWait(context, params);
-
+  const prepareWaitForTurn = (params: AgentWaitParams) =>
+    prepareAgentWaitForTurn(context, params, { exactTurnSource: true });
   const waitForTurn = async (params: AgentWaitParams) => await prepareWaitForTurn(params).wait();
 
   return { startTurn, prepareWaitForTurn, waitForTurn };

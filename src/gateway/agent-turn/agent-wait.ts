@@ -16,17 +16,22 @@ import {
   waitForAgentJob,
 } from "./agent-job.js";
 
+/** Capture an agent wait's initial session and defer its terminal or queued result. */
 export function prepareAgentWaitForTurn(
   context: Pick<GatewayRequestContext, "dedupe">,
   params: AgentWaitParams,
+  // Turn waits match the exact run ID and do not report still-preparing sources as queued.
+  options: { exactTurnSource?: boolean } = {},
 ) {
-  const runId = (params.runId ?? "").trim();
+  const runId = options.exactTurnSource ? (params.runId ?? "") : (params.runId ?? "").trim();
   const timeoutMs = resolveNonNegativeIntegerOption(params.timeoutMs, 30_000);
   const source = resolveAgentWaitSource(context, runId);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const queuedResult = () => {
     const queued = getRpcSource(runId);
-    return queued && isRpcSourceQueued(queued)
+    return queued &&
+      (!options.exactTurnSource || queued.input.phase !== "preparing") &&
+      isRpcSourceQueued(queued)
       ? {
           session: captureAgentJobSession({
             ...getRpcSourceIdentity(queued),

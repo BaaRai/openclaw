@@ -138,7 +138,6 @@ export async function prepareAgentRunDispatch(
       await params.acquireGatewayWorkAdmission(lifecycleStorePath);
     }
     const admittedSessionEntry = params.assertGatewayWorkAdmissionAllowed();
-
     if (!params.hasGatewayAdmissionOutcome()) {
       // Close may finish its cancellation sweep while session acquisition waits.
       // Reject before publishing a controller that the closing Gateway cannot cancel.
@@ -159,15 +158,16 @@ export async function prepareAgentRunDispatch(
         cfg: params.cfgForAgent ?? params.cfg,
         overrideSeconds: timeoutSeconds,
       });
+      const providerFacts = {
+        providerId: resolvedRuntime.provider,
+        authProviderId: resolveProviderIdForAuth(resolvedRuntime.provider, {
+          config: params.cfgForAgent ?? params.cfg,
+        }),
+      };
       if (existing?.entry) {
         // Retain the exact preparing input; admission adds presentation facts only.
         updateRpcSourceSessionId(existing.entry, params.getAdmittedSessionId());
-        Object.assign(existing.entry.adapter, {
-          providerId: resolvedRuntime.provider,
-          authProviderId: resolveProviderIdForAuth(resolvedRuntime.provider, {
-            config: params.cfgForAgent ?? params.cfg,
-          }),
-        });
+        Object.assign(existing.entry.adapter, providerFacts);
       } else {
         params.setAdmittedRunAbort(
           registerChatAbortController({
@@ -197,10 +197,7 @@ export async function prepareAgentRunDispatch(
             timeoutMs,
             ownerConnId: params.ownerConnId,
             ownerDeviceId: params.ownerDeviceId,
-            providerId: resolvedRuntime.provider,
-            authProviderId: resolveProviderIdForAuth(resolvedRuntime.provider, {
-              config: params.cfgForAgent ?? params.cfg,
-            }),
+            ...providerFacts,
             controlUiVisible,
             kind: "agent",
             lifecycleGeneration: params.lifecycleGeneration,

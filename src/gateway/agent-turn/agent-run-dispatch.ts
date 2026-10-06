@@ -69,7 +69,6 @@ export function dispatchAgentRunFromGateway(params: {
    */
   abortController: Pick<AbortController, "signal" | "abort">;
   cleanupAbortController: () => void | Promise<void>;
-
   io: AgentTurnIo;
   context: AgentTurnContext;
   canonicalSkillWorkspaceDir?: string;
@@ -117,7 +116,6 @@ export function dispatchAgentRunFromGateway(params: {
     registeredRunEntry && getRpcSourceLifecycleGeneration(registeredRunEntry);
   const registeredSessionKey =
     registeredRunEntry && getRpcSourceIdentity(registeredRunEntry).sessionKey;
-
   const ownsRunRegistration = () => {
     const current = getRpcSource(params.runId);
     return (

@@ -13,6 +13,7 @@ import { loadSessionEntry } from "../session-utils.js";
 import type { AgentRequestPreflight } from "./agent-request-preflight.js";
 import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
+/** Authorize a principal to create or mutate the canonical session an agent turn targets. */
 export function authorizeAgentTurnSession({
   cfg,
   principal,
@@ -30,43 +31,85 @@ export function authorizeAgentTurnSession({
   );
 }
 
-/** Bind preparation custody to the authorized physical target before attachment work yields. */
-export function registerAgentTurnSourceAdmission({
-  sessionKey,
-  agentId: targetAgentId,
-  preflight,
-  principal,
-  io,
-  sourceWork,
-  lifecycleGeneration,
-  ownerConnId,
-  ownerDeviceId,
-  assertRequestCurrent,
-  assertAdmissionCurrent,
-  isSourcePreparationComplete,
-  onRegistered,
-  onCancelled,
-  controllerInput,
-}: {
-  sessionKey?: string;
-  agentId?: string;
+type AgentTurnRunAbortSource = {
   preflight: AgentRequestPreflight;
-  principal: AgentTurnPrincipal | null;
   io: AgentTurnIo;
   sourceWork: Promise<void>;
   lifecycleGeneration: string;
   ownerConnId?: string;
   ownerDeviceId?: string;
-  assertRequestCurrent: () => void;
   assertAdmissionCurrent?: () => void;
   isSourcePreparationComplete: () => boolean;
-  onRegistered: (registration: ReturnType<typeof registerChatAbortController>) => void;
   onCancelled: (target: { agentId?: string; sessionKey: string; stopReason: string }) => void;
   controllerInput?: SessionControllerInput;
+};
+
+/** Register the turn's abortable source on its physical session target and announce its owner. */
+export function registerAgentTurnRunAbort(
+  source: AgentTurnRunAbortSource & {
+    onRegistered: (registration: ReturnType<typeof registerChatAbortController>) => void;
+  },
+  target: Parameters<typeof captureSessionTarget>[0] & {
+    agentId: string;
+    cfg: OpenClawConfig;
+    sessionId?: string;
+  },
+) {
+  const { request, runId, suppressVisibleSessionEffects, inputProvenance } = source.preflight;
+  const registration = registerChatAbortController({
+    sourceWork: source.sourceWork,
+    runId,
+    sessionKey: target.sessionKey,
+    sessionId: target.sessionId ?? "",
+    target: captureSessionTarget({
+      storeScope: target.storeScope,
+      sessionKey: target.sessionKey,
+      aliases: target.aliases,
+      agentId: target.agentId,
+      incarnation: target.incarnation,
+    }),
+    authority: {
+      assertCurrent: () => {
+        if (!source.isSourcePreparationComplete()) {
+          source.assertAdmissionCurrent?.();
+        }
+      },
+    },
+    agentId: target.agentId,
+    timeoutMs: resolveAgentTimeoutMs({ cfg: target.cfg, overrideSeconds: request.timeout }),
+    ownerConnId: source.ownerConnId,
+    ownerDeviceId: source.ownerDeviceId,
+    kind: "agent",
+    lifecycleGeneration: source.lifecycleGeneration,
+    controlUiVisible:
+      !suppressVisibleSessionEffects && !isSubagentCoordinationInputProvenance(inputProvenance),
+    operationalRunInstance: createOperationalRunInstanceRef(runId),
+    onCancel: (stopReason) =>
+      source.onCancelled({ agentId: target.agentId, sessionKey: target.sessionKey, stopReason }),
+    sourceInput: source.controllerInput,
+  });
+  source.onRegistered(registration);
+  if (registration.entry) {
+    source.io.emitStartOwner?.(runId, registration.entry);
+  }
+}
+
+/** Bind preparation custody to the authorized physical target before attachment work yields. */
+export function registerAgentTurnSourceAdmission({
+  sessionKey,
+  agentId: targetAgentId,
+  principal,
+  assertRequestCurrent,
+  ...source
+}: AgentTurnRunAbortSource & {
+  sessionKey?: string;
+  agentId?: string;
+  principal: AgentTurnPrincipal | null;
+  assertRequestCurrent: () => void;
+  onRegistered: (registration: ReturnType<typeof registerChatAbortController>) => void;
 }) {
-  const { request, cfg, runId, suppressVisibleSessionEffects, inputProvenance } = preflight;
   // Reset mutation selects the successor incarnation before its turn is reserved.
-  if (!sessionKey || AGENT_SESSION_RESET_COMMAND_RE.test(request.message ?? "")) {
+  if (!sessionKey || AGENT_SESSION_RESET_COMMAND_RE.test(source.preflight.request.message ?? "")) {
     return undefined;
   }
   const loaded = loadSessionEntry(sessionKey, {
@@ -82,45 +125,18 @@ export function registerAgentTurnSourceAdmission({
     agentId: sourceAgentId,
   });
   if (authorizationError) {
-    io.emitAcceptance([false, undefined, authorizationError]);
+    source.io.emitAcceptance([false, undefined, authorizationError]);
     return false;
   }
   assertRequestCurrent();
-  const earlyRunAbort = registerChatAbortController({
-    sourceWork,
-    runId,
+  registerAgentTurnRunAbort(source, {
+    cfg: source.preflight.cfg,
+    storeScope: loaded.storePath,
     sessionKey: loaded.canonicalKey,
-    sessionId: loaded.entry?.sessionId ?? "",
-    target: captureSessionTarget({
-      storeScope: loaded.storePath,
-      sessionKey: loaded.canonicalKey,
-      aliases: [sessionKey],
-      agentId: sourceAgentId,
-      incarnation: loaded.entry?.sessionId,
-    }),
-    authority: {
-      assertCurrent: () => {
-        if (!isSourcePreparationComplete()) {
-          assertAdmissionCurrent?.();
-        }
-      },
-    },
+    aliases: [sessionKey],
     agentId: sourceAgentId,
-    timeoutMs: resolveAgentTimeoutMs({ cfg, overrideSeconds: request.timeout }),
-    ownerConnId,
-    ownerDeviceId,
-    kind: "agent",
-    lifecycleGeneration,
-    controlUiVisible:
-      !suppressVisibleSessionEffects && !isSubagentCoordinationInputProvenance(inputProvenance),
-    operationalRunInstance: createOperationalRunInstanceRef(runId),
-    onCancel: (stopReason) =>
-      onCancelled({ agentId: sourceAgentId, sessionKey: loaded.canonicalKey, stopReason }),
-    sourceInput: controllerInput,
+    sessionId: loaded.entry?.sessionId,
+    incarnation: loaded.entry?.sessionId,
   });
-  onRegistered(earlyRunAbort);
-  if (earlyRunAbort.entry) {
-    io.emitStartOwner?.(runId, earlyRunAbort.entry);
-  }
   return undefined;
 }

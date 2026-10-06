@@ -221,12 +221,7 @@ export function createInternalAgentTurnFacade(
                 publishStartOwner(acceptedRunId, acceptedEntry);
               }
             }
-            if (
-              meta?.cached === true &&
-              acceptedRunId &&
-              acceptedEntry &&
-              isRpcSourceExecuting(acceptedEntry)
-            ) {
+            if (meta?.cached === true && acceptedEntry && isRpcSourceExecuting(acceptedEntry)) {
               dispatchOptions.onExecutionStarted?.();
             }
           }

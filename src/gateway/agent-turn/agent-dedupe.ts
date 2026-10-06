@@ -103,7 +103,6 @@ export function isPreRegistrationAbortedAgentDedupeEntryForSession(params: {
   }
   const payload = params.entry.payload;
   const payloadRunId = typeof payload.runId === "string" ? payload.runId : "";
-
   if (payloadRunId && payloadRunId !== params.runId) {
     return false;
   }

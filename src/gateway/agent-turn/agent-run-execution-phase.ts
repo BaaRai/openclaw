@@ -66,10 +66,6 @@ import {
 } from "./agent-run-user-turn.js";
 
 export async function startAgentRunExecution(params: StartAgentRunExecutionParams): Promise<void> {
-  return await executeAgentRun(params);
-}
-
-async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<void> {
   const { prepared } = params;
   let deliverFinal: (() => void) | undefined;
   const deferFinal = (...args: Parameters<typeof params.io.emitFinal>) => {
@@ -203,7 +199,6 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
     };
     const execute = async () => {
       await yieldAfterAgentAcceptedAck();
-
       let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
       const settleUnstartedFollowup = (outcome: AgentRunTerminalOutcome) =>
         !dispatched
