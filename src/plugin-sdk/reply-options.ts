@@ -66,6 +66,7 @@ const privateReplyOptions = {
   cleanupBundleMcpOnRunEnd: true,
   onPendingContinuation: true,
   onSessionPrepared: true,
+  onTranscriptStartPreparation: true,
   onReplyOperationOwned: true,
   onSessionMetadataChanges: true,
   onRunVerbosityResolved: true,
