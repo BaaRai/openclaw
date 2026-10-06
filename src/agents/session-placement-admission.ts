@@ -268,9 +268,7 @@ export async function withLocalSessionPlacementTurnSettlement(
           const assertClaimCurrent = resolveSessionPlacementTurnSettlementAssertion();
           let open = true;
           const assertSettlementCurrent = () => {
-            // Captured controller and placement custody, not a queue generation.
-            // Cancellation does not release exact-owner cleanup; the operation
-            // remains the settlement fence until this callback returns.
+            // Controller and placement custody fence settlement until this callback returns.
             if (!open) {
               throw createSessionPlacementSettlementClosedAbortError();
             }

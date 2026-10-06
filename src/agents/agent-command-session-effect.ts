@@ -101,8 +101,7 @@ export async function repairAgentCommandSessionTranscript(params: {
       if (!isNewSession) {
         throw error;
       }
-      // A reset starts a fresh transcript. Do not let predecessor repair
-      // state leak into it when the old transcript remains unavailable.
+      // A reset starts a fresh transcript; unavailable predecessor repair must not block it.
       warn(
         `Could not repair predecessor transcript before session reset for ${sessionKey}: ${diagnosticError(error)}`,
       );

@@ -89,8 +89,7 @@ export async function dispatchRestartRecoveryUntilStarted(params: {
         ? null
         : (ownerState?.startDeadlineAtMs ?? requesterStartDeadlineAtMs);
     if (ownerState && (deadlineAtMs === null || deadlineAtMs > Date.now())) {
-      // The captured controller owns healthy preparation/capacity waits. Before
-      // it publishes a budget, only this requester's original bound applies.
+      // The controller owns healthy waits; until it publishes a budget, our bound applies.
       scheduleObservation(
         deadlineAtMs === null
           ? RESTART_RECOVERY_START_OBSERVATION_MS

@@ -74,7 +74,6 @@ export async function runWithScopedSessionAccess<T>(params: {
       incarnation: expectedSessionId,
       agentId,
     }),
-
     assertAllowed: (signal) => assertExpectedIncarnation(signal),
     revalidateAllowed: assertExpectedIncarnation,
     ...(params.signal ? { signal: params.signal } : {}),

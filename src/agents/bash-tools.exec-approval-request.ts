@@ -139,12 +139,11 @@ export async function resolveRegisteredExecApprovalDecision(params: {
   if (params.preResolvedDecision !== undefined) {
     return params.preResolvedDecision ?? null;
   }
-  const caller = getGatewayToolCallerIdentity();
   const assertCurrent = captureGatewayToolCallerAssertion();
   const wait =
     params.expiresAtMs === undefined
       ? undefined
-      : caller?.watchdogAttempt?.beginWait({
+      : getGatewayToolCallerIdentity()?.watchdogAttempt?.beginWait({
           kind: "approval",
           deadlineAtMs: params.expiresAtMs,
           isCurrent: () => {

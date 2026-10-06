@@ -1,3 +1,8 @@
+/**
+ * Shared contracts for before_tool_call policy and execution handling.
+ * Kept separate from the facade so implementation modules do not import back
+ * through the barrel that re-exports them.
+ */
 import type { ToolLoopWarning } from "@openclaw/agent-core";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ToolLoopDetectionConfig } from "../config/types.tools.js";
@@ -8,11 +13,6 @@ import type {
   PluginHookBeforeToolCallResult,
   PluginHookToolRequesterContext,
 } from "../plugins/types.js";
-/**
- * Shared contracts for before_tool_call policy and execution handling.
- * Kept separate from the facade so implementation modules do not import back
- * through the barrel that re-exports them.
- */
 import type { SessionControllerWatchdogAttempt } from "../sessions/session-controller.watchdog.js";
 import type { SkillSnapshot, SkillTelemetrySource, SkillUsagePath } from "../skills/types.js";
 import type { AgentTool } from "./runtime/index.js";

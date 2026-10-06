@@ -62,8 +62,6 @@ export function runWithCliTurn(
         : suppliedKey,
     lifecycleGeneration,
   };
-  // Observability services register before turns and keep subscriptions process-stable.
-  // Snapshot listener presence here so disabled installs pay no synthetic trace cost.
   return withSessionTurn(
     {
       ...params,
@@ -116,6 +114,7 @@ export function runWithCliTurn(
           caller && { ...caller, watchdogAttempt: diagnosticOwner.watchdogAttempt },
           () =>
             withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+              // Listener presence is process-stable; disabled installs skip synthetic traces.
               isClaudeCliBackend(params.provider) &&
               areDiagnosticsEnabledForProcess() &&
               hasInternalDiagnosticEventListeners()

@@ -254,21 +254,20 @@ export function createCliEventHandlers(params: {
     // Claude enforces this MCP response timeout. Keep recovery behind that
     // deadline while the request is still in the CLI's own tool runtime.
     const timeoutMs = context.managedMcpToolTimeoutMs;
+    const deadlineAtMs =
+      timeoutMs !== undefined && event.name.startsWith("mcp__openclaw__")
+        ? startedAt + timeoutMs
+        : undefined;
     runParams.diagnosticOwner?.watchdogAttempt?.toolEvent({
       phase: "start",
       toolName: event.name,
       toolCallId: event.toolCallId,
-      deadlineAtMs:
-        timeoutMs !== undefined && event.name.startsWith("mcp__openclaw__")
-          ? startedAt + timeoutMs
-          : undefined,
+      deadlineAtMs,
     });
     emitTrustedDiagnosticEvent(
-      timeoutMs !== undefined && event.name.startsWith("mcp__openclaw__")
-        ? markToolExecutionLivenessDiagnosticEvent(diagnosticEvent, {
-            deadlineAtMs: startedAt + timeoutMs,
-          })
-        : diagnosticEvent,
+      deadlineAtMs === undefined
+        ? diagnosticEvent
+        : markToolExecutionLivenessDiagnosticEvent(diagnosticEvent, { deadlineAtMs }),
     );
     emitToolUseStart(event, true);
   };

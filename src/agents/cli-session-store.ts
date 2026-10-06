@@ -69,11 +69,10 @@ async function patchCliSessionBindingInStore(
       preserveActivity: params.preserveActivity,
       skipMaintenance: params.skipMaintenance,
       onCommitted: (entry) => {
-        const publicEntry = projectPublicSessionEntry(entry);
-        committed = publicEntry;
+        committed = projectPublicSessionEntry(entry);
         params.onCommitted?.();
         if (params.sessionStore) {
-          params.sessionStore[sessionKey] = publicEntry;
+          params.sessionStore[sessionKey] = committed;
         }
       },
     },
@@ -110,8 +109,7 @@ async function patchCliSessionForkBinding(
         if (!nextBinding) {
           return false;
         }
-        // Capture the normalized durable post-image before the commit can outlive
-        // a late authority rejection observed by the calling process.
+        // Capture the durable post-image so a late authority rejection can restore it.
         const original = structuredClone(binding);
         setCliSessionBinding(current, provider, nextBinding);
         transition = {
@@ -121,8 +119,7 @@ async function patchCliSessionForkBinding(
         return true;
       },
     });
-    // Commit admission cannot observe cancellation that arrives while the async
-    // patch publishes its result, so reject that late window before returning.
+    // Reject cancellation that arrived while the async patch was publishing.
     params.assertCommitAllowed?.();
     return committed;
   } catch (error) {
@@ -144,8 +141,7 @@ async function restoreRejectedCliSessionForkTransition(
     assertCommitAllowed: undefined,
     expectedSession,
     update: (current) => {
-      // The session controller serializes binding owners. Other row writers can
-      // carry this value forward, while a different binding proves a later owner won.
+      // Other writers may carry this value forward; a different binding means a later owner won.
       if (!isDeepStrictEqual(current.cliSessionBindings?.[params.provider], transition.committed)) {
         return false;
       }

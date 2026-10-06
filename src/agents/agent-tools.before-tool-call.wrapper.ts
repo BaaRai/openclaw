@@ -1,3 +1,8 @@
+/**
+ * Wrapped before_tool_call execution boundary.
+ * Owns tool preparation/finalization, adjusted-param replay state, terminal
+ * results, diagnostics around execution, and wrapper metadata.
+ */
 import {
   emitTrustedDiagnosticEvent,
   emitTrustedDiagnosticEventWithPrivateData,
@@ -91,11 +96,6 @@ import {
   registerTrustedToolNoStartError,
 } from "./tool-result-error.js";
 import type { AnyAgentTool } from "./tools/common.js";
-/**
- * Wrapped before_tool_call execution boundary.
- * Owns tool preparation/finalization, adjusted-param replay state, terminal
- * results, diagnostics around execution, and wrapper metadata.
- */
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
@@ -282,13 +282,12 @@ export function wrapToolWithBeforeToolCallHook(
     emitDiagnostics: options.emitDiagnostics !== false,
   };
   const toolContentPolicy = resolveDiagnosticModelContentCapturePolicy(inputContext?.config);
-  const preparedContext = inputContext;
   const wrappedTool: AnyAgentTool = {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate, ...executionArgs: unknown[]) => {
       const watchdogAttempt =
-        preparedContext?.watchdogAttempt ?? getGatewayToolCallerIdentity()?.watchdogAttempt;
-      const ctx = watchdogAttempt ? { ...preparedContext, watchdogAttempt } : preparedContext;
+        inputContext?.watchdogAttempt ?? getGatewayToolCallerIdentity()?.watchdogAttempt;
+      const ctx = watchdogAttempt ? { ...inputContext, watchdogAttempt } : inputContext;
       assertAgentPluginRuntimeCurrent();
       const prepareControl = readInternalExecutionControl(executionArgs.at(-1));
       if (prepareControl) {
