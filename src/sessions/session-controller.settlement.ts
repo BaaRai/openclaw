@@ -33,20 +33,16 @@ export function waitForReplyBarrierSettlement(
         timeout.maxTimeoutMs,
         REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
       );
+      const shouldExtend = () => {
+        try {
+          return timeout.shouldExtend();
+        } catch {
+          return false;
+        }
+      };
       const checkOwnerActivity = () => {
         const remainingMs = maxTimeoutMs - (Date.now() - startedAt);
-        if (remainingMs <= 0) {
-          finish();
-          return;
-        }
-        let shouldExtend: boolean;
-        try {
-          shouldExtend = timeout.shouldExtend();
-        } catch {
-          finish();
-          return;
-        }
-        if (!shouldExtend) {
+        if (remainingMs <= 0 || !shouldExtend()) {
           finish();
           return;
         }

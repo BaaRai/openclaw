@@ -1,6 +1,4 @@
-/** Synchronous lifecycle state for the canonical controller's logical turn.
- * Concrete native attempts, source authority, clocks and actual settlement are
- * owned by that exact operation, independently of slot reclamation. */
+/** Synchronous turn lifecycle state; attempts, authority and settlement belong to its operation. */
 export type ReplyOperationActivePhase =
   | "queued"
   | "waiting_for_deferred_maintenance"

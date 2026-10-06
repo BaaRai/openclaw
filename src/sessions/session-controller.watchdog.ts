@@ -288,9 +288,7 @@ export function createSessionControllerWatchdog(params: {
         const result = await (
           decision.action === "expire_cleanup" ? params.expireCleanup : params.requestStop
         )(effect);
-        // A closed watchdog represents actual raw retirement, not timeout or index eviction.
-        // The committed Stop may itself close its attempt. Recovery still
-        // belongs to this raw owner; attempt retirement is not settlement.
+        // A committed Stop may close its attempt; recovery still belongs to this owner.
         if (recovery?.status !== "settled" && (result === "settled" || current())) {
           recovery = { status: result, startedAtMs: at };
         }
@@ -304,8 +302,7 @@ export function createSessionControllerWatchdog(params: {
         ? { action: "blocked", reason: "cleanup_pending" }
         : decision;
     })();
-    // The same owner timer resolves a hung cleanup as blocked after60s. Its raw
-    // promise remains observed and custody remains intact until real settlement.
+    // The owner timer reports a hung cleanup as blocked; custody stays until real settlement.
     return Promise.race([effectResult, deadlineResult]);
   };
   const schedule = () => {
@@ -336,16 +333,12 @@ export function createSessionControllerWatchdog(params: {
       if (recovery && recovery.status !== "settled") {
         recovery = { ...recovery, status: "settled" };
       }
-      if (pendingTick) {
-        pendingTick.resolve(pendingTick.decision);
-      }
+      pendingTick?.resolve(pendingTick.decision);
       pendingTick = undefined;
       closed = true;
       recoveryAction = undefined;
       started = false;
-      if (timer) {
-        clearTimeout(timer);
-      }
+      clearTimeout(timer);
       timer = undefined;
       waits.clear();
       tools.clear();
