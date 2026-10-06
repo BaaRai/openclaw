@@ -277,14 +277,13 @@ export function resolveSessionMutationTargets(params: {
   }
   const runId = asOptionalRecord(params.requestParams)?.runId;
   const run = typeof runId === "string" ? getRpcSource(runId) : undefined;
-  if (!run) {
-    return undefined;
-  }
-  const identity = getRpcSourceIdentity(run);
-  return [
-    {
-      sessionKey: identity.sessionKey,
-      ...(identity.agentId ? { agentId: identity.agentId } : {}),
-    },
-  ];
+  const identity = run ? getRpcSourceIdentity(run) : undefined;
+  return identity
+    ? [
+        {
+          sessionKey: identity.sessionKey,
+          ...(identity.agentId ? { agentId: identity.agentId } : {}),
+        },
+      ]
+    : undefined;
 }

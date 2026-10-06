@@ -331,10 +331,8 @@ export function startGatewayMaintenanceTimers(params: {
         return undefined;
       }
       const keyRunId = key.slice(key.indexOf(":") + 1);
-      if (keyRunId) {
-        if (hasRpcSource(keyRunId)) {
-          return keyRunId;
-        }
+      if (keyRunId && hasRpcSource(keyRunId)) {
+        return keyRunId;
       }
       const payload = entry.payload;
       return payload && typeof payload === "object" && !Array.isArray(payload)
@@ -360,17 +358,9 @@ export function startGatewayMaintenanceTimers(params: {
     const isActiveRunDedupeKey = (key: string, dedupeEntry: DedupeEntry) => {
       // Keep idempotency records for active runs so retries cannot create
       // duplicate chat/agent work while a command is still draining.
-      const isAgentKey = key.startsWith("agent:");
-      const isChatKey = key.startsWith("chat:");
-      if (!isAgentKey && !isChatKey) {
-        return false;
-      }
       const runId = resolveDedupeRunId(key, dedupeEntry);
       const entry = runId ? getRpcSource(runId) : undefined;
-      if (entry) {
-        return isAgentKey ? entry.adapter.kind === "agent" : entry.adapter.kind !== "agent";
-      }
-      return false;
+      return entry !== undefined && (entry.adapter.kind === "agent") === key.startsWith("agent:");
     };
     for (const [k, v] of params.dedupe) {
       if (isActiveRunDedupeKey(k, v) || isPendingAcceptedRunDedupeKey(k, v)) {

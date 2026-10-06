@@ -89,32 +89,6 @@ export async function failHandedOffTurn(params: {
       current.turnClaim === null
     );
   };
-  // Publish failure only after raw teardown has settled for this exact drain.
-  const recordFailure = async (): Promise<void> => {
-    if (!isCurrentDrain()) {
-      return;
-    }
-    try {
-      const reconciling = await params.placements.startReconcile({
-        sessionId: draining.sessionId,
-        environmentId: draining.environmentId,
-        ownerEpoch: draining.activeOwnerEpoch,
-        expectedGeneration: draining.generation,
-      });
-      const recoveryError = failures.join("; ");
-      const failed = await params.placements.fail({
-        sessionId: reconciling.sessionId,
-        expectedGeneration: reconciling.generation,
-        recoveryError,
-      });
-      reportPlacementTransition(undefined, failed);
-    } catch (error) {
-      if (error instanceof AcceptedWorkspacePublicationIndeterminateError) {
-        throw error;
-      }
-      // Leave the durable draining or reconciling row for startup reconciliation.
-    }
-  };
   if (!isCurrentDrain()) {
     return;
   }
@@ -135,5 +109,28 @@ export async function failHandedOffTurn(params: {
   } catch (error) {
     failures.push(`environment destroy: ${boundedWorkerError(error)}`);
   }
-  await recordFailure();
+  // Publish failure only after raw teardown has settled for this exact drain.
+  if (!isCurrentDrain()) {
+    return;
+  }
+  try {
+    const reconciling = await params.placements.startReconcile({
+      sessionId: draining.sessionId,
+      environmentId: draining.environmentId,
+      ownerEpoch: draining.activeOwnerEpoch,
+      expectedGeneration: draining.generation,
+    });
+    const recoveryError = failures.join("; ");
+    const failed = await params.placements.fail({
+      sessionId: reconciling.sessionId,
+      expectedGeneration: reconciling.generation,
+      recoveryError,
+    });
+    reportPlacementTransition(undefined, failed);
+  } catch (error) {
+    if (error instanceof AcceptedWorkspacePublicationIndeterminateError) {
+      throw error;
+    }
+    // Leave the durable draining or reconciling row for startup reconciliation.
+  }
 }

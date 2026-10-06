@@ -90,7 +90,6 @@ export function resolveOwnedActiveTalkRunTarget(params: {
     const isCurrent = (resolvedSessionId?: string) => {
       params.assertCurrent?.();
       const currentIdentity = getRpcSourceIdentity(entry);
-      const currentGeneration = getRpcSourceLifecycleGeneration(entry);
       const replyOwner =
         reply &&
         entry.input.claim === claim &&
@@ -137,7 +136,7 @@ export function resolveOwnedActiveTalkRunTarget(params: {
                 getEmbeddedRunAttachment(handle) === registration))) &&
         entry.input.abortSignal === signal &&
         !signal.aborted &&
-        currentGeneration === generation &&
+        getRpcSourceLifecycleGeneration(entry) === generation &&
         isAgentEventLifecycleGenerationCurrent(generation)
       );
     };

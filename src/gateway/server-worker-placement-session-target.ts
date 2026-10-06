@@ -171,7 +171,6 @@ export async function runWorkerPlacementSessionBarrier<T>(params: {
     exactRead: true,
   });
   return await runSessionMutation({
-
     scope: target.storePath,
     identities: [params.sessionKey, target.canonicalKey, ...target.storeKeys, params.sessionId],
     signal: params.signal,

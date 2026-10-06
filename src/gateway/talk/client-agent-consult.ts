@@ -21,7 +21,6 @@ import { captureSessionTarget } from "../../sessions/session-controller.lifecycl
 import {
   getRpcSource,
   getRpcSourceLifecycleGeneration,
-  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -79,14 +78,13 @@ function createTalkClientAgentRuntime(params: {
   assertCurrent?: () => void;
   getAdditionalSystemPrompt?: () => string | undefined;
   bindOperationalRunInstance?: (instance: OperationalRunInstanceRef) => void;
-  resolveRpcSource: (runId: string) => RpcSourceRef | undefined;
 }) {
   const agentRuntime = createPluginRuntime().agent;
   const runEmbeddedAgent: typeof agentRuntime.runEmbeddedAgent = async (runParams) => {
     runParams.abortSignal?.throwIfAborted();
-    const source = params.resolveRpcSource(runParams.runId);
+    const source = getRpcSource(runParams.runId);
     const execution = await loadTalkAgentExecution();
-    if (source && params.resolveRpcSource(runParams.runId) !== source) {
+    if (source && getRpcSource(runParams.runId) !== source) {
       throw new Error("Talk source changed during runtime preparation");
     }
     runParams.abortSignal?.throwIfAborted();
@@ -233,7 +231,6 @@ export function createTalkClientAgentConsultRunner(params: {
   let agentRuntime: ReturnType<typeof createPluginRuntime>["agent"] | undefined;
   const getAgentRuntime = () =>
     (agentRuntime ??= createTalkClientAgentRuntime({
-      resolveRpcSource: getRpcSource,
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
@@ -260,7 +257,6 @@ export function createTalkClientAgentConsultRunner(params: {
     getAdditionalSystemPrompt?: () => string | undefined,
   ) =>
     createTalkClientAgentRuntime({
-      resolveRpcSource: getRpcSource,
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
       assertCurrent,
@@ -319,7 +315,6 @@ export function createTalkClientAgentConsultRunner(params: {
       ? createOwnedAgentRuntime(owner, assertCurrent, getAdditionalSystemPrompt)
       : assertCurrent || source === "native-delegation" || confirmationGrant
         ? createTalkClientAgentRuntime({
-            resolveRpcSource: getRpcSource,
             config: params.config,
             ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
             assertCurrent,
@@ -433,22 +428,19 @@ export function createTalkClientAgentConsultRunner(params: {
               const generation = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
               owner.cleanup = registration?.cleanup;
               owner.signal = entry?.input.abortSignal;
-              owner.isCurrent = (resolvedSessionId, phase = "active") => {
-                return (
-                  params.getVoiceSessionId() === voiceSessionId &&
-                  (!params.ownerConnId ||
-                    isTalkConsultSourceCurrent({
-                      entry,
-                      connectionId: params.ownerConnId,
-                      sessionId,
-                      sessionKey: canonicalKey,
-                      lifecycleGeneration: generation,
-                      phase,
-                    })) &&
-                  (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
-                  (params.isRunCurrent?.(runId) ?? true)
-                );
-              };
+              owner.isCurrent = (resolvedSessionId, phase = "active") =>
+                params.getVoiceSessionId() === voiceSessionId &&
+                (!params.ownerConnId ||
+                  isTalkConsultSourceCurrent({
+                    entry,
+                    connectionId: params.ownerConnId,
+                    sessionId,
+                    sessionKey: canonicalKey,
+                    lifecycleGeneration: generation,
+                    phase,
+                  })) &&
+                (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
+                (params.isRunCurrent?.(runId) ?? true);
             }
             return registration
               ? {

@@ -221,7 +221,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       } finally {
         prepared.release();
       }
-      if (!current && inputTurn.modelRun === true && !claim.sessionKey?.trim()) {
+      if (!current && sessionlessModelRun) {
         return await runLocal();
       }
       const restartSignal = getGatewayRestartDrainSignal();

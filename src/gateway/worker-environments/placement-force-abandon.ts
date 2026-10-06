@@ -97,8 +97,7 @@ export async function forceAbandonWorkerEnvironment(
   for (const placement of reconcilePlacements) {
     if (placement.environmentId === environmentId && placement.activeOwnerEpoch !== null) {
       const claim = capturePlacementTurnClaim({
-        sessionId: placement.sessionId,
-        turnClaim: placement.turnClaim,
+        ...placement,
         environmentId,
         activeOwnerEpoch: placement.activeOwnerEpoch,
       });

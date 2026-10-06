@@ -134,15 +134,11 @@ export function createGatewayConnectionState(params: {
             return references;
           },
           forgetConnectionAncestors: (client) => ancestorReferences.delete(client),
-          getRunProjector: () => {
-            if (!projectRun) {
-              projectRun = createVisibleActiveSessionRunProjector(
-                projection.state.rowContext.projectedAgentRuns,
-                listRpcSourceEntries(),
-              );
-            }
-            return projectRun;
-          },
+          getRunProjector: () =>
+            (projectRun ??= createVisibleActiveSessionRunProjector(
+              projection.state.rowContext.projectedAgentRuns,
+              listRpcSourceEntries(),
+            )),
         },
       );
     },

@@ -343,22 +343,16 @@ export async function recoverGatewaySession(params: {
   });
   const successorSessionId = randomUUID();
 
-  const sourceIdentities = [
-    ...sourceTarget.storeKeys,
-    sourceTarget.canonicalKey,
-    initialSource.sessionId,
-  ];
   const sourceControllerTarget = captureSessionTarget({
     storeScope: sourceTarget.storePath,
     sessionKey: sourceTarget.canonicalKey,
-    aliases: sourceIdentities,
+    aliases: sourceTarget.storeKeys,
     agentId: sourceTarget.agentId,
     incarnation: initialSource.sessionId,
   });
   const successorControllerTarget = captureSessionTarget({
     storeScope: successorTarget.storePath,
     sessionKey: successorTarget.canonicalKey,
-    aliases: [successorTarget.canonicalKey, successorSessionId],
     agentId: successorTarget.agentId,
     incarnation: successorSessionId,
   });

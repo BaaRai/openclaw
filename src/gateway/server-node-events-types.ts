@@ -2,44 +2,27 @@
 // Defines the narrowed context and event envelope for node-originated handlers.
 import type { DesktopAvailability } from "../../packages/gateway-protocol/src/schema/environments.js";
 import type { NodeHostStatsPayload } from "../../packages/gateway-protocol/src/schema/nodes.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
-import type { CliDeps } from "../cli/deps.types.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
-import type { HealthSummary } from "./health/types.js";
-import type { ChatRunEntry, ChatRunRegistration } from "./server-chat-state.js";
-import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
-import type { DedupeEntry } from "./server-shared.js";
+import type { GatewayRequestContext } from "./server-methods/types.js";
 
 /** Runtime context available to node event handlers. */
-export type NodeEventContext = {
-  deps: CliDeps;
+export type NodeEventContext = Pick<
+  GatewayRequestContext,
+  | "deps"
+  | "broadcastVoiceWakeChanged"
+  | "addChatRun"
+  | "removeChatRun"
+  | "dedupe"
+  | "agentRunSeq"
+  | "getHealthCache"
+  | "refreshHealthSnapshot"
+  | "loadGatewayModelCatalog"
+> & {
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   nodeSubscribe: (nodeId: string, sessionKey: string, connId?: string) => void | Promise<void>;
   nodeUnsubscribe: (nodeId: string, sessionKey: string, connId?: string) => void | Promise<void>;
-  broadcastVoiceWakeChanged: (triggers: string[]) => void;
-  addChatRun: (sessionId: string, entry: ChatRunRegistration) => void;
-  removeChatRun: (
-    sessionId: string,
-    clientRunId: string,
-    sessionKey?: string,
-  ) => ChatRunEntry | undefined;
-  dedupe: Map<string, DedupeEntry>;
-  agentRunSeq: Map<string, number>;
-  getHealthCache: () => HealthSummary | null;
-  refreshHealthSnapshot: (opts?: {
-    probe?: boolean;
-    includeSensitive?: boolean;
-  }) => Promise<HealthSummary>;
-  loadGatewayModelCatalog: (params?: {
-    agentId?: string;
-    readOnly?: boolean;
-  }) => Promise<ModelCatalogEntry[]>;
-  loadGatewayModelCatalogSnapshot?: (params?: {
-    agentId?: string;
-    readOnly?: boolean;
-  }) => Promise<GatewayModelCatalogSnapshot>;
-
+  loadGatewayModelCatalogSnapshot?: GatewayRequestContext["loadGatewayModelCatalogSnapshot"];
   authorizeNodeSystemRunEvent: (params: {
     nodeId: string;
     connId?: string;
