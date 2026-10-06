@@ -51,7 +51,7 @@ export function attachSessionControllerInputOperation(
   ) {
     throw new Error("Cannot attach source to a foreign turn");
   }
-  const claim = input.mailbox.claim;
+  let claim = input.mailbox.claim;
   if (claim) {
     if (claim.operation !== operation || claim.releaseRequested) {
       throw new Error("Another source owns the selected turn");
@@ -62,27 +62,24 @@ export function attachSessionControllerInputOperation(
     if (!claim.sources.includes(source)) {
       claim.sources = [...claim.sources, source];
     }
-    settleSessionControllerSourceInjectionOrder(input, false);
-    input.claim = claim;
-    input.phase = "claimed";
-    return;
+  } else {
+    claim = {
+      mailbox: input.mailbox,
+      inputs: [input],
+      sources: [source],
+      summary: false,
+      operation,
+      custody: {},
+      released: false,
+      settlement: createDeferredCore(),
+      abortController: new AbortController(),
+    };
+    bindGatewayContextResolver(claim, getGatewayContextResolver(operation));
+    input.mailbox.claim = claim;
   }
-  const attached: SessionControllerMailboxClaim = {
-    mailbox: input.mailbox,
-    inputs: [input],
-    sources: [source],
-    summary: false,
-    operation,
-    custody: {},
-    released: false,
-    settlement: createDeferredCore(),
-    abortController: new AbortController(),
-  };
-  bindGatewayContextResolver(attached, getGatewayContextResolver(operation));
   settleSessionControllerSourceInjectionOrder(input, false);
-  input.claim = attached;
+  input.claim = claim;
   input.phase = "claimed";
-  input.mailbox.claim = attached;
 }
 
 /** The execution producer alone reports a closed, pre-execution refusal.

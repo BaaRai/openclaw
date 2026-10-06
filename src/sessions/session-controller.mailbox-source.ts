@@ -254,16 +254,13 @@ export function retireSessionControllerInput(input: SessionControllerInput): voi
     return;
   }
   input.retirementRequested = true;
-  if (input.cancelling || input.withdrawalHolds) {
-    return;
-  }
-  if (input.claim && !input.claim.released) {
-    return;
-  }
-  if (input.injection && input.phase === "injecting") {
-    return;
-  }
-  if (input.custody.work?.size) {
+  if (
+    input.cancelling ||
+    input.withdrawalHolds ||
+    (input.claim && !input.claim.released) ||
+    (input.injection && input.phase === "injecting") ||
+    input.custody.work?.size
+  ) {
     return;
   }
   if (input.source && !input.custody.completed) {

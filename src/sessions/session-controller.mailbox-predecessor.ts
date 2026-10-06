@@ -93,8 +93,7 @@ function waitForSessionControllerClaimRestoration(
     const priority = mailbox.priority;
     if (priority && priority !== predecessor) {
       mailbox.wake();
-      const priorityClaim = mailbox.claim;
-      void (priorityClaim?.settlement.promise ?? priority.settlement.promise).then(
+      void (mailbox.claim?.settlement.promise ?? priority.settlement.promise).then(
         restore,
         restore,
       );

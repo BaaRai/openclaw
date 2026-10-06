@@ -100,7 +100,6 @@ export type SessionControllerMailbox = {
   abortController: AbortController;
   readonly items: FollowupRun[];
   readonly draining: boolean;
-  readonly drainOwner?: SessionControllerMailboxClaim;
   readonly inFlight: ReadonlySet<FollowupRun>;
   lastEnqueuedAt: number;
   mode: QueueSettings["mode"];

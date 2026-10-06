@@ -34,12 +34,13 @@ export function clearSessionControllerMailbox(
       )
     : [...mailbox.entries];
   const selected = new Set(inputs);
+  const selectedSource = (source: FollowupRun) =>
+    Boolean(source.controllerInput && selected.has(source.controllerInput));
   const sources = [
     ...new Set([
       ...inputs.flatMap((input) => (input.source ? [input.source] : [])),
       ...captureSessionControllerMailboxSummarySources(mailbox).filter(
-        (source) =>
-          !capturedInputs || (source.controllerInput && selected.has(source.controllerInput)),
+        (source) => !capturedInputs || selectedSource(source),
       ),
     ]),
   ];
@@ -54,8 +55,6 @@ export function clearSessionControllerMailbox(
     input.retirementRequested = true;
   }
   if (capturedInputs) {
-    const selectedSource = (source: FollowupRun) =>
-      Boolean(source.controllerInput && selected.has(source.controllerInput));
     let removed = 0;
     for (let index = mailbox.summarySources.length - 1; index >= 0; index--) {
       if (selectedSource(mailbox.summarySources[index]!)) {
@@ -91,6 +90,8 @@ export function clearSessionControllerMailbox(
     mailbox.dispatchEnabled = false;
     mailbox.lastRun = undefined;
     mailbox.lastEnqueuedAt = 0;
+    clearTimeout(mailbox.timer);
+    mailbox.timer = undefined;
   }
   for (const [key, record] of mailbox.recentSources) {
     if (
@@ -103,10 +104,6 @@ export function clearSessionControllerMailbox(
   }
   if (mailbox.priority && inputs.includes(mailbox.priority)) {
     mailbox.priority = undefined;
-  }
-  if (!capturedInputs && mailbox.timer) {
-    clearTimeout(mailbox.timer);
-    mailbox.timer = undefined;
   }
   try {
     abort?.abort();

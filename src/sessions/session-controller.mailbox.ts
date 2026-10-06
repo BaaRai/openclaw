@@ -14,10 +14,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import { logSessionControllerSourceClaim } from "./session-controller.diagnostics.js";
 import { captureSessionTarget, type SessionTarget } from "./session-controller.lifecycle.js";
-import {
-  captureSessionControllerMailboxSummarySources as summaryCandidates,
-  clearSessionControllerMailbox,
-} from "./session-controller.mailbox-cleanup.js";
+import { captureSessionControllerMailboxSummarySources as summaryCandidates } from "./session-controller.mailbox-cleanup.js";
 import {
   inputCancellation,
   bindSessionControllerSource,
@@ -65,7 +62,7 @@ export {
   captureSessionControllerSourceSettlement,
   holdSessionControllerSourceWithdrawal,
 } from "./session-controller.mailbox-source.js";
-export { clearSessionControllerMailbox };
+export { clearSessionControllerMailbox } from "./session-controller.mailbox-cleanup.js";
 
 export function getSessionControllerMailbox(
   key: string,
@@ -94,9 +91,6 @@ export function getSessionControllerMailbox(
     },
     get draining() {
       return Boolean(mailbox.claim);
-    },
-    get drainOwner() {
-      return mailbox.claim;
     },
     get inFlight() {
       return new Set(mailbox.claim?.sources ?? []);
@@ -214,29 +208,21 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
     return;
   }
   const admission = evaluateTurnAdmission(owner, {
-    kind:
-      first?.taskTurnKind ??
-      (first ? (first.custody.enqueued ? "queued_followup" : "visible") : "direct"),
+    kind: first.taskTurnKind ?? (first.custody.enqueued ? "queued_followup" : "visible"),
     sessionKey: owner.key,
     registeredEntry: sessionControllers.get(owner.id),
-    selectedInput: first ?? null,
+    selectedInput: first,
   });
-  if (!admission.admitted) {
-    return;
-  }
   if (
+    !admission.admitted ||
     first.retirementRequested ||
     first.phase !== "waiting" ||
     first.injection ||
     first.withdrawalHolds > 0 ||
-    eligible.some((input) => input.injection)
-  ) {
-    return;
-  }
-  if (
-    !first.ready &&
-    !first.task &&
-    (!mailbox.dispatchEnabled || !mailbox.dispatch || !first.source)
+    eligible.some((input) => input.injection) ||
+    (!first.ready &&
+      !first.task &&
+      (!mailbox.dispatchEnabled || !mailbox.dispatch || !first.source))
   ) {
     return;
   }
@@ -245,9 +231,7 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
       ? 0
       : Math.max(0, mailbox.lastEnqueuedAt + mailbox.debounceMs - Date.now());
   if (delay > 0) {
-    if (mailbox.timer) {
-      clearTimeout(mailbox.timer);
-    }
+    clearTimeout(mailbox.timer);
     mailbox.timer = setTimeout(() => {
       mailbox.timer = undefined;
       mailbox.wake();
@@ -360,10 +344,8 @@ function disposeSessionControllerMailbox(mailbox: SessionControllerMailbox): voi
   mailbox.dispatch = undefined;
   mailbox.dispatchEnabled = false;
   mailbox.lastRun = undefined;
+  clearTimeout(mailbox.timer);
   if (mailbox.recentSources.size) {
-    if (mailbox.timer) {
-      clearTimeout(mailbox.timer);
-    }
     const expires = Math.min(...[...mailbox.recentSources.values()].map((value) => value.expires));
     mailbox.timer = setTimeout(
       () => {
@@ -375,18 +357,10 @@ function disposeSessionControllerMailbox(mailbox: SessionControllerMailbox): voi
     mailbox.timer.unref?.();
     return;
   }
-  if (mailbox.timer) {
-    clearTimeout(mailbox.timer);
+  if (mailbox.owner.mailbox === mailbox) {
+    mailbox.owner.mailbox = undefined;
   }
-  mailbox.dispatch = undefined;
-  mailbox.lastRun = undefined;
-  const owner = mailbox.owner;
-  if (owner?.mailbox === mailbox) {
-    owner.mailbox = undefined;
-  }
-  if (owner) {
-    pruneSessionControllerEntry(owner);
-  }
+  pruneSessionControllerEntry(mailbox.owner);
 }
 
 /** Reserves identity/custody before attachment or prompt preparation, without owning a turn. */
