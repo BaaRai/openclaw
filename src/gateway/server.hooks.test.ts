@@ -22,6 +22,7 @@ import { withEnvAsync } from "../test-utils/env.js";
 import {
   agentMapping,
   HOOK_TOKEN,
+  postAgentHookWithIdempotency,
   postHook,
   requireNonEmptyString,
   writeHookTransformModule,
@@ -187,20 +188,6 @@ function cronRunCall(index = 0): HookCronRunCall {
     throw new Error(`expected cron isolated run call ${index + 1}`);
   }
   return call as HookCronRunCall;
-}
-
-async function postAgentHookWithIdempotency(
-  port: number,
-  idempotencyKey: string,
-  headers?: Record<string, string>,
-) {
-  const response = await postHook(
-    port,
-    "agent",
-    { message: "Do it", name: "Email" },
-    { headers: { "Idempotency-Key": idempotencyKey, ...headers } },
-  );
-  return response;
 }
 
 async function expectFirstHookDelivery(

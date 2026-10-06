@@ -84,6 +84,20 @@ export async function postHook(
   return response;
 }
 
+export async function postAgentHookWithIdempotency(
+  port: number,
+  idempotencyKey: string,
+  headers?: Record<string, string>,
+) {
+  const response = await postHook(
+    port,
+    "agent",
+    { message: "Do it", name: "Email" },
+    { headers: { "Idempotency-Key": idempotencyKey, ...headers } },
+  );
+  return response;
+}
+
 export function agentMapping(route: string, overrides: HookMappingConfig = {}): HookMappingConfig {
   return {
     match: { path: route },
