@@ -338,6 +338,7 @@ function bindingAt(anchor, suppliedBytes) {
     "archive",
     "authority",
     "resolutions",
+    ...(Object.hasOwn(record, "sourceAdmission") ? ["sourceAdmission"] : []),
   ]);
   if (
     record.version !== 1 ||
@@ -398,6 +399,28 @@ const retiredNames = [
   "prepare-sync-result.env",
 ];
 
+function proofInventory(archives) {
+  return Object.fromEntries(
+    archives.map((archive) => {
+      if (
+        !/^\.local\/prep-evidence\.[A-Za-z0-9]+$/u.test(archive) ||
+        !fs.lstatSync(archive).isDirectory()
+      ) {
+        throw new Error("Invalid retained proof directory.");
+      }
+      return [
+        archive,
+        Object.fromEntries(
+          fs
+            .readdirSync(archive)
+            .toSorted()
+            .map((name) => [name, hash(readRegular(join(archive, name)))]),
+        ),
+      ];
+    }),
+  );
+}
+
 function retainedAuthority(binding) {
   const { record, oid } = binding;
   exactKeys(record.authority, authorityPaths);
@@ -405,10 +428,57 @@ function retainedAuthority(binding) {
     throw new Error("Invalid retained preparation directory.");
   }
   const retained = (path) => readRegular(join(record.archive, path.slice(".local/".length)));
+  const context = retained(".local/prep-context.env");
+  const admission = record.sourceAdmission;
+  let predecessor;
+  let prior;
+  if (Object.hasOwn(record, "sourceAdmission")) {
+    exactKeys(admission, [
+      "predecessorHead",
+      "predecessorBinding",
+      "sourceReviewOid",
+      "sourceTree",
+      "evidence",
+    ]);
+    if (
+      ![
+        admission.predecessorHead,
+        admission.predecessorBinding,
+        admission.sourceReviewOid,
+        admission.sourceTree,
+      ].every((value) => oidPattern.test(value)) ||
+      admission.predecessorBinding !== record.authority[bindingPath] ||
+      admission.sourceReviewOid !== record.authority[".local/correction-review.json"] ||
+      admission.sourceTree !== text("rev-parse", `${record.sourceHead}^{tree}`)
+    ) {
+      throw new Error("Successor source admission identity changed.");
+    }
+    git(["merge-base", "--is-ancestor", admission.predecessorHead, record.sourceHead]);
+    predecessor = {
+      ...bindingAt(admission.predecessorHead, retained(bindingPath)),
+      anchor: admission.predecessorHead,
+    };
+    if (
+      predecessor.oid !== admission.predecessorBinding ||
+      predecessor.record.pr !== record.pr ||
+      predecessor.record.incomingHead !== record.incomingHead ||
+      predecessor.record.incomingReviewOid !== record.incomingReviewOid
+    ) {
+      throw new Error("Successor predecessor authority changed.");
+    }
+    prior = retainedAuthority(predecessor);
+    if (!context.equals(prior.boundContext)) {
+      throw new Error("Successor source context does not retain its predecessor binding.");
+    }
+    const inventory = proofInventory([...prior.archives, record.archive]);
+    if (JSON.stringify(inventory) !== JSON.stringify(admission.evidence)) {
+      throw new Error("Retained successor proof changed.");
+    }
+  }
   for (const path of authorityPaths) {
     const expected = record.authority[path];
     if (path === bindingPath) {
-      if (expected !== "absent") {
+      if (expected !== "absent" && !admission) {
         throw new Error("Nested baseline refresh requires separate source admission.");
       }
       continue;
@@ -432,7 +502,9 @@ function retainedAuthority(binding) {
   );
   const scope = new Set([
     ...meta.files.map((file) => file.path),
-    ...paths(record.incomingHead, record.sourceHead),
+    ...(predecessor
+      ? [...prior.scope, ...paths(predecessor.anchor, record.sourceHead)]
+      : paths(record.incomingHead, record.sourceHead)),
   ]);
   const violations = validateReviewArtifacts({
     review,
@@ -458,14 +530,26 @@ function retainedAuthority(binding) {
       `Retained correction review does not authorize its source. ${violations.join("; ")}`,
     );
   }
-  const context = retained(".local/prep-context.env");
-  if (/^PREP_BASELINE_REFRESH_(?:HEAD|OID)=/mu.test(decoder.decode(context))) {
+  if (!admission && /^PREP_BASELINE_REFRESH_(?:HEAD|OID)=/mu.test(decoder.decode(context))) {
     throw new Error("Source context is already baseline-bound.");
   }
   return {
     context,
+    scope: [
+      ...new Set([
+        ...binding.paths,
+        ...(prior ? [...prior.scope, ...paths(predecessor.anchor, record.sourceHead)] : []),
+      ]),
+    ],
+    archives: [...(prior?.archives ?? []), record.archive],
     boundContext: Buffer.concat([
-      context,
+      admission
+        ? Buffer.from(
+            decoder
+              .decode(context)
+              .replace(/^PREP_BASELINE_REFRESH_(?:HEAD|OID)=[a-f0-9]{40}\n/gmu, ""),
+          )
+        : context,
       Buffer.from(
         `\nPREP_BASELINE_REFRESH_OID=${oid}\nPREP_BASELINE_REFRESH_HEAD=${binding.anchor}\n`,
       ),
@@ -513,7 +597,15 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
   if (!currentContext.equals(context) && !currentContext.equals(boundContext)) {
     throw new Error("Preparation context changed during baseline transition.");
   }
-  if (present(bindingPath) && !readRegular(bindingPath).equals(binding.bytes)) {
+  if (record.sourceAdmission && !present(bindingPath)) {
+    throw new Error("Successor transition lost its predecessor binding.");
+  }
+  if (
+    present(bindingPath) &&
+    !readRegular(bindingPath).equals(binding.bytes) &&
+    (!record.sourceAdmission ||
+      hash(readRegular(bindingPath)) !== record.sourceAdmission.predecessorBinding)
+  ) {
     throw new Error("Baseline transition binding changed.");
   }
   for (const name of retiredNames) {
@@ -540,7 +632,7 @@ function transition(command, pr, source, anchor, branch, root, lockRef, lockOid)
       lockRef,
       lockOid,
     ]);
-    if (!present(bindingPath)) {
+    if (!present(bindingPath) || !readRegular(bindingPath).equals(binding.bytes)) {
       atomicWrite(bindingPath, binding.bytes);
     }
     if (!currentContext.equals(boundContext)) {
@@ -576,13 +668,16 @@ export function baselineRefreshScope({
   ) {
     throw new Error("Baseline refresh authority changed.");
   }
-  retainedAuthority({ ...binding, anchor });
+  const retained = retainedAuthority({ ...binding, anchor });
   git(["merge-base", "--is-ancestor", anchor, head]);
-  return [...binding.paths, ...paths(anchor, head)];
+  return [...retained.scope, ...paths(anchor, head)];
 }
 
-function create(pr, source, baseline, main, archive, snapshot, manifestPath) {
-  if (![source, baseline, main].every((value) => oidPattern.test(value)) || present(bindingPath)) {
+function create(pr, source, baseline, main, archive, snapshot, manifestPath, successor) {
+  if (
+    ![source, baseline, main].every((value) => oidPattern.test(value)) ||
+    (!successor && present(bindingPath))
+  ) {
     throw new Error("Invalid or already bound baseline refresh source.");
   }
   git(["verify-commit", source]);
@@ -593,6 +688,29 @@ function create(pr, source, baseline, main, archive, snapshot, manifestPath) {
       .split("\n")
       .map((line) => line.split(" ")),
   );
+  let sourceAdmission;
+  if (successor) {
+    const [predecessorHead, predecessorBinding, sourceReviewOid, sourceTree] = successor;
+    const predecessor = { ...bindingAt(predecessorHead), anchor: predecessorHead };
+    const prior = retainedAuthority(predecessor);
+    if (
+      predecessor.oid !== predecessorBinding ||
+      authority[bindingPath] !== predecessorBinding ||
+      authority[".local/correction-review.json"] !== sourceReviewOid ||
+      text("rev-parse", `${source}^{tree}`) !== sourceTree ||
+      !readRegular(".local/prep-context.env").equals(prior.boundContext)
+    ) {
+      throw new Error("Successor admission does not match its exact source authority.");
+    }
+    git(["merge-base", "--is-ancestor", predecessorHead, source]);
+    sourceAdmission = {
+      predecessorHead,
+      predecessorBinding,
+      sourceReviewOid,
+      sourceTree,
+      evidence: proofInventory([...prior.archives, archive]),
+    };
+  }
   const prMeta = JSON.parse(readRegular(".local/pr-meta.json"));
   const manifest = manifestPath ? JSON.parse(readRegular(manifestPath)) : undefined;
   if (manifestPath) {
@@ -621,6 +739,7 @@ function create(pr, source, baseline, main, archive, snapshot, manifestPath) {
     archive,
     authority,
     resolutions: replay.resolutions,
+    ...(sourceAdmission ? { sourceAdmission } : {}),
   };
   const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
   const oid = hash(bytes);
@@ -631,7 +750,7 @@ function create(pr, source, baseline, main, archive, snapshot, manifestPath) {
       }),
     )
     .trim();
-  bindingAt(anchor, bytes);
+  retainedAuthority({ ...bindingAt(anchor, bytes), anchor });
   process.stdout.write(
     `${JSON.stringify({ target: anchor, binding: bytes.toString("base64"), resolutions: replay.resolutions })}\n`,
   );
@@ -642,6 +761,8 @@ if (isDirectRunUrl(process.argv[1], import.meta.url)) {
     const [command, ...args] = process.argv.slice(2);
     if (command === "create" && args.length === 7) {
       create(Number(args[0]), ...args.slice(1));
+    } else if (command === "create-successor" && args.length === 11) {
+      create(Number(args[0]), ...args.slice(1, 7), args.slice(7));
     } else if (
       ["validate-transition", "install-transition"].includes(command) &&
       args.length === 7
