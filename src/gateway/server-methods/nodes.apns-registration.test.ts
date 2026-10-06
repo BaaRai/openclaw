@@ -11,7 +11,8 @@ import type { GatewayRequestHandlerOptions } from "./types.js";
 const handleEvent = vi.hoisted(() => vi.fn<typeof handleNodeEvent>());
 const isPairingCurrent = vi.hoisted(() => vi.fn(() => true));
 vi.mock("../server-node-events.js", () => ({ handleNodeEvent: handleEvent }));
-vi.mock("../../infra/device-pairing-node-state.js", () => ({
+vi.mock("../../infra/device-pairing-node-state.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/device-pairing-node-state.js")>()),
   captureNodePairingGeneration: async (nodeId: string) => ({ nodeId, key: "generation-a" }),
   isNodePairingGenerationCurrent: async () => true,
   isPairedDeviceNodeBindingCurrent: isPairingCurrent,
