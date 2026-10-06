@@ -51,7 +51,12 @@ it.for(["resume", "stop"] as const)(
           data: { phase: "start", startedAt: 1 },
         },
       });
-      expect(loadSessionEntry(target)).toMatchObject({ status: "running", abortedLastRun: false });
+      const started = loadSessionEntry(target);
+      expect(started).toMatchObject({
+        lifecycleRunId: "interrupted-startup-run",
+        abortedLastRun: false,
+      });
+      expect(started?.status).toBeUndefined();
       const dispatched = createDeferred();
       vi.mocked(callGateway).mockImplementation(async () => {
         dispatched.resolve();
@@ -119,10 +124,12 @@ it.for(["resume", "stop"] as const)(
             expect(loadSessionEntry(target)).toMatchObject({ abortedLastRun: false });
           } else {
             expect(callGateway).not.toHaveBeenCalled();
-            expect(loadSessionEntry(target)).toMatchObject({
-              status: "running",
+            const stopped = loadSessionEntry(target);
+            expect(stopped).toMatchObject({
+              lifecycleRunId: "interrupted-startup-run",
               abortedLastRun: false,
             });
+            expect(stopped?.status).toBeUndefined();
           }
         } finally {
           releasePreparation.resolve();

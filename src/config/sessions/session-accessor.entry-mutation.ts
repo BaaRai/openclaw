@@ -3,6 +3,7 @@ import { isMainThread } from "node:worker_threads";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycle-errors.js";
 import {
+  assertDatabasePathIdentity,
   readDatabasePathIdentitySync,
   type DatabasePathIdentity,
 } from "../../infra/sqlite-worker-identity.js";
@@ -98,12 +99,14 @@ function captureSessionEntryDatabasePreparation(
     const selected = captureSessionStoreReadCandidate(expected.selectedStore.path);
     if (
       selected.path !== expected.selectedStore.path ||
-      selected.physicalPath !== expected.selectedStore.physicalPath ||
-      selected.physicalPath !== expected.database.path ||
-      !isDeepStrictEqual(readDatabasePathIdentitySync(selected.path), expected.identity)
+      !isSessionStoreReadCandidateCurrent(expected.selectedStore)
     ) {
       throw new Error("Session creation lost its originally captured database source");
     }
+    assertSessionStoreReadCandidate(expected.database.path, [
+      { ...expected.selectedStore, path: expected.selectedStore.physicalPath },
+    ]);
+    assertDatabasePathIdentity(selected.path, expected.identity);
     assertSessionStoreReadCandidate(selected.path, candidates);
     if (!candidates.some((candidate) => candidate.path === selected.path && !candidate.scope)) {
       candidates.push({ ...selected, identity: expected.identity });
@@ -112,8 +115,7 @@ function captureSessionEntryDatabasePreparation(
   const releases: Array<() => void> = [];
   let active = true;
   let execution: OpenClawAgentDatabaseExecution | undefined;
-  let preparedPath: string | undefined;
-  let preparedIdentity: ReturnType<typeof readDatabasePathIdentitySync> | undefined;
+  let prepared: { path: string; identity: DatabasePathIdentity } | undefined;
   let creatingPath: string | undefined;
   const assertSourceCurrent = () => {
     if (!active) {
@@ -121,32 +123,24 @@ function captureSessionEntryDatabasePreparation(
     }
     shared.admission.assertCurrent();
     execution?.assertCurrent();
-    if (
-      expected &&
-      captureSessionStoreReadCandidate(expected.selectedStore.path).physicalPath !==
-        expected.selectedStore.physicalPath
-    ) {
+    if (expected && !isSessionStoreReadCandidateCurrent(expected.selectedStore)) {
       throw new Error("Session creation database alias changed during preparation");
     }
     for (const candidate of candidates) {
       const isCreating = candidate.path === creatingPath || candidate.physicalPath === creatingPath;
-      const isPrepared = candidate.path === preparedPath || candidate.physicalPath === preparedPath;
-      if (
-        !isSessionStoreReadCandidateCurrent(candidate) ||
-        (!(isCreating && candidate.identity.key.startsWith("path:")) &&
-          !isDeepStrictEqual(
-            readDatabasePathIdentitySync(candidate.path),
-            isPrepared ? preparedIdentity : candidate.identity,
-          ))
-      ) {
+      const accepted =
+        prepared && (candidate.path === prepared.path || candidate.physicalPath === prepared.path)
+          ? prepared.identity
+          : candidate.identity;
+      if (!isSessionStoreReadCandidateCurrent(candidate)) {
         throw new Error("Session creation database changed during preparation");
       }
+      if (!(isCreating && candidate.identity.key.startsWith("path:"))) {
+        assertDatabasePathIdentity(candidate.path, accepted);
+      }
     }
-    if (
-      preparedPath &&
-      !isDeepStrictEqual(readDatabasePathIdentitySync(preparedPath), preparedIdentity)
-    ) {
-      throw new Error("Session creation database changed after preparation");
+    if (prepared) {
+      assertDatabasePathIdentity(prepared.path, prepared.identity);
     }
   };
   const assertHeld = () => {
@@ -204,10 +198,12 @@ function captureSessionEntryDatabasePreparation(
       if (
         expected &&
         (options.agentId !== expected.database.agentId ||
-          options.path !== expected.selectedStore.path ||
-          captureSessionStoreReadCandidate(options.path).physicalPath !== expected.database.path)
+          options.path !== expected.selectedStore.path)
       ) {
         throw new Error("Session creation resolved a different database source");
+      }
+      if (expected) {
+        assertSessionStoreReadCandidate(options.path, [expected.selectedStore]);
       }
       if (
         !isMainThread ||
@@ -251,11 +247,13 @@ function captureSessionEntryDatabasePreparation(
       if (!accepted || typeof accepted.birthtime !== "string") {
         throw new Error("Session creation has no accepted native file identity");
       }
-      preparedPath = path;
-      preparedIdentity = {
-        key: `file:${accepted.physicalIdentity}`,
-        canonicalPath: original.canonicalPath,
-        birthtime: accepted.birthtime,
+      prepared = {
+        path,
+        identity: {
+          key: `file:${accepted.physicalIdentity}`,
+          canonicalPath: original.canonicalPath,
+          birthtime: accepted.birthtime,
+        },
       };
       creatingPath = undefined;
     },

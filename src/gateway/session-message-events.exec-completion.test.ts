@@ -53,7 +53,7 @@ beforeAll(() => {
       void (async () => {
         const body = JSON.stringify(await json(request));
         const title = body.includes("Generate a concise session title");
-        const marker = body.match(/EXEC_NOTIFICATION_(?:false|true|silent)/)?.[0];
+        const marker = body.match(/EXEC_NOTIFICATION_(?:false|true|silent|metadata)/)?.[0];
         if (!title) {
           providerRequests.push(body);
         }
@@ -149,11 +149,17 @@ describe("exec completion WebChat publication", () => {
     { name: "connected WebChat", disconnected: false, silent: false },
     { name: "disconnected WebChat", disconnected: true, silent: false },
     { name: "silent completion", disconnected: false, silent: true },
-  ])("settles $name once", async ({ disconnected, silent }) => {
+    {
+      name: "metadata-only code 0 publication",
+      disconnected: false,
+      silent: false,
+      metadataOnly: true,
+    },
+  ])("settles $name once", async ({ disconnected, silent, metadataOnly }) => {
     if (!gateway) {
       throw new Error("Gateway did not start");
     }
-    const suffix = silent ? "silent" : String(disconnected);
+    const suffix = metadataOnly ? "metadata" : silent ? "silent" : String(disconnected);
     const sessionKey = `agent:main:dashboard:exec-completion-${suffix}`;
     const marker = `EXEC_NOTIFICATION_${suffix}`;
     await gateway.client.request("sessions.create", { key: sessionKey });
@@ -202,15 +208,15 @@ describe("exec completion WebChat publication", () => {
       }
       const expectedTarget = await captureSessionEventTargetForHost("main", sessionKey);
       expect(expectedTarget.lifecycleRevision).toEqual(expect.any(String));
-      const receipt = enqueueSessionEventForHost(
-        `Exec completed (webchat-proof, code 0) :: ${marker}`,
-        {
-          agentId: "main",
-          sessionKey,
-          source: "exec",
-          expectedTarget,
-        },
-      );
+      const completion = metadataOnly
+        ? `Exec completed (${marker}, code 0)`
+        : `Exec completed (webchat-proof, code 0) :: ${marker}`;
+      const receipt = enqueueSessionEventForHost(completion, {
+        agentId: "main",
+        sessionKey,
+        source: "exec",
+        expectedTarget,
+      });
       expect(await receipt.settled).toMatchObject({
         status: "completed",
         executionStarted: true,
@@ -242,6 +248,9 @@ describe("exec completion WebChat publication", () => {
       ).toHaveLength(silent ? 0 : 1);
       expect(notifications).toHaveLength(disconnected || silent ? 0 : 1);
       expect(providerRequests.filter((request) => request.includes(marker))).toHaveLength(1);
+      if (metadataOnly) {
+        expect(providerRequests.find((request) => request.includes(marker))).toContain(completion);
+      }
       expect(providerErrors).toEqual([]);
     } finally {
       unsubscribe();

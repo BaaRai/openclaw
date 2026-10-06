@@ -1,5 +1,6 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import "../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +22,7 @@ import {
 } from "../../config/sessions/session-accessor.reset.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
+import * as sessionEntryRead from "../../config/sessions/session-entry-read-runtime.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
@@ -117,6 +119,90 @@ afterAll(() => {
 });
 
 describe("session event target custody", () => {
+  it("retains fresh event custody from a captured Windows short-path spelling", async () => {
+    await withTargetFixture(
+      async (state) => {
+        const root = await fs.realpath(state.path());
+        const directory = path.join(root, "EVENT~1");
+        const canonicalDirectory = path.join(root, "event-store");
+        await fs.mkdir(canonicalDirectory);
+        await fs.symlink(canonicalDirectory, directory, "junction");
+        const storePath = path.join(directory, "event-store.sqlite");
+        setRuntimeConfigSnapshot({
+          agents: { entries: { main: {} } },
+          session: { store: storePath },
+        });
+        openOpenClawAgentDatabase({ agentId: "main", path: storePath, env: state.env });
+        const originalLstat = fsSync.lstatSync;
+        const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+        // Windows short directory aliases aren't symlinks; the fixture shares real DB/WAL files.
+        const lstat = vi
+          .spyOn(fsSync, "lstatSync")
+          .mockImplementation((pathname, options) =>
+            originalLstat(String(pathname) === directory ? canonicalDirectory : pathname, options),
+          );
+        const originalRead = sessionEntryRead.withSessionEntryReadOnlyInWorker;
+        const readCapturedSpelling: typeof originalRead = (
+          input,
+          assertCurrent,
+          consume,
+          prepare,
+        ) =>
+          originalRead(
+            input,
+            assertCurrent,
+            (read, owner) =>
+              consume(read, {
+                ...owner,
+                // Model the historical spelling in transferred metadata; retain native facts/guards.
+                selectedStore: owner.selectedStore && {
+                  ...owner.selectedStore,
+                  physicalPath: storePath,
+                },
+              }),
+            prepare,
+          );
+        const reader = vi
+          .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
+          .mockImplementation(readCapturedSpelling);
+        let prepared: Awaited<ReturnType<typeof prepareSessionEventTargetForHost>> | undefined;
+        try {
+          const target = await captureSessionEventTargetForHost("main", sessionKey, {
+            env: state.env,
+          });
+          reader.mockRestore();
+          prepared = await prepareSessionEventTargetForHost(target, { createIfMissing: true });
+          prepared.assertCurrent();
+          const scope = { agentId: "main", storePath, sessionKey, env: state.env };
+          const snapshot = await loadReplySessionInitializationSnapshot(scope);
+          const committed = await commitReplySessionInitialization({
+            ...scope,
+            activeSessionKey: sessionKey,
+            expectedRevision: snapshot.revision,
+            sessionEntry: {
+              sessionId: "windows-first-session",
+              lifecycleRevision: "first",
+              updatedAt: 1,
+            },
+            bindCreation: prepared.bindCreation,
+          });
+          expect(committed.ok).toBe(true);
+          expect(target).toMatchObject({
+            sessionId: "windows-first-session",
+            lifecycleRevision: "first",
+          });
+          prepared.assertCurrent();
+        } finally {
+          prepared?.release();
+          reader.mockRestore();
+          lstat.mockRestore();
+          platform.mockRestore();
+        }
+      },
+      { empty: true, native: true },
+    );
+  });
+
   it("joins cold native preparation before settling cancellation", async ({ signal }) => {
     await withTargetFixture(
       async ({ env }) => {

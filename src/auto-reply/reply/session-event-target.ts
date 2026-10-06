@@ -10,7 +10,7 @@ import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { SessionEntryReadSourcePreparation } from "../../config/sessions/session-entry-read-runtime.types.js";
-import { captureSessionStoreReadCandidate } from "../../config/sessions/session-store-read-candidates.js";
+import { isSessionStoreReadCandidateCurrent } from "../../config/sessions/session-store-read-candidates.js";
 import {
   intersectSessionToolOverrides,
   sessionToolOverridesEqual,
@@ -41,8 +41,7 @@ function assertCapturedEventSource(source: CapturedEventSource) {
   if (
     identity.key !== source.identity.key ||
     identity.birthtime !== source.identity.birthtime ||
-    captureSessionStoreReadCandidate(source.selectedStore.path).physicalPath !==
-      source.selectedStore.physicalPath
+    !isSessionStoreReadCandidateCurrent(source.selectedStore)
   ) {
     throw new Error("Session event destination storage changed after capture");
   }

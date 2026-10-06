@@ -67,7 +67,7 @@ Behavior:
 | `tools.exec.backgroundMs`             | 10000   | Same as `OPENCLAW_BASH_YIELD_MS`.                                                                                   |
 | `tools.exec.timeoutSeconds`           | 1800    | Default per-call timeout.                                                                                           |
 | `tools.exec.cleanupMs`                | 1800000 | Same as `OPENCLAW_BASH_JOB_TTL_MS`.                                                                                 |
-| `tools.exec.notifyOnExit`             | true    | Submit an ordinary session follow-up when a backgrounded exec exits.                                          |
+| `tools.exec.notifyOnExit`             | true    | Submit an ordinary session follow-up when a backgrounded exec exits.                                                |
 | `tools.exec.notifyOnExitEmptySuccess` | false   | Also enqueue completion events for successful backgrounded runs with no output. Defaults to true for chat channels. |
 
 ### Disable automatic completion turns
