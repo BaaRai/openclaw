@@ -208,10 +208,8 @@ describe("prepared reply transcript identity", () => {
             snapshotVersion: 0,
           };
         });
-        context.isFirstTurnInSession = true;
+        const workspaceDir = state.statePath("workspace");
         context.params.storePath = scope.storePath;
-        context.skillsWorkspaceDir = state.statePath("workspace");
-        context.workspaceDir = context.skillsWorkspaceDir;
         context.params.opts =
           source === "event"
             ? { internalEventExecution: { assertCurrent, onStarted() {}, onTerminal() {} } }
@@ -233,7 +231,12 @@ describe("prepared reply transcript identity", () => {
                   },
                 },
               };
-        const pending = prepareReplyRunAdmission(context);
+        const pending = prepareReplyRunAdmission({
+          ...context,
+          isFirstTurnInSession: true,
+          skillsWorkspaceDir: workspaceDir,
+          workspaceDir,
+        });
         try {
           await awaitGateBeforeSettlement(
             entered.promise,
