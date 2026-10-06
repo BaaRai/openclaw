@@ -35,7 +35,6 @@ import {
   installReplyOperationAdmission,
   type CreateReplyOperationParams,
 } from "./session-controller.operation-admission.js";
-import { bindReplyOperationUpstreamAbort } from "./session-controller.operation-upstream.js";
 import {
   clearReplyRunState,
   evictReplyOperationByOperation,
@@ -68,8 +67,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   const { sessionKey, sessionId } = admitted;
   let owner = admitted.owner;
   const controller = new AbortController();
-  // Mutable so updateSessionKey can move the run slot (command-turn continuation
-  // adoption); every closure below must read this, never params.sessionKey.
+  // Mutable for rekey adoption; closures must read this, never params.sessionKey.
   let currentSessionKey = sessionKey;
   let currentSessionId = sessionId;
   let currentAgentId = resolveReplyOperationAgentId(sessionKey, params.agentId);
@@ -197,8 +195,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         )
       : undefined;
     updateFollowupAdmissionSessionId(operation);
-    // Recovery-owner handoff must begin before the old slot wakes a successor;
-    // otherwise that successor can snapshot durable state the handoff then mutates.
+    // Start owner handoff before waking a successor that could snapshot state it mutates.
     startReplyOperationSuccessorBarriers(operation);
     markProgress("reply_operation:ended");
     clearReplyRunState({
@@ -221,8 +218,6 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     }
   };
 
-  const scheduleTerminalSettle = () => watchdog.beginTerminal();
-
   const expireOwner = async (
     effect: SessionWatchdogEffect,
     cleanup: boolean,
@@ -238,8 +233,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     const failures: unknown[] = [];
     try {
       if (cleanup) {
-        // Committed output cannot be replaced by ordinary Stop. Only this
-        // captured retained owner may retire its remaining native resources.
+        // After committed output, only this captured owner may retire native resources.
         cleanupPreservesOutcome ||= state.abortFrozen && !state.result;
         detachUpstreamAbort();
         backend?.cancel("superseded");
@@ -258,8 +252,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       failures.push(error);
     }
     for (const cleanupOwner of cleanups) {
-      // Stopping may close the captured attempt synchronously. That does not
-      // revoke custody of the exact placement cleanup already captured above.
+      // Stop may close the attempt synchronously; captured cleanup custody survives it.
       if (ownerSettled) {
         break;
       }
@@ -273,8 +266,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       const { failures: fenceFailures, fenced } = await terminalProducerFences.revokeAll();
       failures.push(...fenceFailures);
       if (fenced) {
-        // Durable revocation rejects a late writer before this exact operation
-        // releases its slot. A later complete() cannot clear its successor.
+        // Durable revocation rejects late writers before this exact operation releases its slot.
         clearState();
         settleOwner();
       }
@@ -286,8 +278,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   };
   const watchdog = createSessionControllerWatchdog({
     startedAtMs,
-    // Exact raw custody survives rekey, index eviction and lifecycle rotation.
-    // Never rediscover the owner through a slot that may already hold a successor.
+    // Exact custody survives rekey and rotation; never rediscover the owner through its slot.
     isCurrent: () => installed && !ownerSettled,
     readPhase: () =>
       ownerSettled
@@ -320,8 +311,17 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     try {
       backend?.cancel(reason);
     } finally {
-      scheduleTerminalSettle();
+      watchdog.beginTerminal();
     }
+  };
+  const abortWithReason = (reason: unknown) => {
+    const restart = isAgentRunRestartAbortReason(reason);
+    const superseded = isAgentRunSupersededAbortReason(reason);
+    abortOperation(
+      restart ? "restart" : superseded ? "superseded" : "user_abort",
+      reason,
+      restart ? "aborted_for_restart" : superseded ? "aborted_for_supersession" : "aborted_by_user",
+    );
   };
 
   const operation: ReplyOperation = {
@@ -410,9 +410,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     captureOwnedSessionIds() {
       return new Set(ownedSessionIds);
     },
-    recordActivity() {
-      recordActivity();
-    },
+    recordActivity,
     setPhase(phase) {
       apply({ type: "phase", phase });
     },
@@ -490,8 +488,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
             ...capturedTarget,
             sessionKey: update.sessionKey,
             aliases: mailboxClaim ? capturedTarget.aliases : [update.sessionKey],
-            // Moving a command must select the destination logical identity, not
-            // merge the source incarnation into a separately admitted target.
+            // A moved command selects the destination identity, not the source incarnation.
             incarnation: mailboxClaim ? capturedTarget.incarnation : undefined,
           })
         : undefined;
@@ -575,8 +572,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     completeWithAfterClearBarrier(barrier, timeoutMs) {
       // Producer work is done; delivery may still need a successor operation.
       producerCompletion.resolve();
-      // Admission may time out to free a slot; the old writer settles only when
-      // its actual delivery/persistence barrier finishes, including repeated complete().
+      // Admission may time out, but the writer settles only after its actual delivery barrier.
       const completed = Promise.resolve(barrier).then(
         () => {},
         () => {},
@@ -588,8 +584,6 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         setResult({ kind: "completed" });
       }
       clearState(barrier, timeoutMs);
-      // This barrier owns dispatch delivery and terminal persistence. Slot
-      // release never substitutes for this owner's actual durable settlement.
       settleOwner();
     },
     fail(code, cause) {
@@ -602,23 +596,13 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       if (!state.result) {
         setResult({ kind: "failed", code, cause });
       }
-      scheduleTerminalSettle();
+      watchdog.beginTerminal();
     },
     abort(reason) {
       if (!isReplyOperationAbortable(operation)) {
         return false;
       }
-      const restart = isAgentRunRestartAbortReason(reason);
-      const superseded = isAgentRunSupersededAbortReason(reason);
-      abortOperation(
-        restart ? "restart" : superseded ? "superseded" : "user_abort",
-        reason ?? createAbortError("Reply operation aborted by user"),
-        restart
-          ? "aborted_for_restart"
-          : superseded
-            ? "aborted_for_supersession"
-            : "aborted_by_user",
-      );
+      abortWithReason(reason ?? createAbortError("Reply operation aborted by user"));
       return true;
     },
     abortByUser() {
@@ -652,7 +636,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       try {
         backend?.cancel("superseded");
       } finally {
-        scheduleTerminalSettle();
+        watchdog.beginTerminal();
       }
       return true;
     },
@@ -669,7 +653,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       beforeSupersede?.();
       if (abortFrozen) {
         setResult({ kind: "aborted", code: "aborted_for_supersession" });
-        scheduleTerminalSettle();
+        watchdog.beginTerminal();
         return true;
       }
       abortOperation("superseded", createSupersededError(), "aborted_for_supersession");
@@ -705,11 +689,17 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   markProgress("reply_operation:queued");
   if (upstreamAbortSignal) {
     operationsByUpstreamAbortSignal.set(upstreamAbortSignal, operation);
-    upstreamAbortHandler = bindReplyOperationUpstreamAbort(
-      operation,
-      upstreamAbortSignal,
-      abortOperation,
-    );
+    const abortFromUpstream = () => {
+      if (!state.result) {
+        abortWithReason(upstreamAbortSignal.reason);
+      }
+    };
+    if (upstreamAbortSignal.aborted) {
+      abortFromUpstream();
+    } else {
+      upstreamAbortSignal.addEventListener("abort", abortFromUpstream, { once: true });
+      upstreamAbortHandler = abortFromUpstream;
+    }
   }
 
   return operation;
