@@ -30,6 +30,7 @@ beforeEach(() => {
     return {
       id: "hook-event",
       cancel: () => false,
+      accepted: Promise.resolve({ ok: true }),
       settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
     };
   });

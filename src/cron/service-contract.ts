@@ -75,6 +75,7 @@ export interface CronServiceContract {
   getDefaultAgentId(): string | undefined;
   wake(opts: {
     expectedTarget?: import("../auto-reply/reply/session-event-contract.js").SessionEventTarget;
+    createIfMissing?: true;
     /** Revalidates the requester immediately before wake admission. */
     commitGuard?: () => void;
     mode: CronWakeMode;

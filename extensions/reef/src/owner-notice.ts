@@ -446,10 +446,15 @@ export function createReefOwnerNoticeHandler(params: {
       });
       return;
     }
+    const expectedTarget = await params.runtime.system.captureSessionEventTarget(
+      route.agentId,
+      route.sessionKey,
+    );
     const receipt = params.runtime.system.enqueueSessionEvent(notice.text, {
       agentId: route.agentId,
       sessionKey: route.sessionKey,
       contextKey: notice.contextKey,
+      expectedTarget,
     });
     const outcome = await receipt.settled;
     if (outcome.status !== "completed") {

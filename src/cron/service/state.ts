@@ -230,8 +230,10 @@ export type CronServiceDeps = {
       contextKey?: string;
       deliveryContext?: DeliveryContext;
       expectedTarget?: SessionEventTarget;
+      createIfMissing?: true;
+      assertAcceptanceCurrent?: () => void;
     },
-  ) => void;
+  ) => void | Promise<{ ok: true } | { ok: false; error: string }>;
   deferSessionEvent?: (
     text: string,
     job: CronJob,
@@ -242,6 +244,7 @@ export type CronServiceDeps = {
       assertCurrent: () => void;
       onOutcome: (outcome: "queued" | "coalesced") => void;
     },
+    createIfMissing?: true,
   ) => void | Promise<void>;
   captureSessionEventTarget?: (job: CronJob) => Promise<SessionEventTarget | undefined>;
   resolveSessionEventTarget?: (opts?: { agentId?: string; sessionKey?: string }) => {

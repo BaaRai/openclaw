@@ -295,6 +295,7 @@ export function makeNodeClient(connId: string, nodeId: string): GatewayWsClient 
 export function resetNodeEventTestState() {
   resetGatewayWorkAdmission();
   runtimeMocks.enqueueSessionEvent.mockReset().mockReturnValue({
+    accepted: Promise.resolve({ ok: true }),
     settled: Promise.resolve({ status: "completed" }),
   });
   runtimeMocks.enqueueSystemEventEntry

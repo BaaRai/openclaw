@@ -83,7 +83,9 @@ export async function runCronSessionTurn(params: {
     const delivery =
       job.payload.kind === "agentTurn" ? await resolveCronDeliveryContext(params) : undefined;
     assertCurrent();
-    const expectedTarget = await captureSessionEventTarget(params.agentId, params.sessionKey);
+    const expectedTarget = await captureSessionEventTarget(params.agentId, params.sessionKey, {
+      assertCurrent,
+    });
     assertCurrent();
     const requestedChat = delivery?.deliveryRequested && delivery.deliveryPlan.mode !== "webhook";
     const deliverySuppressionReason =
@@ -195,6 +197,7 @@ export async function runCronSessionTurn(params: {
       source: "cron",
       contextKey: `cron:${job.id}`,
       expectedTarget,
+      createIfMissing: true,
       deliveryContext: route,
       abortSignal: params.abortSignal,
       scheduledAutomation: {
@@ -204,6 +207,7 @@ export async function runCronSessionTurn(params: {
         executionIdentity: params.executionIdentity,
         deliveryAttemptFence: params.deliveryAttemptFence,
         assertCurrent,
+        bindSessionCreation: deferred.bindCreation,
         capacity: captureCronCapacityLease(),
         beforeDeliver,
         sourceDelivery: delivery?.sourceDelivery,

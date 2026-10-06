@@ -72,9 +72,13 @@ This is a breaking plugin-SDK change. Plugins importing removed names must be
 updated before upgrading the host; deprecated aliases are not retained.
 Schedule recurring work through ordinary [Automations](/automation/cron-jobs).
 For immediate follow-ups, use `api.runtime.system.enqueueSessionEvent` with an
-explicit agent and session, and inspect the returned settlement receipt. Capture
+explicit agent and session, and inspect the returned admission and settlement receipt. Capture
 the original destination before awaited work with `captureSessionEventTarget`;
 see [system utilities](/plugins/sdk-runtime/state-and-system#state-config-and-system-namespaces).
+Capture does not create storage. Authorized fresh ingress explicitly opts in with
+`createIfMissing: true`; delayed completions retain their original session and
+fail when it no longer exists. Await `receipt.accepted` when acknowledging
+admission to a caller; the result is `{ ok: true }` or `{ ok: false, error }`.
 Configure model and delivery policy on the automation instead of reply options.
 Ordinary internal events use `typingPolicy: "system_event"`; silent replies use
 `SILENT_REPLY_TOKEN` and `isSilentReplyText` from `reply-runtime`.
@@ -82,7 +86,7 @@ Ordinary internal events use `typingPolicy: "system_event"`; silent replies use
 Custom in-process Gateway handlers must also await `context.cron.wake(...)`
 before inspecting `ok` or `reason`. The method returned a result synchronously
 in `2026.9.7`; it now returns a result or a Promise of that result, because deferred
-wake admission can await current target and owner checks. Awaiting handles both
+wake admission can await storage preparation and current target and owner checks. Awaiting handles both
 immediate and deferred admission:
 
 ```typescript

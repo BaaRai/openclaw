@@ -11,6 +11,7 @@ export function enqueueSlackInteractionEvent(
 ): void {
   const receipt = getSlackRuntime().system.enqueueSessionEvent(text, {
     ...options,
+    createIfMissing: true,
     agentId: route.agentId,
     sessionKey: route.sessionKey,
   });

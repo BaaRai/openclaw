@@ -19,11 +19,18 @@ import {
   registerOpenClawAgentDatabaseReadCandidateResource,
 } from "../../state/openclaw-agent-db-resources.js";
 import {
+  assertSessionEntryCreationPublication,
+  readSessionEntryCreatedEntry,
+} from "./session-accessor.sqlite-entry-cache-publication.js";
+import {
   isPreparedSessionSharingChange,
   projectSessionSharingEntry,
   retainPreparedSessionGenerationFacts,
 } from "./session-accessor.sqlite-entry-cache.js";
-import type { SessionSharingEntry } from "./session-accessor.sqlite-entry-cache.types.js";
+import type {
+  SessionEntryCreationOperation,
+  SessionSharingEntry,
+} from "./session-accessor.sqlite-entry-cache.types.js";
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
 import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-incognito-sharing.js";
 import type { SessionDeliveryGeneration } from "./session-delivery-generation.types.js";
@@ -66,6 +73,7 @@ type SessionGenerationEntry = Pick<
 
 type SessionGenerationFacts = Omit<SessionDeliveryGeneration, "sessionId"> & {
   sessionId: string | null;
+  env?: NodeJS.ProcessEnv;
 };
 
 function isSessionGenerationFacts(value: unknown): value is SessionGenerationFacts {
@@ -95,6 +103,13 @@ async function prepareSessionGenerationLease(
   readSessionSettings: () => Pick<SessionSharingEntry, "permissionMode" | "toolOverrides">;
   prepareRead: () => Promise<void> | undefined;
   release: () => void;
+  bindCreation: (
+    operation: SessionEntryCreationOperation,
+    publishBinding?: (
+      binding: Pick<SessionGenerationEntry, "sessionId" | "lifecycleRevision">,
+    ) => void,
+  ) => () => void;
+  isCreationAdopted: () => boolean;
 }> {
   if (!isSessionGenerationFacts(input)) {
     throw new SessionDeliveryGenerationUnavailableError();
@@ -107,6 +122,12 @@ async function prepareSessionGenerationLease(
   let invalidated = false;
   let revoked = false;
   let publications = 0;
+  let creation: SessionEntryCreationOperation | undefined;
+  let creationAdopted = false;
+  let publishCreatedBinding:
+    | ((binding: Pick<SessionGenerationEntry, "sessionId" | "lifecycleRevision">) => void)
+    | undefined;
+  let databaseIdentity: string | undefined;
   let retained: ReturnType<typeof retainPreparedSessionGenerationFacts> | undefined;
   let observeIncognito: (() => void) | undefined;
   let assertRegistryPublication: (() => void) | undefined;
@@ -201,6 +222,20 @@ async function prepareSessionGenerationLease(
       ["unchanged", "participants", "category", "member"].includes(change.facts?.kind ?? "")
     ) {
       return;
+    }
+    if (creation && !creationAdopted) {
+      const created = readSessionEntryCreatedEntry(change, creation);
+      if (created && retained?.adoptCreatedEntry(created)) {
+        generation.sessionId = created.sessionId;
+        generation.lifecycleRevision = created.lifecycleRevision ?? null;
+        creationAdopted = true;
+        publishCreatedBinding?.({
+          sessionId: created.sessionId,
+          lifecycleRevision: created.lifecycleRevision,
+        });
+      } else {
+        revoked = true;
+      }
     }
     if (binding && observeIncognito) {
       try {
@@ -403,6 +438,7 @@ async function prepareSessionGenerationLease(
               source = { path: pathname, identity: original.key };
             }
             paths.add(path.resolve(source.path));
+            databaseIdentity = source.identity;
             const prepared = retainPreparedSessionGenerationFacts({
               databaseIdentity: source.identity,
               sessionKey: generation.sessionKey,
@@ -490,6 +526,33 @@ async function prepareSessionGenerationLease(
       },
       prepareRead,
       release,
+      bindCreation: (operation, publishBinding) => {
+        assertCurrent();
+        if (creation) {
+          throw new Error("Session creation admission changed; retry against the current session");
+        }
+        if (generation.sessionId !== null || !retained || !databaseIdentity) {
+          throw new SessionDeliveryGenerationUnavailableError();
+        }
+        const target = {
+          agentId: generation.agentId,
+          sessionKey: generation.sessionKey,
+          paths,
+          databaseIdentity,
+        };
+        assertSessionEntryCreationPublication(operation, target);
+        creation = operation;
+        publishCreatedBinding = publishBinding;
+        return () => {
+          if (creationAdopted) {
+            assertCurrent();
+            return;
+          }
+          assertActive();
+          assertSessionEntryCreationPublication(operation, target);
+        };
+      },
+      isCreationAdopted: () => creationAdopted,
     };
   } catch (error) {
     release();
@@ -505,9 +568,22 @@ async function prepareSessionGenerationLease(
 
 /** Session lifecycle owners compose these facts with their own admitted mutation authority. */
 export async function prepareSessionGenerationFacts(input: SessionGenerationFacts) {
-  const { assertCurrent, prepareRead, readSessionSettings, release } =
-    await prepareSessionGenerationLease(input);
-  return { assertCurrent, prepareRead, readSessionSettings, release };
+  const {
+    assertCurrent,
+    prepareRead,
+    readSessionSettings,
+    release,
+    bindCreation,
+    isCreationAdopted,
+  } = await prepareSessionGenerationLease(input);
+  return {
+    assertCurrent,
+    prepareRead,
+    readSessionSettings,
+    release,
+    bindCreation,
+    isCreationAdopted,
+  };
 }
 
 /** Stable cron roots retain their admitted run; exact-run keys already name one generation. */

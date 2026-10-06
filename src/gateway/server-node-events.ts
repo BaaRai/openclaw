@@ -401,6 +401,7 @@ export const handleNodeEvent = async (
     presenceAllowed?: boolean;
     isConnectionCurrent?: () => boolean | Promise<boolean>;
     resolveApnsRegistrationGeneration?: () => string | null | Promise<string | null>;
+    assertSessionEventCurrent?: () => void;
     assertApnsRegistrationCurrent?: () => void;
   },
 ): Promise<NodeEventHandleResult | undefined> => {

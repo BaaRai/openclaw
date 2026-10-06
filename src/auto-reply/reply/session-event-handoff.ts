@@ -4,6 +4,7 @@ import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
 import { attachToolAllowlistIntersection } from "../../agents/tool-policy-shared.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
@@ -60,7 +61,10 @@ export type {
 /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
 export function enqueueSessionEventForHost(
   text: string,
-  options: {
+  {
+    assertAcceptanceCurrent,
+    ...options
+  }: {
     agentId: string;
     sessionKey: string;
     source: SessionEventSource;
@@ -68,6 +72,10 @@ export function enqueueSessionEventForHost(
     deliveryContext?: DeliveryContext;
     abortSignal?: AbortSignal;
     expectedTarget?: SessionEventTarget;
+    /** Authorized fresh work may create an absent session; captured completions may not. */
+    createIfMissing?: true;
+    /** Submitting invocation custody lasts through acceptance only. */
+    assertAcceptanceCurrent?: () => void;
     /** Durable producer commits its attempt only after normal turn adoption. */
     onAdopted?: () => void | Promise<void>;
     /** Transfer an existing producer-owned queue occurrence without duplicating its text. */
@@ -79,6 +87,7 @@ export function enqueueSessionEventForHost(
     assertCurrent?: () => void;
   },
 ): SessionEventReceipt {
+  assertAcceptanceCurrent?.();
   options.assertCurrent?.();
   options.expectedTarget?.assertCurrent?.();
   const cfg = getSessionEventRuntimeConfig();
@@ -153,8 +162,10 @@ export function enqueueSessionEventForHost(
     throw new Error("Session event occurrence no longer available for admission");
   }
   const { promise: settled, resolve } = createDeferredCore<SessionEventOutcome>();
+  const acceptance = createDeferredCore<Awaited<SessionEventReceipt["accepted"]>>();
+  let accepted = false;
   let started = false;
-  let dispatchStarted = false;
+  let admissionStarted = false;
   let deferred = false;
   let admissionDeferred = false;
   let operation: ReplyOperation | undefined;
@@ -182,6 +193,9 @@ export function enqueueSessionEventForHost(
       throw new Error("Session event occurrence is settled");
     }
     signal.throwIfAborted();
+    if (!accepted) {
+      assertAcceptanceCurrent?.();
+    }
     options.assertCurrent?.();
     options.expectedTarget?.assertCurrent?.();
     assertAgentRunLifecycleGenerationCurrent(generation);
@@ -247,7 +261,14 @@ export function enqueueSessionEventForHost(
     settling = true;
     const complete = () => {
       finished = true;
+      assertAcceptanceCurrent = undefined;
       const status = signal.aborted ? "cancelled" : failure ? "failed" : "completed";
+      if (!accepted) {
+        acceptance.resolve({
+          ok: false,
+          error: failure ?? "Session event was cancelled before acceptance",
+        });
+      }
       signal.removeEventListener("abort", onAbort);
       generationLease?.release();
       ownership.cancel();
@@ -276,9 +297,8 @@ export function enqueueSessionEventForHost(
     }
   };
   const onAbort = () => {
-    // Adopted work settles through its operation, including cancellation before model start.
-    // Otherwise callers can release a cron reservation while its reply owner is still live.
-    if (!operation && !dispatchStarted) {
+    // Started admission owns native preparation and reply settlement, even before model start.
+    if (!operation && !admissionStarted) {
       finish();
     }
   };
@@ -346,6 +366,8 @@ export function enqueueSessionEventForHost(
   // eventual execution and delivery finish.
   void runWithoutOwnedSessionTranscriptWrites(() =>
     runWithGatewayIndependentRootWorkContinuation(async () => {
+      admissionStarted = true;
+      assertOwnerCurrent();
       ({ replyRunRegistry } = await import("./reply-run-registry.js"));
       const { dispatchInboundMessageWithRoutedChannelDispatcher } = await import("../dispatch.js");
       const { prepareSessionGenerationFacts } =
@@ -353,14 +375,15 @@ export function enqueueSessionEventForHost(
       target ??= await captureSessionEventTargetForHost(agentId, sessionKey, {
         env,
         assertCurrent: options.assertCurrent,
+        assertCaptureCurrent: assertOwnerCurrent,
       });
       assertSessionEventTargetCurrent(target);
-      generationLease = await prepareSessionGenerationFacts({
-        agentId,
-        storePath,
-        sessionKey,
-        sessionId: target.sessionId || null,
-        lifecycleRevision: target.lifecycleRevision ?? null,
+      if (!target.sessionId && !options.createIfMissing) {
+        throw new Error("Session event origin is missing; start fresh authorized work instead");
+      }
+      generationLease = await prepareSessionEventTargetForHost(target, {
+        createIfMissing: options.createIfMissing,
+        assertAcceptanceCurrent: assertOwnerCurrent,
       });
       settings ??= target.settings;
       route ??= structuredClone(target.deliveryContext);
@@ -368,7 +391,9 @@ export function enqueueSessionEventForHost(
       settings = narrowSessionEventSettings(settings, generationLease.readSessionSettings());
       settingsAdmitted = true;
       assertCurrent();
-      dispatchStarted = true;
+      accepted = true;
+      assertAcceptanceCurrent = undefined;
+      acceptance.resolve({ ok: true });
       const result = await dispatchInboundMessageWithRoutedChannelDispatcher({
         cfg: { ...cfg, session: { ...cfg.session, store: storePath } },
         ctx: {
@@ -441,6 +466,24 @@ export function enqueueSessionEventForHost(
           internalEventExecution: {
             deliver: options.deliver === false || target.deliver === false ? false : undefined,
             assertCurrent,
+            ...(target.sessionId === "" && options.createIfMissing
+              ? {
+                  bindSessionCreation: (creation: SessionEntryCreationOperation) => {
+                    assertOwnerCurrent();
+                    if (!generationLease) {
+                      throw new Error("Session event lost its original generation owner");
+                    }
+                    const assertCreationCurrent = generationLease.bindCreation(creation);
+                    const assertNoticeCreationCurrent =
+                      options.scheduledAutomation?.bindSessionCreation?.(creation);
+                    return () => {
+                      assertOwnerCurrent();
+                      assertCreationCurrent();
+                      assertNoticeCreationCurrent?.();
+                    };
+                  },
+                }
+              : {}),
             onFailed: (error) => {
               failure ??= String(error);
             },
@@ -567,6 +610,7 @@ export function enqueueSessionEventForHost(
               // published binding while that exact reply operation is live.
               if (
                 preparedBinding &&
+                !generationLease?.isCreationAdopted() &&
                 preparedBinding.sessionId === operation.sessionId &&
                 (target?.sessionId !== preparedBinding.sessionId ||
                   target?.lifecycleRevision !== preparedBinding.lifecycleRevision)
@@ -612,5 +656,5 @@ export function enqueueSessionEventForHost(
       return settled.then(() => undefined);
     })
     .finally(() => generationLease?.release());
-  return { id: occurrence.id, cancel: ownership.cancel, settled };
+  return { id: occurrence.id, cancel: ownership.cancel, settled, accepted: acceptance.promise };
 }

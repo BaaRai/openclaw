@@ -507,6 +507,7 @@ describe("scheduleRestartSentinelWake", () => {
       const noticeDelivered = createDeferred();
       mocks.enqueueSessionEvent.mockImplementationOnce((_text, options) => ({
         id: "unfinished-restart-event",
+        accepted: Promise.resolve({ ok: true }),
         cancel: () => true,
         settled: Promise.resolve().then(async () => {
           await options.onAdopted?.();

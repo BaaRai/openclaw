@@ -16,6 +16,7 @@ import * as sessionStores from "./session-utils-store-worker.js";
 
 const enqueueSessionEvent = vi.hoisted(() =>
   vi.fn((_text: string, _options: Record<string, unknown>) => ({
+    accepted: Promise.resolve({ ok: true }),
     settled: Promise.resolve({ status: "completed" }),
   })),
 );

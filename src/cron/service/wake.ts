@@ -46,6 +46,7 @@ export type DeferredHookWake = (opts: {
   text: string;
   agentId: string;
   expectedTarget?: SessionEventTarget;
+  createIfMissing?: true;
   commitGuard: () => void;
 }) => Promise<{ ok: true; eventOutcome: "queued" | "coalesced" } | { ok: false; reason?: string }>;
 
@@ -84,6 +85,7 @@ export function wake(
   opts: {
     mode: "now" | "next-heartbeat";
     expectedTarget?: SessionEventTarget;
+    createIfMissing?: true;
     commitGuard?: () => void;
     coalescing?: { onOutcome: (outcome: "queued" | "coalesced") => void };
     text: string;
@@ -120,15 +122,15 @@ export function wake(
     (sessionKey || agentId
       ? state.deps.resolveOriginDeliveryContext?.({ sessionKey, agentId })
       : undefined);
-  const enqueueOpts =
-    sessionKey || agentId
-      ? {
-          ...(opts.expectedTarget ? { expectedTarget: opts.expectedTarget } : {}),
-          ...(sessionKey ? { sessionKey } : {}),
-          ...(agentId ? { agentId } : {}),
-          ...(originDeliveryContext ? { deliveryContext: originDeliveryContext } : {}),
-        }
-      : undefined;
+  const createIfMissing = opts.createIfMissing;
+  const enqueueOpts = {
+    ...(opts.expectedTarget ? { expectedTarget: opts.expectedTarget } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(originDeliveryContext ? { deliveryContext: originDeliveryContext } : {}),
+    createIfMissing,
+    assertAcceptanceCurrent: opts.commitGuard,
+  };
   if (opts.mode === "now" || sessionKey) {
     if (!state.deps.enqueueSessionEvent) {
       return {
@@ -137,8 +139,12 @@ export function wake(
       } as const;
     }
     opts.commitGuard?.();
-    state.deps.enqueueSessionEvent(text, enqueueOpts);
-    return { ok: true } as const;
+    const pending = state.deps.enqueueSessionEvent(text, enqueueOpts);
+    return pending
+      ? pending.then((result) =>
+          result.ok ? ({ ok: true } as const) : ({ ok: false, reason: result.error } as const),
+        )
+      : ({ ok: true } as const);
   }
   const capturedAgentId = normalizeOptionalAgentId(opts.expectedTarget?.agentId);
   const capturedSessionKey = opts.expectedTarget?.sessionKey?.trim() || undefined;
@@ -240,6 +246,7 @@ export function wake(
     opts.coalescing
       ? { ...opts.coalescing, revision, assertCurrent: assertReceiverCurrent }
       : undefined,
+    createIfMissing,
   );
   return pending ? pending.then(() => ({ ok: true }) as const) : ({ ok: true } as const);
 }

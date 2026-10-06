@@ -66,14 +66,25 @@ closing the connection.
     ```
 
     `enqueueSessionEvent(...)` admits an ordinary internal session turn and returns
-    an `{ id, cancel, settled }` receipt. Inspect `settled` for completed, failed,
+    an `{ id, cancel, accepted, settled }` receipt. `accepted` resolves to
+    `{ ok: true }` after guarded admission, or `{ ok: false, error }` if admission
+    fails or is cancelled. It does not reject. Inspect `settled` for completed, failed,
     or cancelled outcomes; admission alone does not prove execution or delivery.
+    Invalid inputs or authority already revoked when calling `enqueueSessionEvent`
+    throw before a receipt is returned or the queue changes. Withdrawal during
+    asynchronous admission resolves the returned `accepted` promise with `ok: false`.
     Capture the destination before asynchronous work when the result belongs to
     the original session. Captured targets are opaque, reusable snapshots; copies
     are rejected, and the host revalidates the original session and plugin/Gateway
     owner before execution and delivery. Omitting `expectedTarget` captures the
     destination when the new event is admitted. Optional `deliveryContext` selects
     the event's channel destination within normal delivery policy.
+
+    Capture is read-only. For authorized fresh ingress that may start the first
+    session, pass `createIfMissing: true` to `enqueueSessionEvent` after checking
+    the user's visibility and access. Retained background completions must omit
+    this option: a missing origin fails instead of creating a replacement.
+    The option never recreates a captured session that was reset or deleted.
 
     Use ordinary automations for recurring work. The heartbeat execution aliases
     have been removed; see the [SDK migration](/plugins/sdk-migration/removed-surfaces#heartbeat-execution-and-reply-helpers).

@@ -190,6 +190,7 @@ export function registerSessionStateNoticeHandoffCases(
     }>();
     noticeHandoff.enqueue.mockImplementationOnce((_text, options) => ({
       id: options.occurrence!.id!,
+      accepted: Promise.resolve({ ok: true }),
       cancel: () => false,
       settled: completion.promise,
     }));

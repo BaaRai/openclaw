@@ -28,6 +28,7 @@ const captureSessionEventTargetMock = vi.fn(async (agentId: string, sessionKey: 
   sessionId: "accepted-session",
 }));
 const enqueueSessionEventMock = vi.fn((_text: string, _options: Record<string, unknown>) => ({
+  accepted: Promise.resolve({ ok: true }),
   settled: Promise.resolve({ status: "completed" }),
 }));
 const runCronIsolatedAgentTurnMock = vi.fn();
@@ -241,17 +242,19 @@ describe("dispatchAgentHook trust handling", () => {
         cfg: expect.any(Object),
         agentId: "molty",
       });
+      const expectedTarget = {
+        agentId: "molty",
+        sessionKey: "agent:molty:main",
+        sessionId: "accepted-session",
+      };
+      const expectedOwner = { agentId: "molty", createIfMissing: true, expectedTarget };
       if (mode === "now") {
         expect(enqueueSessionEventMock).toHaveBeenCalledWith("Mapped wake", {
-          agentId: "molty",
+          ...expectedOwner,
+          assertAcceptanceCurrent: expect.any(Function),
           sessionKey: "agent:molty:main",
           source: "hook",
           occurrence: { id: "hook-wake", text: "Mapped wake" },
-          expectedTarget: {
-            agentId: "molty",
-            sessionKey: "agent:molty:main",
-            sessionId: "accepted-session",
-          },
         });
         expect(enqueueSystemEventMock).not.toHaveBeenCalled();
         enqueueRequiredSystemEventEntryMock.mockReturnValueOnce(undefined);
@@ -262,12 +265,7 @@ describe("dispatchAgentHook trust handling", () => {
       } else {
         expect(deferHookWakeMock).toHaveBeenCalledExactlyOnceWith({
           text: "Mapped wake",
-          agentId: "molty",
-          expectedTarget: {
-            agentId: "molty",
-            sessionKey: "agent:molty:main",
-            sessionId: "accepted-session",
-          },
+          ...expectedOwner,
           commitGuard: expect.any(Function),
         });
         expect(enqueueSystemEventMock).not.toHaveBeenCalled();
@@ -321,6 +319,7 @@ describe("dispatchAgentHook trust handling", () => {
         expect(captureSessionEventTargetMock).toHaveBeenCalledExactlyOnceWith(
           "main",
           "agent:main:main",
+          { assertCaptureCurrent: expect.any(Function) },
         );
         expect(enqueueSessionEventMock).toHaveBeenCalledWith(
           "Bound wake",
@@ -336,6 +335,7 @@ describe("dispatchAgentHook trust handling", () => {
         expect(deferHookWakeMock).toHaveBeenCalledExactlyOnceWith({
           text: "Bound wake",
           agentId: "main",
+          createIfMissing: true,
           expectedTarget: {
             agentId: "main",
             sessionKey: "agent:main:main",

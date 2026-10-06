@@ -5,6 +5,7 @@ const enqueueSessionEventMock = vi.hoisted(() =>
   vi.fn(() => ({
     id: "interaction",
     cancel: vi.fn(),
+    accepted: Promise.resolve({ ok: true }),
     settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
   })),
 );

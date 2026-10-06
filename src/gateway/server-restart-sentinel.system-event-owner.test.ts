@@ -103,6 +103,7 @@ beforeEach(() => {
   }));
   mocks.enqueueSessionEvent.mockImplementation((_text, options) => ({
     id: "sentinel-event",
+    accepted: Promise.resolve({ ok: true }),
     cancel: () => true,
     settled: Promise.resolve().then(async () => {
       await options.onAdopted?.();
@@ -239,6 +240,7 @@ it.each(["completed", "failed", "cancelled"] as const)(
           >();
         mocks.enqueueSessionEvent.mockImplementationOnce((_text, options) => ({
           id: "sentinel-event",
+          accepted: Promise.resolve({ ok: true }),
           cancel: () => true,
           settled: Promise.resolve().then(async () => {
             await options.onAdopted?.();
@@ -301,6 +303,7 @@ it("keeps an event retryable when normal admission refuses it before adoption", 
     );
     mocks.enqueueSessionEvent.mockReturnValueOnce({
       id: "refused-event",
+      accepted: Promise.resolve({ ok: false, error: "session is busy" }),
       cancel: () => true,
       settled: Promise.resolve({
         status: "failed",

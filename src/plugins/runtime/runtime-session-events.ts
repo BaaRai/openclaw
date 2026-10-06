@@ -42,6 +42,8 @@ export function enqueueSessionEvent(
     deliveryContext?: DeliveryContext;
     abortSignal?: AbortSignal;
     expectedTarget?: SessionEventTarget;
+    /** Explicit fresh ingress may initialize an absent session after authorization. */
+    createIfMissing?: true;
   },
 ) {
   const assertCurrent = getPluginRuntimeGatewayRequestScope()?.assertSystemOwnerCurrent;
@@ -60,6 +62,7 @@ export function enqueueSessionEvent(
     deliveryContext: options.deliveryContext,
     abortSignal: options.abortSignal,
     expectedTarget,
+    createIfMissing: options.createIfMissing,
     ...(assertCurrent ? { assertCurrent } : {}),
   });
 }

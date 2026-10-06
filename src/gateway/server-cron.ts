@@ -5,10 +5,7 @@ import { listAgentIds, tryResolveAmbientOwnerAgentId } from "../agents/agent-sco
 import { isEmbeddedAgentSessionHeldByOtherRun } from "../agents/embedded-agent-runner/runs.js";
 import { abortAndDrainEmbeddedAgentRun } from "../agents/embedded-agent.js";
 import { loadPreparedInboundPluginRegistry } from "../agents/prepared-model-runtime.inbound-registry.js";
-import {
-  captureSessionEventTargetForHost,
-  enqueueSessionEventForHost,
-} from "../auto-reply/reply/session-event-handoff.js";
+import { captureSessionEventTargetForHost } from "../auto-reply/reply/session-event-handoff.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import { DEFAULT_CRON_ENABLED } from "../config/cron-limits.js";
@@ -154,8 +151,8 @@ export function buildGatewayCronService(params: {
   // same explicit opt-in while omitted config keeps the guard strict.
   const webhookSsrfPolicy = mergeSsrFPolicies(params.cfg.cron?.webhookSsrfPolicy);
 
-  const { resolveCronAgent, resolveCronTarget, deferSessionEvent } =
-    createGatewayCronTargetResolver(env);
+  const { resolveCronAgent, resolveCronTarget, deferSessionEvent, enqueueSessionEvent } =
+    createGatewayCronTargetResolver(env, cronLogger);
 
   const defaultAgentId = tryResolveAmbientOwnerAgentId(params.cfg);
   const resolveSessionStorePath = (agentId?: string) =>
@@ -477,23 +474,7 @@ export function buildGatewayCronService(params: {
       return resolveCronStoredDeliveryContext({ cfg: runtimeConfig, sessionKey });
     },
     runSchedulerOwned,
-    enqueueSessionEvent: (text, opts) => {
-      const { agentId, sessionKey } = resolveCronTarget(opts);
-      if (!agentId || !sessionKey) {
-        throw new Error("Session event has no configured owner");
-      }
-      const receipt = enqueueSessionEventForHost(text, {
-        ...opts,
-        agentId,
-        sessionKey,
-        source: "cron",
-      });
-      void receipt.settled.then((result) => {
-        if (result.status !== "completed") {
-          cronLogger.warn({ result }, "Session event did not complete");
-        }
-      });
-    },
+    enqueueSessionEvent,
     deferSessionEvent,
     runIsolatedAgentJob: async (request) => {
       const { job } = request;

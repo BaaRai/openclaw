@@ -153,12 +153,18 @@ export async function handleNodeSessionEvent(
         }
       }
 
-      const expectedTarget = await captureSessionEventTargetForHost(agentId, sessionKey);
+      const assertAcceptanceCurrent = () => {
+        config.assertCurrent();
+        opts?.assertSessionEventCurrent?.();
+      };
+      const expectedTarget = await captureSessionEventTargetForHost(agentId, sessionKey, {
+        assertCaptureCurrent: assertAcceptanceCurrent,
+      });
       config.assertCurrent();
       if (!(await isNodeEventConnectionCurrent(opts))) {
         return pairingChangedResult(evt.event);
       }
-      config.assertCurrent();
+      assertAcceptanceCurrent();
       const eventOptions = withSystemEventOwner(
         {
           sessionKey,
@@ -177,7 +183,13 @@ export async function handleNodeSessionEvent(
             contextKey: `notification:${key}`,
             expectedTarget,
             occurrence,
+            createIfMissing: true,
+            assertAcceptanceCurrent,
           });
+          const accepted = await receipt.accepted;
+          if (!accepted.ok) {
+            throw new Error(accepted.error);
+          }
           void receipt.settled.then((outcome) => {
             if (outcome.status !== "completed") {
               ctx.logGateway.warn(

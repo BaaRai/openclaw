@@ -15,6 +15,7 @@ export function createPluginSystemRuntimeMock(): PluginRuntime["system"] {
       .fn<PluginRuntime["system"]["enqueueSessionEvent"]>()
       .mockImplementation(() => ({
         id: "test-session-event",
+        accepted: Promise.resolve({ ok: true }),
         cancel: () => false,
         settled: Promise.resolve({
           status: "completed",

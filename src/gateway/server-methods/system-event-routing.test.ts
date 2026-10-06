@@ -106,6 +106,7 @@ beforeEach(() => {
   mocks.enqueueEvent.mockReset().mockReturnValue({
     id: "event-occurrence",
     cancel: () => false,
+    accepted: Promise.resolve({ ok: true }),
     settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
   });
   mocks.readReceipts.mockReset().mockResolvedValue({
@@ -116,6 +117,43 @@ beforeEach(() => {
 afterEach(() => resetSystemEventsForTest());
 
 describe("system-event routing", () => {
+  it.each([true, false])(
+    "acknowledges a fresh wake only after acceptance succeeds: %s",
+    async (ok) => {
+      const entered = createDeferredCore();
+      const acceptance = createDeferredCore<{ ok: true } | { ok: false; error: string }>();
+      mocks.enqueueEvent.mockImplementationOnce(() => {
+        entered.resolve(undefined);
+        return {
+          id: "pending",
+          cancel: () => false,
+          accepted: acceptance.promise,
+          settled: Promise.resolve({
+            status: ok ? "completed" : "failed",
+            executionStarted: ok,
+            delivered: false,
+          }),
+        };
+      });
+      const request = createRequest({ text: "Fresh wake.", wake: true });
+      const pending = Promise.resolve(systemEvent(request.options));
+      const outcome = pending.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await entered.promise;
+      const responsesBeforeAcceptance = request.respond.mock.calls.length;
+      const publicationsBeforeAcceptance = request.publishPresence.mock.calls.length;
+      acceptance.resolve(ok ? { ok: true } : { ok: false, error: "target replaced" });
+      const result = await outcome;
+      expect(responsesBeforeAcceptance).toBe(0);
+      expect(publicationsBeforeAcceptance).toBe(0);
+      expect(result).toEqual(ok ? undefined : new Error("target replaced"));
+      expect(request.respond).toHaveBeenCalledTimes(ok ? 1 : 0);
+      expect(request.publishPresence).toHaveBeenCalledTimes(ok ? 1 : 0);
+    },
+  );
+
   it("refuses an overflowing passive event without acknowledging or replacing queued work", async () => {
     const sessionKey = "agent:main:main";
     for (let index = 0; index < 20; index++) {
@@ -137,9 +175,13 @@ describe("system-event routing", () => {
 
     await systemEvent(request.options);
 
-    expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("main", sessionKey);
+    expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("main", sessionKey, {
+      assertCaptureCurrent: expect.any(Function),
+    });
     expect(mocks.enqueueEvent).toHaveBeenCalledExactlyOnceWith(text, {
       source: "session",
+      createIfMissing: undefined,
+      assertAcceptanceCurrent: expect.any(Function),
       agentId: "main",
       sessionKey,
       expectedTarget: {
@@ -161,7 +203,9 @@ describe("system-event routing", () => {
 
     await systemEvent(request.options);
 
-    expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("ops", "global");
+    expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("ops", "global", {
+      assertCaptureCurrent: expect.any(Function),
+    });
     expect(mocks.enqueueEvent).toHaveBeenCalledExactlyOnceWith(
       "Wake the retained session.",
       expect.objectContaining({ agentId: "ops", sessionKey: "global" }),
@@ -188,10 +232,12 @@ describe("system-event routing", () => {
       await systemEvent(request.options);
 
       if (wake) {
-        expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("main", "global");
+        expect(mocks.captureTarget).toHaveBeenCalledExactlyOnceWith("main", "global", {
+          assertCaptureCurrent: expect.any(Function),
+        });
         expect(mocks.enqueueEvent).toHaveBeenCalledExactlyOnceWith(
           "System owner notice.",
-          expect.objectContaining({ agentId: "main", sessionKey: "global" }),
+          expect.objectContaining({ agentId: "main", sessionKey: "global", createIfMissing: true }),
         );
         expect(peekSystemEvents("agent:main:global")).toEqual([]);
       } else {

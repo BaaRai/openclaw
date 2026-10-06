@@ -1,5 +1,13 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
+import "../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../test/helpers/promise.js";
 import { createOperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
@@ -7,6 +15,10 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import {
+  commitReplySessionInitialization,
+  loadReplySessionInitializationSnapshot,
+} from "../../config/sessions/session-accessor.reset.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
@@ -20,6 +32,8 @@ import {
 } from "../../infra/system-events.js";
 import * as gatewayWork from "../../process/gateway-work-admission.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -54,31 +68,41 @@ const route = {
 
 async function withTargetFixture(
   run: (fixture: OpenClawTestState & { storePath: string }) => Promise<void>,
+  options: { empty?: boolean; native?: boolean } = {},
 ) {
-  await withOpenClawTestState({ label: "session-event-target" }, async (state) => {
-    setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
-    const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-    writeSessionEntry(database, sessionKey, {
-      sessionId: "original-session",
-      lifecycleRevision: "original-revision",
-      updatedAt: 1,
-      delivery: normalizeSessionDeliveryState({ context: route }),
-      permissionMode: "full",
-    });
-    const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env });
-    try {
-      await run({ ...state, storePath });
-    } finally {
-      resetSystemEventsForTest();
-      gatewayWork.resetGatewayWorkAdmission();
-      await Promise.allSettled(
-        continuation.mock.results.flatMap((result) =>
-          result.type === "return" ? [result.value] : [],
-        ),
-      );
-      expect(gatewayWork.getActiveGatewayRootWorkCount()).toBe(0);
-    }
-  });
+  await withOpenClawTestState(
+    {
+      label: "session-event-target",
+      ...(options.native ? { env: { OPENCLAW_TEST_FAST: "0" } } : {}),
+    },
+    async (state) => {
+      setRuntimeConfigSnapshot({ agents: { entries: { main: {} } } });
+      openOpenClawStateDatabase({ env: state.env });
+      if (!options.empty) {
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        writeSessionEntry(database, sessionKey, {
+          sessionId: "original-session",
+          lifecycleRevision: "original-revision",
+          updatedAt: 1,
+          delivery: normalizeSessionDeliveryState({ context: route }),
+          permissionMode: "full",
+        });
+      }
+      const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env: state.env });
+      try {
+        await run({ ...state, storePath });
+      } finally {
+        resetSystemEventsForTest();
+        gatewayWork.resetGatewayWorkAdmission();
+        await Promise.allSettled(
+          continuation.mock.results.flatMap((result) =>
+            result.type === "return" ? [result.value] : [],
+          ),
+        );
+        expect(gatewayWork.getActiveGatewayRootWorkCount()).toBe(0);
+      }
+    },
+  );
 }
 
 beforeEach(() => {
@@ -93,6 +117,235 @@ afterAll(() => {
 });
 
 describe("session event target custody", () => {
+  it("joins cold native preparation before settling cancellation", async ({ signal }) => {
+    await withTargetFixture(
+      async ({ env }) => {
+        const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+        const { getReplacementPublicationDelivery } =
+          await import("../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js");
+        const delivery = getReplacementPublicationDelivery();
+        const prepared = createDeferred();
+        const release = createDeferred();
+        const cancellation = new AbortController();
+        delivery.afterPrepared = async () => {
+          prepared.resolve();
+          cancellation.abort();
+          await release.promise;
+        };
+        const receipt = enqueueSessionEventForHost("Cancelled fresh ingress", {
+          agentId: "main",
+          sessionKey,
+          source: "plugin",
+          expectedTarget: target,
+          createIfMissing: true,
+          abortSignal: cancellation.signal,
+        });
+        let accepted = false;
+        let settled = false;
+        void receipt.accepted.then(() => {
+          accepted = true;
+        });
+        void receipt.settled.then(() => {
+          settled = true;
+        });
+        try {
+          await withinTest(
+            awaitGateBeforeSettlement(
+              prepared.promise,
+              receipt.settled,
+              "event never prepared native storage",
+            ),
+            signal,
+          );
+          await Promise.resolve();
+          expect(accepted).toBe(false);
+          expect(settled).toBe(false);
+        } finally {
+          release.resolve();
+          delivery.afterPrepared = undefined;
+          await receipt.settled;
+        }
+        await expect(receipt.accepted).resolves.toMatchObject({ ok: false });
+        await expect(receipt.settled).resolves.toMatchObject({
+          status: "cancelled",
+          executionStarted: false,
+          delivered: false,
+        });
+        expect(dispatch).not.toHaveBeenCalled();
+      },
+      { empty: true, native: true },
+    );
+  });
+
+  it.each(["consume", "source-replaced", "next-attempt"] as const)(
+    "retains deferred notice custody after ordinary creation closes: %s",
+    async (boundary) => {
+      await withTargetFixture(
+        async (state) => {
+          const originalDirectory = state.path("original-store");
+          const replacementDirectory = state.path("replacement-store");
+          const alias = state.path("event-store");
+          await fs.mkdir(originalDirectory);
+          await fs.mkdir(replacementDirectory);
+          await fs.symlink(originalDirectory, alias, "junction");
+          const storePath = path.join(alias, "openclaw-agent.sqlite");
+          setRuntimeConfigSnapshot({
+            agents: { entries: { main: {} } },
+            session: { store: storePath },
+          });
+          const target = await captureSessionEventTargetForHost("main", sessionKey, {
+            env: state.env,
+          });
+          const prepared = await prepareSessionEventTargetForHost(target, {
+            createIfMissing: true,
+          });
+          let notices: Awaited<ReturnType<typeof prepareAutomationSystemEvents>> | undefined;
+          try {
+            enqueueAutomationSystemEvent(
+              "Deferred first notice",
+              { sessionKey },
+              {
+                jobId: "first-scheduled-turn",
+                assertCurrent: () => assertSessionEventTargetCurrent(target),
+                prepare: () => prepareSessionEventTargetForHost(target),
+              },
+            );
+            const selected = await prepareAutomationSystemEvents(
+              sessionKey,
+              "first-scheduled-turn",
+            );
+            notices = selected;
+            const scope = { agentId: "main", storePath, sessionKey };
+            const snapshot = await loadReplySessionInitializationSnapshot(scope);
+            const committed = await commitReplySessionInitialization({
+              ...scope,
+              activeSessionKey: sessionKey,
+              expectedRevision: snapshot.revision,
+              sessionEntry: {
+                sessionId: "scheduled-first-session",
+                lifecycleRevision: "first",
+                updatedAt: 1,
+              },
+              bindCreation: (operation) => {
+                const assertEvent = prepared.bindCreation(operation);
+                const assertNotices = selected.bindCreation(operation);
+                return () => {
+                  assertEvent();
+                  assertNotices();
+                };
+              },
+            });
+            expect(committed.ok).toBe(true);
+            expect(target).toMatchObject({
+              sessionId: "scheduled-first-session",
+              lifecycleRevision: "first",
+            });
+            if (boundary === "source-replaced") {
+              await fs.unlink(alias);
+              await fs.symlink(replacementDirectory, alias, "junction");
+              expect(() => selected.start()).toThrow("storage changed after capture");
+              expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toEqual([
+                "Deferred first notice",
+              ]);
+            } else if (boundary === "next-attempt") {
+              // beforeStart deferral releases attempt facts without consuming the queued notice.
+              selected.release();
+              const retry = await prepareAutomationSystemEvents(sessionKey, "first-scheduled-turn");
+              try {
+                expect(retry.events.map((event) => event.text)).toEqual(["Deferred first notice"]);
+                retry.start();
+                expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+              } finally {
+                retry.release();
+              }
+            } else {
+              selected.start();
+              expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+            }
+          } finally {
+            notices?.release();
+            prepared.release();
+          }
+        },
+        { empty: true, native: true },
+      );
+    },
+  );
+
+  it.each(["fresh", "retained", "revoked", "already-revoked", "foreign"] as const)(
+    "keeps cold capture read-only and prepares storage only for authorized fresh work: %s",
+    async (kind) => {
+      await withTargetFixture(
+        async ({ env }) => {
+          const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env });
+          const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+          expect(target.sessionId).toBe("");
+          await expect(fs.stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+          if (kind === "fresh") {
+            const prepared = await prepareSessionEventTargetForHost(target, {
+              createIfMissing: true,
+            });
+            try {
+              prepared.assertCurrent();
+              expect((await fs.stat(databasePath)).isFile()).toBe(true);
+              const next = await prepareSessionEventTargetForHost(target, {
+                createIfMissing: true,
+              });
+              next.release();
+              prepared.assertCurrent();
+            } finally {
+              prepared.release();
+            }
+            return;
+          }
+          if (kind === "foreign") {
+            openOpenClawAgentDatabase({ agentId: "main", env });
+          }
+          let current = kind !== "already-revoked";
+          const enqueue = () =>
+            enqueueSessionEventForHost("Fresh ingress", {
+              agentId: "main",
+              sessionKey,
+              source: "plugin",
+              expectedTarget: target,
+              createIfMissing: kind === "retained" ? undefined : true,
+              assertAcceptanceCurrent: () => {
+                if (!current) {
+                  throw new Error("Submitting ingress was revoked");
+                }
+              },
+            });
+          if (kind === "already-revoked") {
+            expect(enqueue).toThrow("Submitting ingress was revoked");
+            expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+            await expect(fs.stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+            return;
+          }
+          const receipt = enqueue();
+          current &&= kind !== "revoked";
+          const error =
+            kind === "retained"
+              ? /origin is missing/
+              : kind === "revoked"
+                ? /ingress was revoked/
+                : /storage changed/;
+          await expect(receipt.accepted).resolves.toMatchObject({
+            ok: false,
+            error: expect.stringMatching(error),
+          });
+          await expect(receipt.settled).resolves.toMatchObject({
+            status: "failed",
+            executionStarted: false,
+          });
+          expect(dispatch).not.toHaveBeenCalled();
+          if (kind !== "foreign") {
+            await expect(fs.stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+          }
+        },
+        { empty: true, native: kind === "fresh" },
+      );
+    },
+  );
   it("captures the original store, route and producer restrictions across asynchronous lookup", async () => {
     await withTargetFixture(async ({ env, path, storePath }) => {
       const suppliedEnv = { ...env };
@@ -350,6 +603,7 @@ describe("session event target custody", () => {
           executionStarted: false,
           delivered: false,
         });
+        await expect(receipt.accepted).resolves.toMatchObject({ ok: false });
         expect(receipt.cancel()).toBe(false);
         expect(gatewayWork.getGatewaySuspendAdmissionPhase()).toBe("prepared");
         expect(peekSystemEventEntries(sessionKey)).toEqual([]);

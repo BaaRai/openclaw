@@ -35,6 +35,7 @@ export function setCliRunnerExecuteTestDeps(overrides: Partial<typeof executeDep
 export const supervisorSpawnMock = vi.fn<SupervisorSpawnFn>();
 export const enqueueSessionEventMock = vi.fn<EnqueueSessionEventFn>(() => ({
   id: "cli-watchdog-event",
+  accepted: Promise.resolve({ ok: true }),
   cancel: () => true,
   settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
 }));

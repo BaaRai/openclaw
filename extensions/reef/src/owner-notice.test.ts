@@ -111,6 +111,7 @@ describe("createReefOwnerNoticeHandler", () => {
     vi.mocked(runtime.system.enqueueSessionEvent).mockReturnValue({
       id: "notice",
       cancel: vi.fn(),
+      accepted: Promise.resolve({ ok: true }),
       settled,
     });
     let finished = false;
@@ -128,6 +129,7 @@ describe("createReefOwnerNoticeHandler", () => {
       agentId: "main",
       sessionKey: "agent:main:reef:direct:alice",
       contextKey: "reef:owner:alice",
+      expectedTarget: expect.any(Object),
     });
     expect(runtime.system.enqueueSystemEvent).not.toHaveBeenCalled();
     settle({ status: "completed", executionStarted: true, delivered: true });
@@ -150,6 +152,7 @@ describe("createReefOwnerNoticeHandler", () => {
     vi.mocked(runtime.system.enqueueSessionEvent).mockReturnValue({
       id: "notice",
       cancel: vi.fn(),
+      accepted: Promise.resolve({ ok: true }),
       settled: Promise.resolve({
         status: "failed",
         executionStarted: false,

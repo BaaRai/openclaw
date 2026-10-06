@@ -2,7 +2,10 @@ import { isDeepStrictEqual } from "node:util";
 import { isMainThread } from "node:worker_threads";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycle-errors.js";
-import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
+import {
+  readDatabasePathIdentitySync,
+  type DatabasePathIdentity,
+} from "../../infra/sqlite-worker-identity.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { registerOpenClawAgentDatabaseReadCandidateResource } from "../../state/openclaw-agent-db-resources.js";
 import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
@@ -54,11 +57,18 @@ export {
   resolveSessionParentForkDecision,
 } from "./session-accessor.sqlite-parent-session.js";
 
+type SessionEntryDatabasePreparationSource = {
+  database: { agentId: string; path: string };
+  identity: DatabasePathIdentity;
+  selectedStore: { path: string; physicalPath: string };
+};
+
 /** Capture source custody before authority or physical-owner discovery yields. */
 function captureSessionEntryDatabasePreparation(
   scope: SessionAccessScope,
   assertCurrent: () => void,
   relatedScopes: readonly SessionAccessScope[] = [],
+  expectedSource?: SessionEntryDatabasePreparationSource,
 ) {
   const captureScope = (source: SessionAccessScope) => ({
     ...source,
@@ -78,6 +88,27 @@ function captureSessionEntryDatabasePreparation(
         Object.assign(candidate, { identity: readDatabasePathIdentitySync(candidate.path) }),
     ),
   );
+  const expected = expectedSource && {
+    database: { ...expectedSource.database },
+    identity: { ...expectedSource.identity },
+    selectedStore: { ...expectedSource.selectedStore },
+  };
+  if (expected) {
+    assertCurrent();
+    const selected = captureSessionStoreReadCandidate(expected.selectedStore.path);
+    if (
+      selected.path !== expected.selectedStore.path ||
+      selected.physicalPath !== expected.selectedStore.physicalPath ||
+      selected.physicalPath !== expected.database.path ||
+      !isDeepStrictEqual(readDatabasePathIdentitySync(selected.path), expected.identity)
+    ) {
+      throw new Error("Session creation lost its originally captured database source");
+    }
+    assertSessionStoreReadCandidate(selected.path, candidates);
+    if (!candidates.some((candidate) => candidate.path === selected.path && !candidate.scope)) {
+      candidates.push({ ...selected, identity: expected.identity });
+    }
+  }
   const releases: Array<() => void> = [];
   let active = true;
   let execution: OpenClawAgentDatabaseExecution | undefined;
@@ -90,6 +121,13 @@ function captureSessionEntryDatabasePreparation(
     }
     shared.admission.assertCurrent();
     execution?.assertCurrent();
+    if (
+      expected &&
+      captureSessionStoreReadCandidate(expected.selectedStore.path).physicalPath !==
+        expected.selectedStore.physicalPath
+    ) {
+      throw new Error("Session creation database alias changed during preparation");
+    }
     for (const candidate of candidates) {
       const isCreating = candidate.path === creatingPath || candidate.physicalPath === creatingPath;
       const isPrepared = candidate.path === preparedPath || candidate.physicalPath === preparedPath;
@@ -164,6 +202,14 @@ function captureSessionEntryDatabasePreparation(
       assertHeld();
       const options = { ...toDatabaseOptions(resolved), path: resolved.path };
       if (
+        expected &&
+        (options.agentId !== expected.database.agentId ||
+          options.path !== expected.selectedStore.path ||
+          captureSessionStoreReadCandidate(options.path).physicalPath !== expected.database.path)
+      ) {
+        throw new Error("Session creation resolved a different database source");
+      }
+      if (
         !isMainThread ||
         !supportsOpenClawAgentDatabaseExecution(options) ||
         hasPreparedNativeSessionDeletion()
@@ -222,6 +268,7 @@ export function prepareSessionEntryMutationDatabases(
     scope: SessionAccessScope;
     assertCurrent: () => void;
     relatedScopes?: readonly SessionAccessScope[];
+    expectedSource?: SessionEntryDatabasePreparationSource;
   }[],
   ready: Promise<void>,
 ) {
@@ -241,6 +288,7 @@ export function prepareSessionEntryMutationDatabases(
           target.scope,
           target.assertCurrent,
           target.relatedScopes,
+          target.expectedSource,
         ),
       };
     } catch (reason) {

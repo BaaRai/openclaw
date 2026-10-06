@@ -3,7 +3,8 @@ import {
   errorShape,
   validateWakeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
+import { resolveSessionRoutingContract } from "../../config/sessions/main-session.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { isSubagentSessionKey, normalizeAgentId } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
@@ -11,7 +12,10 @@ import {
   resolveAgentHarnessSessionStoreEntryError,
 } from "../../sessions/agent-harness-session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
-import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
+import {
+  authorizeCurrentOperatorRoleScopes,
+  authorizeGatewaySessionCreation,
+} from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { assertActiveAgentRuntimeAuthority } from "./agent-runtime-authority.js";
@@ -41,7 +45,6 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
   const agentId = p.agentId?.trim() || undefined;
   const callerScope = readCronCallerScope(client);
   const cfg = context.getRuntimeConfig();
-  const configPublication = getRuntimeConfigSnapshotMetadata();
   const requestedOwner = sessionKey
     ? resolveRequestedSessionAgentId(cfg, sessionKey, agentId ?? callerScope?.agentId)
     : undefined;
@@ -100,8 +103,17 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
   if (respondRefusedCronAgent(resolvedAgentId, respond)) {
     return;
   }
+  const routingContract = resolveSessionRoutingContract(cfg);
+  const storeOwner = resolvedAgentId ?? context.cron.getDefaultAgentId();
+  const storePath = storeOwner
+    ? resolveSessionStorePathCore(cfg.session?.store, { agentId: storeOwner })
+    : undefined;
   const authorizeWake = () => {
     const currentConfig = context.getRuntimeConfig();
+    const scopeError = authorizeCurrentOperatorRoleScopes(client, currentConfig);
+    if (scopeError) {
+      return scopeError;
+    }
     if (!currentConfig.gateway?.roles) {
       return undefined;
     }
@@ -126,9 +138,16 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
       throw new Error("Gateway caller authority is no longer active");
     }
     assertActiveAgentRuntimeAuthority(client, context);
+    const currentConfig = context.getRuntimeConfig();
+    const currentOwner = resolvedAgentId
+      ? resolveRequestedSessionAgentId(currentConfig, sessionKey, resolvedAgentId)
+      : undefined;
     if (
-      context.getRuntimeConfig() !== cfg ||
-      getRuntimeConfigSnapshotMetadata() !== configPublication
+      resolveSessionRoutingContract(currentConfig) !== routingContract ||
+      currentOwner?.ok === false ||
+      (storeOwner &&
+        resolveSessionStorePathCore(currentConfig.session?.store, { agentId: storeOwner }) !==
+          storePath)
     ) {
       throw new Error("Wake configuration changed during preparation; retry the request");
     }
@@ -142,6 +161,7 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
   const result = await context.cron.wake({
     mode: p.mode,
     text: p.text,
+    createIfMissing: true,
     ...(sessionKey ? { sessionKey } : {}),
     ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
     commitGuard,

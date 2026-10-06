@@ -4,6 +4,7 @@ import type { SessionEventTarget } from "../auto-reply/reply/session-event-contr
 import {
   assertSessionEventTargetCurrent,
   captureSessionEventTargetForHost,
+  enqueueSessionEventForHost,
   prepareSessionEventTargetForHost,
 } from "../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../config/io.js";
@@ -29,7 +30,10 @@ import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { assertAgentDatabaseAdmitted } from "../state/agent-database-admission.js";
 
 /** Resolve and admit scheduler events against the current roster and canonical session owner. */
-export function createGatewayCronTargetResolver(env: NodeJS.ProcessEnv) {
+export function createGatewayCronTargetResolver(
+  env: NodeJS.ProcessEnv,
+  log: Pick<ReturnType<typeof import("../logging/logger.js").getChildLogger>, "warn">,
+) {
   const resolveCronAgent = (requested?: string | null) => {
     const runtimeConfig = getRuntimeConfig();
     const normalized =
@@ -135,6 +139,7 @@ export function createGatewayCronTargetResolver(env: NodeJS.ProcessEnv) {
     expectedTarget,
     assertCurrent,
     coalescing,
+    createIfMissing,
   ) => {
     const { agentId, sessionKey } = resolveCronTarget({
       agentId: job.agentId,
@@ -183,22 +188,47 @@ export function createGatewayCronTargetResolver(env: NodeJS.ProcessEnv) {
       );
       coalescing?.onOutcome(outcome);
     };
-    const admit = coalescing
-      ? async (target: SessionEventTarget) => {
-          const prepared = await prepareSessionEventTargetForHost(target);
-          try {
-            prepared.assertCurrent();
-            enqueue(target);
-          } finally {
-            prepared.release();
-          }
-        }
-      : enqueue;
+    const admit = async (target: SessionEventTarget) => {
+      if (!target.sessionId && !createIfMissing) {
+        throw new Error("Deferred session event origin no longer exists");
+      }
+      const prepared = await prepareSessionEventTargetForHost(target, {
+        createIfMissing,
+        assertAcceptanceCurrent: assertCurrent,
+      });
+      try {
+        prepared.assertCurrent();
+        enqueue(target);
+      } finally {
+        prepared.release();
+      }
+    };
     if (expectedTarget) {
       return admit(expectedTarget);
     }
-    return captureSessionEventTargetForHost(agentId, sessionKey, { env }).then(admit);
+    return captureSessionEventTargetForHost(agentId, sessionKey, {
+      env,
+      assertCaptureCurrent: assertCurrent,
+    }).then(admit);
   };
 
-  return { resolveCronAgent, resolveCronTarget, deferSessionEvent };
+  const enqueueSessionEvent: NonNullable<CronServiceDeps["enqueueSessionEvent"]> = (text, opts) => {
+    const { agentId, sessionKey } = resolveCronTarget(opts);
+    if (!agentId || !sessionKey) {
+      throw new Error("Session event has no configured owner");
+    }
+    const receipt = enqueueSessionEventForHost(text, {
+      ...opts,
+      agentId,
+      sessionKey,
+      source: "cron",
+    });
+    void receipt.settled.then((result) => {
+      if (result.status !== "completed") {
+        log.warn({ result }, "Session event did not complete");
+      }
+    });
+    return receipt.accepted;
+  };
+  return { resolveCronAgent, resolveCronTarget, deferSessionEvent, enqueueSessionEvent };
 }

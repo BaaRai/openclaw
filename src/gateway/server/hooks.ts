@@ -263,39 +263,38 @@ export function createGatewayHookDispatcher(params: {
       resolvedAgentId: agentId,
       sessionKey: value.sessionKey,
     });
-    if (value.mode === "next-heartbeat") {
-      const changedConfig = new Error("Hook configuration changed during deferred wake admission");
-      const commitGuard = () => {
-        if (isHooksConfigCurrent?.() === false) {
-          throw changedConfig;
-        }
-      };
-      try {
-        commitGuard();
-        const expectedTarget = await captureSessionEventTargetForHost(
-          target.agentId,
-          target.eventSessionKey,
-        );
-        commitGuard();
+    const changedConfig = new Error("Hook configuration changed during wake admission");
+    // The HTTP guard publishes its refusal; do not invoke it twice after revocation.
+    let configChanged = false;
+    const assertAcceptanceCurrent = () => {
+      if (configChanged || isHooksConfigCurrent?.() === false) {
+        configChanged = true;
+        throw changedConfig;
+      }
+    };
+    let expectedTarget: SessionEventTarget;
+    try {
+      assertAcceptanceCurrent();
+      expectedTarget = await captureSessionEventTargetForHost(
+        target.agentId,
+        target.eventSessionKey,
+        { assertCaptureCurrent: assertAcceptanceCurrent },
+      );
+      assertAcceptanceCurrent();
+      if (value.mode === "next-heartbeat") {
         return await deferHookEvent({
           text: value.text,
           agentId: target.agentId,
           expectedTarget,
-          commitGuard,
+          createIfMissing: true,
+          commitGuard: assertAcceptanceCurrent,
         });
-      } catch (error) {
-        if (error === changedConfig) {
-          return null;
-        }
-        throw error;
       }
-    }
-    const expectedTarget = await captureSessionEventTargetForHost(
-      target.agentId,
-      target.eventSessionKey,
-    );
-    if (isHooksConfigCurrent?.() === false) {
-      return null;
+    } catch (error) {
+      if (error === changedConfig) {
+        return null;
+      }
+      throw error;
     }
     const eventOptions = withSystemEventOwner(
       { sessionKey: target.eventSessionKey, deliveryContext: expectedTarget.deliveryContext },
@@ -312,7 +311,14 @@ export function createGatewayHookDispatcher(params: {
         source: "hook",
         occurrence,
         expectedTarget,
+        createIfMissing: true,
+        assertAcceptanceCurrent,
       });
+      const accepted = await receipt.accepted;
+      if (!accepted.ok) {
+        assertAcceptanceCurrent();
+        throw new HookWakeUnavailableError(accepted.error);
+      }
       void receipt.settled.then((outcome) => {
         if (outcome.status !== "completed") {
           logHooks.warn(
@@ -326,6 +332,9 @@ export function createGatewayHookDispatcher(params: {
       });
     } catch (error) {
       consumeSelectedSystemEventEntries(eventOptions.sessionKey, [occurrence]);
+      if (error === changedConfig) {
+        return null;
+      }
       throw error;
     }
     return { eventOutcome: "queued" } as const;

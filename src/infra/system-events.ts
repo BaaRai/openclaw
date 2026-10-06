@@ -6,6 +6,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import type { SessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -60,6 +61,7 @@ const SYSTEM_EVENT_QUEUES_KEY = Symbol.for("openclaw.systemEvents.queues");
 
 type PreparedAutomationNotice = {
   assertCurrent: () => void;
+  bindCreation?: (operation: SessionEntryCreationOperation) => () => void;
   release: () => void;
 };
 type AutomationNoticeOwner = {
@@ -358,14 +360,15 @@ export async function prepareAutomationSystemEvents(sessionKey: string, jobId: s
       (event) => turnOwners.get(event)?.automation?.jobId === jobId,
     ) ?? [];
   const leases: PreparedAutomationNotice[] = [];
+  let creationChecks: Array<() => void> | undefined;
   const release = () => {
     for (const lease of leases.splice(0)) {
       lease.release();
     }
   };
   const assertCurrent = () => {
-    for (const lease of leases) {
-      lease.assertCurrent();
+    for (const assertLeaseCurrent of creationChecks ?? leases.map((lease) => lease.assertCurrent)) {
+      assertLeaseCurrent();
     }
     for (const event of selected) {
       if (!getSessionQueue(sessionKey)?.queue.includes(event)) {
@@ -404,6 +407,16 @@ export async function prepareAutomationSystemEvents(sessionKey: string, jobId: s
     events: selected.map(cloneSystemEvent),
     assertCurrent,
     release,
+    bindCreation(operation: SessionEntryCreationOperation) {
+      assertCurrent();
+      if (creationChecks) {
+        throw new Error("Deferred automation notices already belong to a creation operation");
+      }
+      creationChecks = leases.map(
+        (lease) => lease.bindCreation?.(operation) ?? lease.assertCurrent,
+      );
+      return assertCurrent;
+    },
     start() {
       assertCurrent();
       for (const event of selected) {

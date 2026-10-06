@@ -9,6 +9,8 @@ import {
 import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import type { SessionEntryReadSourcePreparation } from "../../config/sessions/session-entry-read-runtime.types.js";
+import { captureSessionStoreReadCandidate } from "../../config/sessions/session-store-read-candidates.js";
 import {
   intersectSessionToolOverrides,
   sessionToolOverridesEqual,
@@ -18,6 +20,7 @@ import {
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import {
   normalizeAgentId,
   parseAgentSessionKey,
@@ -27,9 +30,28 @@ import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import type { SessionEventTarget } from "./session-event-contract.js";
 
+type CapturedEventSource = {
+  database: Parameters<SessionEntryReadSourcePreparation>[0];
+  identity: Parameters<SessionEntryReadSourcePreparation>[1];
+  selectedStore: { path: string; physicalPath: string };
+};
+
+function assertCapturedEventSource(source: CapturedEventSource) {
+  const identity = readDatabasePathIdentitySync(source.database.path);
+  if (
+    identity.key !== source.identity.key ||
+    identity.birthtime !== source.identity.birthtime ||
+    captureSessionStoreReadCandidate(source.selectedStore.path).physicalPath !==
+      source.selectedStore.physicalPath
+  ) {
+    throw new Error("Session event destination storage changed after capture");
+  }
+}
+
 const targetScopes = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionEvents.targetScopes"),
-  () => new WeakMap<SessionEventTarget, { env?: NodeJS.ProcessEnv }>(),
+  () =>
+    new WeakMap<SessionEventTarget, { env?: NodeJS.ProcessEnv; source?: CapturedEventSource }>(),
 );
 
 export function getSessionEventRuntimeConfig() {
@@ -63,8 +85,14 @@ export function resolveSessionEventKey(agentId: string, sessionKey: string) {
 export async function captureSessionEventTargetForHost(
   requestedAgentId: string,
   requestedSessionKey: string,
-  options: { env?: NodeJS.ProcessEnv; assertCurrent?: () => void } = {},
+  options: {
+    env?: NodeJS.ProcessEnv;
+    assertCurrent?: () => void;
+    /** Submitting invocation authority ends after capture/acceptance, not event settlement. */
+    assertCaptureCurrent?: () => void;
+  } = {},
 ): Promise<SessionEventTarget> {
+  options.assertCaptureCurrent?.();
   options.assertCurrent?.();
   const agentId = normalizeAgentId(requestedAgentId);
   const sessionKey = resolveSessionEventKey(agentId, requestedSessionKey);
@@ -88,6 +116,7 @@ export async function captureSessionEventTargetForHost(
       ? await prepareGatewayToolCallerAssertion()
       : undefined;
   const assertCaptureCurrent = () => {
+    options.assertCaptureCurrent?.();
     options.assertCurrent?.();
     assertAgentRunLifecycleGenerationCurrent(generation);
     if (!callerAgentMatches || !caller) {
@@ -106,16 +135,30 @@ export async function captureSessionEventTargetForHost(
     assertCaptureCurrent();
     const { withSessionEntryReadOnlyInWorker } =
       await import("../../config/sessions/session-entry-read-runtime.js");
+    let source: CapturedEventSource | undefined;
+    let preparedSource: Pick<CapturedEventSource, "database" | "identity"> | undefined;
     const entry = await withSessionEntryReadOnlyInWorker(
       { agentId, storePath, sessionKey, env },
       assertCaptureCurrent,
-      async (read) => {
+      async (read, owner) => {
         if (!read.ok) {
           throw read.error;
         }
+        if (preparedSource && owner.selectedStore) {
+          source = { ...preparedSource, selectedStore: { ...owner.selectedStore } };
+        }
         return read.value;
       },
+      (database, identity) => {
+        preparedSource = {
+          database: { ...database, env: { ...database.env } },
+          identity: { ...identity },
+        };
+      },
     );
+    if (source) {
+      assertCapturedEventSource(source);
+    }
     let toolsAllow: string[] | undefined;
     if (caller && callerAgentMatches) {
       assertCaptureCurrent();
@@ -148,7 +191,7 @@ export async function captureSessionEventTargetForHost(
           })
         : undefined,
     };
-    targetScopes.set(target, { env });
+    targetScopes.set(target, { env, source });
     return target;
   } finally {
     preparedCaller?.release();
@@ -177,29 +220,143 @@ export function assertSessionEventTargetCurrent(target: SessionEventTarget): voi
 }
 
 /** Deferred producers retain snapshots; only admitted consumption holds live generation facts. */
-export async function prepareSessionEventTargetForHost(target: SessionEventTarget) {
+export async function prepareSessionEventTargetForHost(
+  target: SessionEventTarget,
+  options: { createIfMissing?: true; assertAcceptanceCurrent?: () => void } = {},
+) {
   assertSessionEventTargetCurrent(target);
   if (!target.agentId || !target.sessionKey || !target.storePath) {
     throw new Error("Session event target has no captured destination");
   }
   const { prepareSessionGenerationFacts } =
     await import("../../config/sessions/session-delivery-generation.js");
-  const lease = await prepareSessionGenerationFacts({
-    agentId: target.agentId,
-    storePath: target.storePath,
-    sessionKey: target.sessionKey,
-    sessionId: target.sessionId || null,
-    lifecycleRevision: target.lifecycleRevision ?? null,
-  });
-  const assertCurrent = () => {
+  const source = targetScopes.get(target)?.source;
+  const assertAcceptance = () => {
+    options.assertAcceptanceCurrent?.();
     assertSessionEventTargetCurrent(target);
+  };
+  const assertSource = () => {
+    if (source) {
+      assertCapturedEventSource(source);
+    }
+  };
+  assertAcceptance();
+  assertSource();
+  let preparation:
+    | ReturnType<
+        typeof import("../../config/sessions/session-accessor.entry-mutation.js").prepareSessionEntryMutationDatabases
+      >
+    | undefined;
+  if (!target.sessionId && options.createIfMissing) {
+    if (!source) {
+      throw new Error("Fresh session event has no captured physical storage owner");
+    }
+    const { prepareSessionEntryMutationDatabases } =
+      await import("../../config/sessions/session-accessor.entry-mutation.js");
+    assertAcceptance();
+    preparation = prepareSessionEntryMutationDatabases(
+      [
+        {
+          scope: {
+            agentId: target.agentId,
+            storePath: target.storePath,
+            sessionKey: target.sessionKey,
+            env: source.database.env,
+          },
+          assertCurrent: assertAcceptance,
+          expectedSource: source,
+        },
+      ],
+      Promise.resolve(),
+    );
+  }
+  let lease: Awaited<ReturnType<typeof prepareSessionGenerationFacts>> | undefined;
+  let preparedSource = source;
+  try {
+    try {
+      const prepared = await preparation?.preparations[0];
+      assertAcceptance();
+      prepared?.assertCurrent();
+      if (!prepared) {
+        assertSource();
+      } else if (source?.identity.key.startsWith("path:")) {
+        const accepted = prepared.execution?.fileIdentity;
+        if (!accepted || typeof accepted.birthtime !== "string") {
+          throw new Error("Fresh session event has no accepted physical storage identity");
+        }
+        preparedSource = {
+          ...source,
+          identity: {
+            ...source.identity,
+            key: `file:${accepted.physicalIdentity}`,
+            birthtime: accepted.birthtime,
+          },
+        };
+      }
+      lease = await prepareSessionGenerationFacts({
+        agentId: target.agentId,
+        storePath: source?.database.path ?? target.storePath,
+        sessionKey: target.sessionKey,
+        sessionId: target.sessionId || null,
+        lifecycleRevision: target.lifecycleRevision ?? null,
+        env: source?.database.env,
+      });
+      prepared?.assertCurrent();
+      assertAcceptance();
+      if (preparedSource) {
+        assertCapturedEventSource(preparedSource);
+      }
+    } finally {
+      await preparation?.[Symbol.asyncDispose]();
+    }
+    assertAcceptance();
+    if (preparedSource) {
+      assertCapturedEventSource(preparedSource);
+    }
     lease.assertCurrent();
+    // Only canonical native preparation can advance captured physical absence.
+    if (preparedSource !== source) {
+      const captured = targetScopes.get(target);
+      if (captured?.source !== source) {
+        throw new Error("Session event storage was already prepared by another admission");
+      }
+      targetScopes.set(target, { ...captured, source: preparedSource });
+    }
+  } catch (error) {
+    lease?.release();
+    throw error;
+  }
+  const retained = lease;
+  const assertTargetCurrent = () => {
+    assertSessionEventTargetCurrent(target);
+    if (preparedSource) {
+      assertCapturedEventSource(preparedSource);
+    }
+  };
+  const assertCurrent = () => {
+    assertTargetCurrent();
+    retained.assertCurrent();
   };
   try {
     assertCurrent();
-    return { ...lease, assertCurrent };
+    return {
+      ...retained,
+      assertCurrent,
+      bindCreation: (operation: Parameters<typeof retained.bindCreation>[0]) => {
+        assertTargetCurrent();
+        const assertCreationCurrent = retained.bindCreation(operation, (binding) => {
+          // Deferred notices retain this committed origin when an attempt stops before model start.
+          target.sessionId = binding.sessionId;
+          target.lifecycleRevision = binding.lifecycleRevision;
+        });
+        return () => {
+          assertTargetCurrent();
+          assertCreationCurrent();
+        };
+      },
+    };
   } catch (error) {
-    lease.release();
+    retained.release();
     throw error;
   }
 }

@@ -53,6 +53,7 @@ beforeEach(() => {
     return {
       id: "hook-event",
       cancel: () => false,
+      accepted: Promise.resolve({ ok: true }),
       settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
     };
   });
@@ -509,6 +510,8 @@ describe("gateway server hooks", () => {
         );
         if (mode === "now") {
           expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("Direct wake", {
+            createIfMissing: true,
+            assertAcceptanceCurrent: expect.any(Function),
             agentId: "main",
             sessionKey: "agent:main:hook:wake:direct",
             source: "hook",
@@ -537,6 +540,8 @@ describe("gateway server hooks", () => {
         expect(mappedEvents.map((event) => event.text)).toEqual(["Mapped wake: Email"]);
         if (mode === "now") {
           expect(enqueueSessionEvent).toHaveBeenCalledExactlyOnceWith("Mapped wake: Email", {
+            createIfMissing: true,
+            assertAcceptanceCurrent: expect.any(Function),
             agentId: "hooks",
             sessionKey: "agent:hooks:hook:wake:fixed",
             source: "hook",

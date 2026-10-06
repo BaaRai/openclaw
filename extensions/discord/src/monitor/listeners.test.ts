@@ -7,6 +7,7 @@ import {
   PresenceUpdateStatus,
   type GatewayThreadUpdateDispatchData,
 } from "discord-api-types/v10";
+import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { reportChannelRoomJoin } from "openclaw/plugin-sdk/channel-join-intro-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -39,15 +40,21 @@ vi.mock("./thread-bindings.manager.js", () => ({
 
 const mocks = vi.hoisted(() => ({
   reportChannelRoomJoin: vi.fn(async () => ({ kind: "posted" as const })),
-  enqueueSessionEvent: vi.fn((_text: unknown, _options: Record<string, unknown>) => ({
-    id: "presence",
-    cancel: vi.fn(),
-    settled: Promise.resolve({
-      status: "completed" as const,
-      executionStarted: true,
-      delivered: true,
+  enqueueSessionEvent: vi.fn(
+    (
+      _text: unknown,
+      _options: Record<string, unknown>,
+    ): ReturnType<PluginRuntime["system"]["enqueueSessionEvent"]> => ({
+      id: "presence",
+      cancel: vi.fn(),
+      accepted: Promise.resolve({ ok: true as const }),
+      settled: Promise.resolve({
+        status: "completed" as const,
+        executionStarted: true,
+        delivered: true,
+      }),
     }),
-  })),
+  ),
   captureSessionEventTarget: vi.fn(async () => ({ sessionId: "captured-session" })),
   resolveAgentRoute: vi.fn(() => ({
     agentId: "molty",
@@ -619,9 +626,21 @@ describe("Discord guild join introductions", () => {
 });
 
 describe("DiscordPresenceListener", () => {
-  it("retries when the queue rejects an event", async () => {
+  it.each(["enqueue", "acceptance"])("retries when %s rejects an event", async (stage) => {
     mocks.enqueueSessionEvent.mockImplementationOnce(() => {
-      throw new Error("session-event admission refused");
+      if (stage === "enqueue") {
+        throw new Error("session-event admission refused");
+      }
+      return {
+        id: "refused",
+        cancel: vi.fn(),
+        accepted: Promise.resolve({ ok: false as const, error: "session-event admission refused" }),
+        settled: Promise.resolve({
+          status: "failed" as const,
+          executionStarted: false,
+          delivered: false,
+        }),
+      };
     });
     const store = cooldownStore();
     const registerIfAbsent = vi.spyOn(store, "registerIfAbsent");
@@ -643,6 +662,7 @@ describe("DiscordPresenceListener", () => {
       expect.stringContaining('user_id="user-1"'),
       expect.objectContaining({
         ...route,
+        createIfMissing: true,
         deliveryContext: { ...destination, channel: "discord" },
       }),
     );

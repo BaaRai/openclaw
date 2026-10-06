@@ -331,14 +331,19 @@ export const systemHandlers: GatewayRequestHandlers = {
         return;
       }
     }
+    const assertAcceptanceCurrent = () => {
+      authority.assertCurrent();
+      if (cfg !== context.getRuntimeConfig()) {
+        throw new Error("System event configuration changed during admission; retry the request");
+      }
+    };
     const eventTarget =
       wake && eventOwnerAgentId
-        ? await captureSessionEventTargetForHost(eventOwnerAgentId, sessionKey)
+        ? await captureSessionEventTargetForHost(eventOwnerAgentId, sessionKey, {
+            assertCaptureCurrent: assertAcceptanceCurrent,
+          })
         : undefined;
-    authority.assertCurrent();
-    if (cfg !== context.getRuntimeConfig()) {
-      throw new Error("System event configuration changed during admission; retry the request");
-    }
+    assertAcceptanceCurrent();
     const reason = params.reason;
     const lastInputSeconds = params.tags?.includes(SYSTEM_PRESENCE_CLEAR_LAST_INPUT_TAG)
       ? null
@@ -416,12 +421,18 @@ export const systemHandlers: GatewayRequestHandlers = {
         }
       }
     } else if (wake && eventOwnerAgentId && eventTarget) {
-      enqueueSessionEventForHost(text, {
+      const receipt = enqueueSessionEventForHost(text, {
         source: "session",
         agentId: eventOwnerAgentId,
         sessionKey,
         expectedTarget: eventTarget,
+        createIfMissing: requestedSessionKey ? undefined : true,
+        assertAcceptanceCurrent,
       });
+      const accepted = await receipt.accepted;
+      if (!accepted.ok) {
+        throw new Error(accepted.error);
+      }
     } else {
       const eventOptions = { sessionKey };
       enqueueSystemEventWithReceipt(

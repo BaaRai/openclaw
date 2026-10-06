@@ -479,6 +479,7 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
       try {
         receipt = system.enqueueSessionEvent(presenceEvent.text, {
           expectedTarget,
+          createIfMissing: true,
           agentId: route.agentId,
           sessionKey: route.sessionKey,
           contextKey: `discord:presence-online:${this.params.accountId}:${data.guild_id}:${userId}`,
@@ -488,6 +489,10 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
             accountId: this.params.accountId,
           },
         });
+        const accepted = await receipt.accepted;
+        if (!accepted.ok) {
+          throw new Error(accepted.error);
+        }
       } catch (error) {
         (this.params.logger ?? discordEventQueueLog).warn(
           danger(`discord presence admission failed: ${String(error)}`),

@@ -38,6 +38,7 @@ const captureTarget = createPluginRuntimeMock().system.captureSessionEventTarget
 function completedReceipt(..._args: unknown[]) {
   return {
     id: "presence",
+    accepted: Promise.resolve({ ok: true as const }),
     cancel: vi.fn(),
     settled: Promise.resolve({
       status: "completed" as const,

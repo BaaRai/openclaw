@@ -56,6 +56,7 @@ import {
   registerGatewayCronHandoffTests,
   registerGatewayCronReceiptTests,
 } from "./server-cron.receipts.test-support.js";
+import { registerGatewayCronWakeTests } from "./server-cron.wake.test-support.js";
 
 type RunCronIsolatedAgentTurnMock = (params: {
   abortSignal?: AbortSignal;
@@ -85,6 +86,7 @@ const {
   systemEventReceiptRemoveMock: vi.fn(() => true),
   enqueueSessionEventMock: vi.fn((..._args: unknown[]) => ({
     id: "event",
+    accepted: Promise.resolve({ ok: true as const }),
     cancel: () => true,
     settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
   })),
@@ -3051,93 +3053,7 @@ describe("buildGatewayCronService", () => {
     });
   });
 
-  it("routes relative wake session keys to the configured default agent", () => {
-    const cfg = createCronConfig("server-cron-relative-default");
-    cfg.agents = { entries: { primary: { model: "test/primary" } } };
-    const state = loadCronService(cfg);
-    try {
-      expect(
-        state.cron.wake({ mode: "now", text: "hello", sessionKey: "discord:channel:ops" }),
-      ).toEqual({ ok: true });
-      expect(enqueueSessionEventMock).toHaveBeenCalledExactlyOnceWith(
-        "hello",
-        expect.objectContaining({
-          source: "cron",
-          agentId: "primary",
-          sessionKey: "agent:primary:discord:channel:ops",
-        }),
-      );
-    } finally {
-      state.cron.stop();
-    }
-  });
-
-  it("rejects unknown agent-prefixed keys instead of rebinding them to the default agent", () => {
-    const cfg = createCronConfig("server-cron-unknown-agent");
-    cfg.agents = {
-      entries: {
-        primary: { model: "test/primary" },
-        ops: { model: "test/ops" },
-      },
-    };
-    const state = loadCronService(cfg);
-    try {
-      expect(() =>
-        state.cron.wake({
-          mode: "now",
-          text: "hello",
-          sessionKey: "agent:ghost:discord:channel:ops",
-        }),
-      ).toThrow("cron job agent is unavailable: ghost");
-      expect(enqueueSessionEventMock).not.toHaveBeenCalled();
-    } finally {
-      state.cron.stop();
-    }
-  });
-
-  it("threads cron wake sessionKey through the CronService adapter", () => {
-    const cfg = createCronConfig("server-cron-wake-service");
-    cfg.agents = { entries: { primary: {}, ops: {} } };
-    const state = loadCronService(cfg);
-    try {
-      const sessionKey = "agent:ops:cron:nightly:run:abc-123";
-      expect(state.cron.wake({ mode: "now", text: "hello", sessionKey })).toEqual({ ok: true });
-      expect(enqueueSessionEventMock).toHaveBeenCalledExactlyOnceWith(
-        "hello",
-        expect.objectContaining({
-          source: "cron",
-          agentId: "ops",
-          sessionKey,
-        }),
-      );
-    } finally {
-      state.cron.stop();
-    }
-  });
-
-  it("routes a targetless cron wake through the configured system agent", () => {
-    const cfg = {
-      ...createCronConfig("server-cron-system-owner-wake"),
-      agents: {
-        defaults: { systemAgent: { agentId: "ops" } },
-        entries: { main: {}, ops: {} },
-      },
-    } satisfies OpenClawConfig;
-    const state = loadCronService(cfg);
-    try {
-      expect(state.cron.wake({ mode: "now", text: "system wake" })).toEqual({ ok: true });
-      expect(enqueueSessionEventMock).toHaveBeenCalledExactlyOnceWith(
-        "system wake",
-        expect.objectContaining({
-          agentId: "ops",
-          sessionKey: "agent:ops:main",
-          source: "cron",
-        }),
-      );
-    } finally {
-      state.cron.stop();
-    }
-  });
+  registerGatewayCronWakeTests({ createCronConfig, loadCronService, enqueueSessionEventMock });
 
   it("forwards cron system events to the resolved session", () => {
     const cfg = createCronConfig("server-cron-system-event");

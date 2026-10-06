@@ -51,4 +51,5 @@ export type NodeEventHandleResult = {
 export type NodeEventConnectionOptions = {
   connId?: string;
   isConnectionCurrent?: () => boolean | Promise<boolean>;
+  assertSessionEventCurrent?: () => void;
 };

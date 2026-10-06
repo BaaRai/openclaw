@@ -971,6 +971,7 @@ describe("cron method validation", () => {
     const { context, respond } = await invokeWake({ mode: "now", text: "ping", sessionKey });
     expect(context.cron.wake).toHaveBeenCalledWith({
       commitGuard: expect.any(Function),
+      createIfMissing: true,
       agentId: "main",
       mode: "now",
       text: "ping",
@@ -2671,7 +2672,11 @@ describe("cron method validation", () => {
         params,
         caller ? callerClient(caller) : undefined,
       );
-      const expectedWake = { ...expected, commitGuard: expect.any(Function) };
+      const expectedWake = {
+        ...expected,
+        commitGuard: expect.any(Function),
+        createIfMissing: true,
+      };
       expect(context.cron.wake).toHaveBeenCalledWith(expectedWake);
       expect(context.cron.prepareWake).toHaveBeenCalledOnce();
       expect(context.cron.prepareWake.mock.invocationCallOrder[0]).toBeLessThan(

@@ -6,13 +6,19 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionEventReceipt } from "../../auto-reply/reply/session-event-contract.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { peekSystemEvents, resetSystemEventsForTest } from "../../infra/system-events.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { resolveHooksConfig } from "../hooks.js";
 
 const mocks = vi.hoisted(() => ({
-  enqueueSessionEvent: vi.fn((_text: string, _options: unknown) => ({
-    settled: Promise.resolve({ status: "completed" }),
+  enqueueSessionEvent: vi.fn((_text: string, _options: unknown): SessionEventReceipt => ({
+    id: "hook-event",
+    cancel: () => false,
+    accepted: Promise.resolve({ ok: true }),
+    settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: false }),
   })),
   captureSessionEventTarget: vi.fn(async (agentId: string, sessionKey: string) => ({
     agentId,
@@ -102,6 +108,42 @@ async function post(
 describe("hook background admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetSystemEventsForTest();
+  });
+
+  it.each([true, false])("returns wake success only after acceptance succeeds: %s", async (ok) => {
+    mocks.getRuntimeConfig.mockReturnValue(config);
+    const entered = createDeferredCore();
+    const acceptance = createDeferredCore<Awaited<SessionEventReceipt["accepted"]>>();
+    mocks.enqueueSessionEvent.mockImplementationOnce(() => {
+      entered.resolve(undefined);
+      return {
+        id: "pending-wake",
+        cancel: () => false,
+        accepted: acceptance.promise,
+        settled: Promise.resolve({
+          status: ok ? "completed" : "failed",
+          executionStarted: ok,
+          delivered: false,
+        }),
+      };
+    });
+    let responded = false;
+    const pending = post(createHandler(100), "/hooks/wake", {
+      text: "Fresh wake",
+      mode: "now",
+    }).then((result) => {
+      responded = true;
+      return result;
+    });
+    await entered.promise;
+    expect(responded).toBe(false);
+    acceptance.resolve(ok ? { ok: true } : { ok: false, error: "target replaced" });
+    const response = await pending;
+    expect(response.res.statusCode).toBe(ok ? 200 : 503);
+    if (!ok) {
+      expect(peekSystemEvents("agent:main:main")).toEqual([]);
+    }
   });
 
   it("admits slow fan-out items past the bounded deadline instead of canceling them", async () => {

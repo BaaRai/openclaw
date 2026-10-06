@@ -1,6 +1,7 @@
 /** Host-owned event admission and settlement contracts; no live reply/Gateway imports. */
 import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import type { MessagingToolSend } from "../../agents/embedded-agent-messaging.types.js";
+import type { SessionEntryCreationOperation } from "../../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { CronStoredJob } from "../../cron/types.js";
 import type {
@@ -36,6 +37,7 @@ export type SessionEventOutcome = {
 export type SessionEventReceipt = {
   id: string;
   cancel: () => boolean;
+  accepted: Promise<{ ok: true } | { ok: false; error: string }>;
   settled: Promise<SessionEventOutcome>;
 };
 
@@ -66,6 +68,8 @@ export type ScheduledSessionAutomation = {
   assertCurrent: () => void;
   /** Refresh durable occurrence authority before admission or an asynchronous effect. */
   prepare?: () => Promise<void>;
+  /** Selected absent notices share the receiver's exact ordinary creation operation. */
+  bindSessionCreation?: (operation: SessionEntryCreationOperation) => () => void;
   beforeStart?: () => boolean;
   onStarted?: () => void;
   onExecutionStarted?: (info: { runId: string; sessionId?: string; sessionKey: string }) => void;
@@ -81,6 +85,8 @@ export type SessionEventExecution = {
   deliver?: false;
   /** Captured producer and current session policy remain authoritative at final tool I/O. */
   assertCurrent?: () => void;
+  /** Bind the original absent target to the normal session writer before its first commit. */
+  bindSessionCreation?: (operation: SessionEntryCreationOperation) => () => void;
   beforeStart?: () => Promise<void>;
   onFailed?: (error: unknown) => void;
   onSuppressed?: (

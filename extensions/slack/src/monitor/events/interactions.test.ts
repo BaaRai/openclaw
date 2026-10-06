@@ -244,6 +244,7 @@ describe("registerSlackInteractionEvents", () => {
     enqueueSessionEventMock.mockReturnValue({
       id: "interaction",
       cancel: vi.fn(),
+      accepted: Promise.resolve({ ok: true }),
       settled: Promise.resolve({ status: "completed", executionStarted: true, delivered: true }),
     });
     dispatchPluginInteractiveHandlerMock.mockClear();
@@ -312,6 +313,7 @@ describe("registerSlackInteractionEvents", () => {
     expect(enqueueSessionEventText()).not.toContain("secret");
     expect(mockCallArg(enqueueSessionEventMock, 0, "enqueueSessionEvent", 1)).toMatchObject({
       sessionKey: "agent:ops:slack:channel:C1",
+      createIfMissing: true,
       deliveryContext: {
         channel: "slack",
         to: "team:T9:user:U123",
@@ -2401,6 +2403,7 @@ describe("registerSlackInteractionEvents", () => {
     enqueueSessionEventMock.mockReturnValue({
       id: "interaction",
       cancel: vi.fn(),
+      accepted: Promise.resolve({ ok: false, error: "destination replaced" }),
       settled: Promise.resolve({
         status: "failed",
         executionStarted: false,

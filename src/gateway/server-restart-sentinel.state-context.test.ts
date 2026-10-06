@@ -79,6 +79,7 @@ vi.mock("../auto-reply/reply/session-event-handoff.js", async (importOriginal) =
     typeof import("../auto-reply/reply/session-event-handoff.js").enqueueSessionEventForHost
   >((_text, options) => ({
     id: "restart-state-event",
+    accepted: Promise.resolve({ ok: true }),
     cancel: () => true,
     settled: Promise.resolve().then(async () => {
       options.assertCurrent?.();

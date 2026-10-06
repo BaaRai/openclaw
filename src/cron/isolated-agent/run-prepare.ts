@@ -106,7 +106,9 @@ export async function prepareCronRunContext(params: {
   const resultSessionKey =
     resolveCronDeliverySessionKey(input.job) ??
     resolveAgentMainSessionKey({ cfg: requestedRuntimeCfg, agentId: initialAgentId });
-  const resultTarget = await captureSessionEventTargetForHost(initialAgentId, resultSessionKey);
+  const resultTarget = await captureSessionEventTargetForHost(initialAgentId, resultSessionKey, {
+    assertCaptureCurrent: input.assertCurrent,
+  });
   input.assertCurrent?.();
   const publishedRuntime = await loadPublishedGatewayReplyDispatchRuntime({
     agentId: initialAgentId,

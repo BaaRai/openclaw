@@ -151,6 +151,7 @@ export function createRestartSentinelTestFixture() {
     mocks.enqueueSessionEvent.mockReset();
     mocks.enqueueSessionEvent.mockImplementation((_text, options) => ({
       id: "restart-event",
+      accepted: Promise.resolve({ ok: true }),
       cancel: () => true,
       settled: Promise.resolve().then(async () => {
         await options.onAdopted?.();

@@ -1,3 +1,4 @@
+import "../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
@@ -8,8 +9,10 @@ import { createAgentHarnessHostCapabilities } from "../../agents/harness/host-ca
 import { resolveAttemptWorkspaceSandbox } from "../../agents/workspace-sandbox.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntry, loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { registerSessionMaintenancePreserveKeysProvider } from "../../config/sessions/store-maintenance-preserve.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   captureSessionEventTargetForHost,
@@ -31,6 +34,8 @@ await Promise.all([
 it.for([
   "allowed",
   "new-session",
+  "creation-retry",
+  "cancelled-creation",
   "downgrade",
   "upgrade",
   "retained-tool-downgrade",
@@ -57,6 +62,8 @@ it.for([
         };
         setRuntimeConfigSnapshot(config);
         await state.writeConfig(config);
+        // Gateway boot admits shared state before accepting events; the agent store stays cold.
+        openOpenClawStateDatabase();
         await fs.mkdir(state.workspaceDir, { recursive: true });
         const filePath = path.join(state.workspaceDir, "completion.txt");
         await fs.writeFile(filePath, "original\n");
@@ -72,10 +79,17 @@ it.for([
             sessionStartedAt: Date.now(),
             permissionMode,
           });
-        if (change !== "new-session") {
+        const fresh =
+          change === "new-session" ||
+          change === "creation-retry" ||
+          change === "cancelled-creation";
+        if (!fresh) {
           await setMode(change === "upgrade" ? "read-only" : "full");
         }
         const target = await captureSessionEventTargetForHost(scope.agentId, scope.sessionKey);
+        if (fresh) {
+          expect(target.sessionId).toBe("");
+        }
         if (change === "downgrade" || change === "upgrade") {
           await setMode(change === "downgrade" ? "read-only" : "full");
         }
@@ -191,13 +205,62 @@ it.for([
               host.close();
             }
           });
-        const outcome = await enqueueSessionEventForHost("Process completed; record the result.", {
-          ...scope,
-          source: "exec",
-          abortSignal: signal,
-          expectedTarget: target,
-          deliver: false,
-        }).settled;
+        let maintenancePrepared = false;
+        const cancellation = new AbortController();
+        if (change === "cancelled-creation") {
+          const { getReplacementPublicationDelivery } =
+            await import("../../config/sessions/session-accessor.sqlite-replacement-publication.test-support.js");
+          getReplacementPublicationDelivery().afterResult = () => cancellation.abort();
+        }
+        let stopPreserving = () => {};
+        if (change === "creation-retry") {
+          stopPreserving = registerSessionMaintenancePreserveKeysProvider(async () => {
+            maintenancePrepared = true;
+            stopPreserving();
+            return { capture: () => [], dispose: () => {} };
+          });
+        }
+        let outcome: Awaited<ReturnType<typeof enqueueSessionEventForHost>["settled"]>;
+        try {
+          outcome = await enqueueSessionEventForHost("Process the event; record the result.", {
+            ...scope,
+            source: fresh ? "plugin" : "exec",
+            abortSignal: AbortSignal.any([signal, cancellation.signal]),
+            expectedTarget: target,
+            createIfMissing: fresh ? true : undefined,
+            deliver: false,
+          }).settled;
+        } finally {
+          stopPreserving();
+        }
+        if (change === "creation-retry") {
+          expect(maintenancePrepared).toBe(true);
+          expect(outcome).toMatchObject({
+            status: "failed",
+            executionStarted: false,
+            error: expect.stringContaining("retry against the current session"),
+          });
+          expect(loadSessionEntry(scope)).toBeUndefined();
+          expect(await fs.readFile(filePath, "utf8")).toBe("original\n");
+          expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+          return;
+        }
+        if (change === "cancelled-creation") {
+          expect(cancellation.signal.aborted).toBe(true);
+          expect(outcome).toMatchObject({
+            status: "cancelled",
+            executionStarted: false,
+            delivered: false,
+          });
+          expect(target.sessionId).not.toBe("");
+          expect(loadSessionEntry(scope)).toMatchObject({
+            sessionId: target.sessionId,
+            lifecycleRevision: target.lifecycleRevision,
+          });
+          expect(await fs.readFile(filePath, "utf8")).toBe("original\n");
+          expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+          return;
+        }
         expect(await fs.readFile(filePath, "utf8"), JSON.stringify(outcome)).toBe(
           change === "allowed" || change === "new-session" ? "completed\n" : "original\n",
         );
@@ -214,8 +277,7 @@ it.for([
         );
         expect(retainedWriteRejected).toBe(retainedDowngrade);
         if (change === "new-session") {
-          expect(target.sessionId).toBe("");
-          expect(loadSessionEntry(scope)?.sessionId).toEqual(expect.any(String));
+          expect(loadSessionEntry(scope)?.sessionId).toBe(target.sessionId);
         } else {
           expect(loadSessionEntry(scope)).toMatchObject({ sessionId, lifecycleRevision });
         }
