@@ -24,6 +24,7 @@ import {
 import {
   matchingEntries,
   claimMatchesSessionId,
+  effectMatchesSessionId,
   selectedEffects,
   selectSessionControllerInterruptionOwners,
   resolveSessionEffectAdmission,
@@ -40,8 +41,6 @@ import type { SessionControllerInput } from "./session-controller.mailbox.types.
 import {
   prepareSessionMutationCompetition,
   runPreemptedSessionMutation,
-  selectSessionMutationEffects,
-  settleSessionMutationEffects,
   type SessionMutationPolicy,
 } from "./session-controller.mutation-preemption.js";
 import {
@@ -219,11 +218,6 @@ export function bindSessionControllerTarget(
   };
   void operation.ownerSettlement.then(released, released);
 }
-async function waitForChange(entry: SessionControllerEntry, signal?: AbortSignal) {
-  signal?.throwIfAborted();
-  await waitUnlessAborted(lifecycle(entry).changed.promise, signal);
-}
-
 /** Mutation requests are queued on the canonical entries, not on store-writer locks.
  * Ingress closes synchronously, before any awaited preemption or physical drain. */
 export async function runSessionMutation<T>(
@@ -271,15 +265,16 @@ export async function runSessionMutation<T>(
     (mutation) =>
       mutation.phase === "active" && entries.every((entry) => mutation.entries.includes(entry)),
   );
+  const releases: Array<() => void> = [];
+  const closeWorkAdmissions = (reason: Error) => {
+    for (const target of targets) {
+      releases.push(closeSessionControllerAdmission({ target, reason }));
+    }
+  };
   if (borrowed) {
-    const releases: Array<() => void> = [];
     try {
       await params.prepare?.({
-        closeWorkAdmissions: (reason) => {
-          for (const target of targets) {
-            releases.push(closeSessionControllerAdmission({ target, reason }));
-          }
-        },
+        closeWorkAdmissions,
         operations: [...borrowed.operations].filter(matchesOperation),
       });
       return await params.run();
@@ -308,17 +303,23 @@ export async function runSessionMutation<T>(
   for (const entry of entries) {
     lifecycle(entry).mutations.push(mutation);
   }
-  const withdraw = () => {
-    if (mutation.phase !== "queued") {
-      return;
-    }
+  const dequeue = () => {
     mutation.phase = "released";
     releaseBindings();
     for (const entry of entries) {
       const queue = lifecycle(entry).mutations;
-      queue.splice(queue.indexOf(mutation), 1);
+      const index = queue.indexOf(mutation);
+      if (index >= 0) {
+        queue.splice(index, 1);
+      }
       notify(entry);
     }
+  };
+  const withdraw = () => {
+    if (mutation.phase !== "queued") {
+      return;
+    }
+    dequeue();
     mutation.ready.reject(signal?.reason ?? new Error("Session mutation cancelled"));
   };
   signal?.addEventListener("abort", withdraw, { once: true });
@@ -331,7 +332,6 @@ export async function runSessionMutation<T>(
   } finally {
     signal?.removeEventListener("abort", withdraw);
   }
-  const releases: Array<() => void> = [];
   const context: OwnerContext = {
     operation: current?.operation,
     claim: current?.claim,
@@ -352,14 +352,7 @@ export async function runSessionMutation<T>(
           ? [entry.mailbox.claim]
           : [],
       );
-      await params.prepare?.({
-        operations: competitors,
-        closeWorkAdmissions: (reason) => {
-          for (const target of targets) {
-            releases.push(closeSessionControllerAdmission({ target, reason }));
-          }
-        },
-      });
+      await params.prepare?.({ operations: competitors, closeWorkAdmissions });
       const { waitForCompetitors, preemption } = await prepareSessionMutationCompetition({
         policy: params,
         claims,
@@ -371,18 +364,28 @@ export async function runSessionMutation<T>(
       });
       // Only effects that actually started can write. Pending validators remain owned
       // through their real return, even if their signal was cancelled while awaiting.
-      const effects = selectSessionMutationEffects({
-        entries,
-        current,
-        requiredSessionId: params.requiredSessionId,
-        waitForCompetitors,
-      });
-      const effectsSettled = settleSessionMutationEffects({
-        effects,
-        preemption,
-        waitForCompetitors,
-        interrupt: interruptEffect,
-      });
+      const effects = new Set(
+        entries.flatMap((entry) =>
+          [...(entry.lifecycle?.effects ?? [])].filter(
+            (effect) =>
+              effectMatchesSessionId(effect, params.requiredSessionId) &&
+              (effect.phase === "validating" ||
+                effect.phase === "writer" ||
+                (waitForCompetitors && effect.phase === "acquired")) &&
+              !current?.effects.has(effect),
+          ),
+        ),
+      );
+      if (preemption) {
+        for (const effect of effects) {
+          interruptEffect(effect, preemption.reason);
+        }
+      }
+      const effectsSettled = Promise.all(
+        [...effects].map((effect) =>
+          waitForCompetitors ? effect.ref.released : effect.validated.promise,
+        ),
+      );
       if (preemption) {
         return await runPreemptedSessionMutation({
           preemption,
@@ -411,16 +414,7 @@ export async function runSessionMutation<T>(
         for (const release of releases) {
           release();
         }
-        mutation.phase = "released";
-        releaseBindings();
-        for (const entry of entries) {
-          const queue = lifecycle(entry).mutations;
-          const index = queue.indexOf(mutation);
-          if (index >= 0) {
-            queue.splice(index, 1);
-          }
-          notify(entry);
-        }
+        dequeue();
       }
     }
   });
@@ -550,7 +544,7 @@ export async function beginSessionEffect(
       if (pendingClosure) {
         throw pendingClosure.reason;
       }
-      await waitForChange(entry, signal);
+      await waitUnlessAborted(lifecycle(entry).changed.promise, signal);
     }
     signal.throwIfAborted();
     effect.phase = "validating";
