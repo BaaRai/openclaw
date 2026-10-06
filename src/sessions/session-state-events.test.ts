@@ -83,6 +83,7 @@ beforeEach(() => {
   }));
   noticeHandoff.enqueue.mockReset().mockImplementation((_text, options) => ({
     id: options.occurrence?.id ?? "unexpected-new-occurrence",
+    accepted: Promise.resolve({ ok: true }),
     cancel: () => false,
     settled: Promise.resolve({ status: "completed", executionStarted: false, delivered: false }),
   }));
