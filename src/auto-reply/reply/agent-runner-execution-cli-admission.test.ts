@@ -260,6 +260,7 @@ describe("executeAgentTurn: CLI admission", () => {
       expectMockCallArgFields(state.runCliAgentMock, 0, "CLI run params", {
         cliSessionId: binding.sessionId,
         cliSessionBinding: binding,
+        lane: kind === "event" ? "cron-nested" : "main",
       });
       expect(observedBinding).toEqual(
         kind === "rejected-clear"
