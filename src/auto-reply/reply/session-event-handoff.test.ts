@@ -347,7 +347,7 @@ describe("session event target custody", () => {
     },
   );
   it("captures the original store, route and producer restrictions across asynchronous lookup", async () => {
-    await withTargetFixture(async ({ env, path, storePath }) => {
+    await withTargetFixture(async ({ env, path: fixturePath, storePath }) => {
       const suppliedEnv = { ...env };
       const toolsAllow = ["read", "exec"];
       let invocationActive = true;
@@ -373,7 +373,7 @@ describe("session event target custody", () => {
           }),
       );
       clearAgentRunContext(runId);
-      suppliedEnv.OPENCLAW_STATE_DIR = path("later-state");
+      suppliedEnv.OPENCLAW_STATE_DIR = fixturePath("later-state");
       const target = await targetPromise;
       toolsAllow.push("message");
       invocationActive = false;
@@ -469,12 +469,12 @@ describe("session event target custody", () => {
   it.each(["store replacement", "Gateway restart"] as const)(
     "rejects retained target reuse after %s without creating another occurrence",
     async (change) => {
-      await withTargetFixture(async ({ env, path }) => {
+      await withTargetFixture(async ({ env, path: fixturePath }) => {
         const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
         if (change === "store replacement") {
           setRuntimeConfigSnapshot({
             agents: { entries: { main: {} } },
-            session: { store: path("replacement.sqlite") },
+            session: { store: fixturePath("replacement.sqlite") },
           });
         } else {
           rotateAgentEventLifecycleGeneration();

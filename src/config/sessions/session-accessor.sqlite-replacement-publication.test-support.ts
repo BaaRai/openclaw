@@ -25,8 +25,8 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
         get fileIdentity() {
           return owned.fileIdentity;
         },
-        prepare: async (...args) => {
-          await owned.prepare(...args);
+        prepare: async (...prepareArgs) => {
+          await owned.prepare(...prepareArgs);
           await delivery.afterPrepared?.();
         },
         runExisting: (source, operation, options) =>

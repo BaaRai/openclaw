@@ -207,7 +207,7 @@ export async function runCronSessionTurn(params: {
         executionIdentity: params.executionIdentity,
         deliveryAttemptFence: params.deliveryAttemptFence,
         assertCurrent,
-        bindSessionCreation: deferred.bindCreation,
+        bindSessionCreation: (operation) => deferred.bindCreation(operation),
         capacity: captureCronCapacityLease(),
         beforeDeliver,
         sourceDelivery: delivery?.sourceDelivery,

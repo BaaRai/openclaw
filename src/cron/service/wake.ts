@@ -1,5 +1,6 @@
 import type { SessionEventTarget } from "../../auto-reply/reply/session-event-contract.js";
 /** Manual cron wake helper for queueing system events into sessions. */
+import { formatErrorMessage } from "../../infra/errors.js";
 import { isSubagentSessionKey, normalizeOptionalAgentId } from "../../routing/session-key.js";
 import { isCronJobActive } from "../active-jobs.js";
 import { CRON_AGENT_SELECTION_REQUIRED_MESSAGE } from "../agent-id.js";
@@ -71,12 +72,25 @@ export function enqueueCronNotification(
   if (!state.deps.enqueueSessionEvent) {
     throw new Error("Session event execution is unavailable; restart the Gateway and retry");
   }
-  state.deps.enqueueSessionEvent(text, {
+  const pending = state.deps.enqueueSessionEvent(text, {
     agentId,
     sessionKey,
     contextKey: `cron:${job.id}:${kind}`,
     ...(deliveryContext ? { deliveryContext } : {}),
   });
+  // Post-commit notices report failed acceptance without blocking sibling jobs.
+  pending
+    ?.then((result) => {
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+    })
+    .catch((error: unknown) => {
+      state.deps.log.warn(
+        { jobId: job.id, kind, error: formatErrorMessage(error) },
+        "cron: notification admission failed",
+      );
+    });
 }
 
 /** The v4 wake adapter targets ordinary immediate or explicitly scheduled session work. */

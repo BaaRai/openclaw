@@ -87,7 +87,8 @@ export function enqueueSessionEventForHost(
     assertCurrent?: () => void;
   },
 ): SessionEventReceipt {
-  assertAcceptanceCurrent?.();
+  let acceptanceAssertion = assertAcceptanceCurrent;
+  acceptanceAssertion?.();
   options.assertCurrent?.();
   options.expectedTarget?.assertCurrent?.();
   const cfg = getSessionEventRuntimeConfig();
@@ -194,7 +195,7 @@ export function enqueueSessionEventForHost(
     }
     signal.throwIfAborted();
     if (!accepted) {
-      assertAcceptanceCurrent?.();
+      acceptanceAssertion?.();
     }
     options.assertCurrent?.();
     options.expectedTarget?.assertCurrent?.();
@@ -261,7 +262,7 @@ export function enqueueSessionEventForHost(
     settling = true;
     const complete = () => {
       finished = true;
-      assertAcceptanceCurrent = undefined;
+      acceptanceAssertion = undefined;
       const status = signal.aborted ? "cancelled" : failure ? "failed" : "completed";
       if (!accepted) {
         acceptance.resolve({
@@ -392,7 +393,7 @@ export function enqueueSessionEventForHost(
       settingsAdmitted = true;
       assertCurrent();
       accepted = true;
-      assertAcceptanceCurrent = undefined;
+      acceptanceAssertion = undefined;
       acceptance.resolve({ ok: true });
       const result = await dispatchInboundMessageWithRoutedChannelDispatcher({
         cfg: { ...cfg, session: { ...cfg.session, store: storePath } },

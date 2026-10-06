@@ -1,5 +1,6 @@
 // Schedule error isolation tests cover one bad job not blocking other cron jobs.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { CronJob } from "../types.js";
 import { recomputeNextRunsForMaintenance } from "./jobs-scheduling.js";
@@ -132,6 +133,46 @@ describe("cron schedule error isolation", () => {
     expect(notification).toContain("Check automation history for details.");
     expect(notification).not.toContain("invalid configuration format");
   });
+
+  it.each(["accepted", "refused", "rejected"])(
+    "observes async notice %s without blocking the next notification",
+    async (outcome) => {
+      const jobs = ["first", "next"].map((id) =>
+        createJob({ id, agentId: "main", enabled: false }),
+      );
+      const state = createMockState(jobs);
+      const acceptance = createDeferredCore<{ ok: true } | { ok: false; error: string }>();
+      const enqueue = vi
+        .fn<NonNullable<CronServiceState["deps"]["enqueueSessionEvent"]>>()
+        .mockImplementationOnce(() => acceptance.promise);
+      state.deps.enqueueSessionEvent = enqueue;
+
+      runPostPersistCronNotifications(
+        state,
+        jobs.map((job) => ({ kind: "auto-disabled", job, text: `notice-${job.id}` })),
+      );
+
+      expect(enqueue.mock.calls.map(([text]) => text)).toEqual(["notice-first", "notice-next"]);
+      expect(state.deps.log.warn).not.toHaveBeenCalled();
+      if (outcome === "rejected") {
+        acceptance.reject(new Error("notification-rejected"));
+      } else {
+        acceptance.resolve(
+          outcome === "accepted" ? { ok: true } : { ok: false, error: "notification-refused" },
+        );
+      }
+      await vi.advanceTimersByTimeAsync(0);
+
+      if (outcome === "accepted") {
+        expect(state.deps.log.warn).not.toHaveBeenCalled();
+      } else {
+        expect(state.deps.log.warn).toHaveBeenCalledExactlyOnceWith(
+          { jobId: "first", kind: "auto-disabled", error: `notification-${outcome}` },
+          "cron: notification admission failed",
+        );
+      }
+    },
+  );
 
   it("clears scheduleErrorCount when schedule computation succeeds", () => {
     const job = createJob({
