@@ -100,9 +100,9 @@ function striped(root: string) {
   const scope = createOxlintFileScope(["src/state/consumer.ts"], root);
   // Compiler-policy fixtures add source roots before this consumer's directory.
   const index = Array.from({ length: total }, (_, offset) => offset + 1).find(
-    (index) =>
+    (stripeIndex) =>
       scope.selectShards(
-        selectCoreOxlintStripe(core, { index, total }, { isolateLargeTargets: true }),
+        selectCoreOxlintStripe(core, { index: stripeIndex, total }, { isolateLargeTargets: true }),
       ).length > 0,
   );
   if (index === undefined) {

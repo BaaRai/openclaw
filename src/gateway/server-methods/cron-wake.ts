@@ -101,16 +101,16 @@ export const cronWakeHandler: GatewayRequestHandler = async ({
     return;
   }
   const authorizeWake = () => {
-    const cfg = context.getRuntimeConfig();
-    if (!cfg.gateway?.roles) {
+    const currentConfig = context.getRuntimeConfig();
+    if (!currentConfig.gateway?.roles) {
       return undefined;
     }
     const knownWakeAgentId = resolvedAgentId ?? context.cron.getDefaultAgentId();
     const wakeAgent = knownWakeAgentId
       ? { ok: true as const, agentId: knownWakeAgentId }
-      : resolveRequestedSessionAgentId(cfg, sessionKey ?? "main");
+      : resolveRequestedSessionAgentId(currentConfig, sessionKey ?? "main");
     return wakeAgent.ok
-      ? authorizeGatewaySessionCreation({ cfg, client, agentId: wakeAgent.agentId })
+      ? authorizeGatewaySessionCreation({ cfg: currentConfig, client, agentId: wakeAgent.agentId })
       : wakeAgent.error;
   };
   const wakeAccessError = authorizeWake();
