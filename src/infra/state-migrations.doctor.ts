@@ -48,6 +48,7 @@ import {
 } from "../routing/session-key.js";
 import { listAgentDatabaseAdmissionRefusals } from "../state/agent-database-admission.js";
 import { inspectOpenClawRegisteredAgentDatabases } from "../state/openclaw-agent-db-registry.js";
+import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { detectOpenClawStateDatabaseSchemaMigrations } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
@@ -1543,524 +1544,524 @@ export async function planLegacyStateMigrationsReadOnly(params: {
   initialWarnings?: readonly string[];
   legacySessionSurfaces?: PreparedLegacySessionSurfaces;
 }): Promise<LegacyStateMigrationPlan> {
-  const invocationPurpose =
-    params.invocationPurpose ?? (params.mode === "doctor" ? "doctor" : "startup");
-  const expectedConfigDigest = params.snapshot.configDigest;
-  const expectedStateDigest = params.snapshot.stateDigest;
-  const requestedSnapshot = {
-    homeDir: path.resolve(params.snapshot.homeDir),
-    configPath: path.resolve(params.snapshot.configPath),
-    stateDir: path.resolve(params.snapshot.stateDir),
-  };
-  const callerEnv = createLegacyStateMigrationCallerEnv({
-    env: params.env,
-    snapshot: requestedSnapshot,
-  });
-  const rawOAuthDir = (params.env ?? process.env).OPENCLAW_OAUTH_DIR?.trim();
-  const callerOAuthDir = rawOAuthDir
-    ? resolveOAuthDir({ ...callerEnv, OPENCLAW_OAUTH_DIR: rawOAuthDir }, requestedSnapshot.stateDir)
-    : undefined;
-  const oauthDirOutsideSnapshot =
-    callerOAuthDir !== undefined && !isPathInside(requestedSnapshot.stateDir, callerOAuthDir);
-  const pendingStateDirMigration = resolvePendingLegacyStateDirMigrationPaths({
-    env: params.env,
-    homedir: () => requestedSnapshot.homeDir,
-  });
-  // This exported boundary authorizes the paths recorded in the plan. Capture
-  // their identity here so direct callers cannot substitute a symlink or digest.
-  const identityBefore = await captureLegacyStateSnapshotIdentity(requestedSnapshot);
-  const env = createLegacyStateMigrationPlanEnv({
-    env: params.env,
-    snapshot: requestedSnapshot,
-  });
-  if (callerOAuthDir && !oauthDirOutsideSnapshot) {
-    env.OPENCLAW_OAUTH_DIR = callerOAuthDir;
-  }
-  const configBefore = await readLegacyStateMigrationPlanConfig({
-    configPath: requestedSnapshot.configPath,
-    homeDir: requestedSnapshot.homeDir,
-    env,
-  });
-  const snapshot = {
-    ...requestedSnapshot,
-    ...(configBefore.configDigest ? { configDigest: configBefore.configDigest } : {}),
-    ...(identityBefore.stateDigest ? { stateDigest: identityBefore.stateDigest } : {}),
-  };
-  const refusedPlan = (
-    refusal: NonNullable<LegacyStateMigrationPlan["refusal"]>,
-    warnings: string[],
-    steps: PreparedLegacyStateMigrationStep[] = [],
-  ) =>
-    createLegacyStateMigrationPlan({
-      mode: params.mode,
-      candidate: params.candidate,
-      snapshot,
-      steps,
-      warnings: [...(params.initialWarnings ?? []), ...warnings],
-      refusal,
+  return await withArtifactPreservingStateReads(async () => {
+    const invocationPurpose =
+      params.invocationPurpose ?? (params.mode === "doctor" ? "doctor" : "startup");
+    const expectedConfigDigest = params.snapshot.configDigest;
+    const expectedStateDigest = params.snapshot.stateDigest;
+    const requestedSnapshot = {
+      homeDir: path.resolve(params.snapshot.homeDir),
+      configPath: path.resolve(params.snapshot.configPath),
+      stateDir: path.resolve(params.snapshot.stateDir),
+    };
+    const callerEnv = createLegacyStateMigrationCallerEnv({
+      env: params.env,
+      snapshot: requestedSnapshot,
     });
-  if (identityBefore.warnings.length > 0 || !configBefore.configDigest) {
-    const warnings = [
-      ...(params.initialWarnings ?? []),
-      ...identityBefore.warnings,
-      ...configBefore.warnings,
-    ];
-    return refusedPlan({ code: "snapshot-identity-unavailable", message: warnings.join("\n") }, [
-      ...identityBefore.warnings,
-      ...configBefore.warnings,
-    ]);
-  }
-  // The identity owner refuses unusable snapshot paths first; only an admitted
-  // state directory is scanned for retired files, so a non-directory path keeps
-  // its `snapshot-identity-unavailable` refusal instead of an inspection error.
-  assertNoRetiredRuntimeStateFiles(
-    requestedSnapshot.stateDir,
-    env,
-    () => requestedSnapshot.homeDir,
-  );
-  assertNoRetiredStateFiles(
-    "JSON delivery queues",
-    listRetiredDeliveryQueueFiles(requestedSnapshot.stateDir),
-  );
-  if (identityBefore.configDigest !== configBefore.rootDigest) {
-    const message = "Copied config changed while migration planning was starting.";
-    return refusedPlan({ code: "snapshot-identity-changed", message }, [
-      ...configBefore.warnings,
-      message,
-    ]);
-  }
-  const mismatchedSnapshotDigests = [
-    expectedConfigDigest && expectedConfigDigest !== configBefore.configDigest
-      ? "config"
-      : undefined,
-    expectedStateDigest && expectedStateDigest !== identityBefore.stateDigest ? "state" : undefined,
-  ].filter((label): label is string => label !== undefined);
-  if (mismatchedSnapshotDigests.length > 0) {
-    const message = `Caller-provided copied ${mismatchedSnapshotDigests.join(" and ")} digest did not match the observed snapshot.`;
-    return refusedPlan({ code: "snapshot-identity-mismatch", message }, [message]);
-  }
-  const pluginStateMigrationInventory = resolvePluginDoctorStateMigrationInventory({
-    config: configBefore.config,
-    env,
-    candidateRoot: params.candidate.root,
-    artifactPreservingReadOnly: true,
-  });
-  const pluginInstallIndexStep = createPluginInstallIndexStep({
-    stateDir: snapshot.stateDir,
-    env,
-    hasLegacy: migrationFileExists(
-      resolveLegacyInstalledPluginIndexStorePath({ stateDir: snapshot.stateDir }),
-    ),
-  });
-  if (
-    pendingStateDirMigration &&
-    path.resolve(pendingStateDirMigration.source) !== requestedSnapshot.stateDir
-  ) {
-    const message = `Pending legacy state root is outside the copied state snapshot: ${pendingStateDirMigration.source}`;
-    return refusedPlan({ code: "state-dir-source-outside-snapshot", message }, [message]);
-  }
-  const unresolvedSteps = (
-    discovery: LegacyStateMigrationStep,
-    detection: LegacyStateMigrationStep,
-  ): LegacyStateMigrationStep[] => [
-    createStateSchemaMigrationStep({
-      stateDir: snapshot.stateDir,
-      env,
-      mode: params.mode,
-      requiredness: "conditional",
-    }),
-    pluginInstallIndexStep,
-    createConfigMachineStateStep({
-      config: configBefore.config,
-      configPath: snapshot.configPath,
-      configIncludedPaths: configBefore.configIncludedPaths,
-      stateDir: snapshot.stateDir,
-      env,
-    }),
-    discovery,
-    ...buildUnresolvedBlockedPreludeSteps(params.mode, invocationPurpose),
-    detection,
-    ...buildUnresolvedBlockedMigrationSteps({
-      mode: params.mode,
-      stateDir: snapshot.stateDir,
-      env,
-      skipAgentScopedMigrations: hasCustomAgentDirOverride(env),
-      pluginStateMigrationInventory,
-    }),
-  ];
-  // Live Doctor honors the selected auth owner. Copied planning must refuse an
-  // unbound source before discovery, not silently substitute the standard root.
-  const outsideSharedAuthSources =
-    params.mode === "doctor"
-      ? listMigrationEndpointsOutsideRoot(
-          [
-            {
-              kind: "sqlite",
-              path: path.join(resolveSharedMainAuthAgentDir(env), "openclaw-agent.sqlite"),
-            },
-          ],
-          snapshot.stateDir,
+    const rawOAuthDir = (params.env ?? process.env).OPENCLAW_OAUTH_DIR?.trim();
+    const callerOAuthDir = rawOAuthDir
+      ? resolveOAuthDir(
+          { ...callerEnv, OPENCLAW_OAUTH_DIR: rawOAuthDir },
+          requestedSnapshot.stateDir,
         )
-      : [];
-  if ((callerOAuthDir && oauthDirOutsideSnapshot) || outsideSharedAuthSources.length > 0) {
-    const refusal =
-      callerOAuthDir && oauthDirOutsideSnapshot
-        ? {
-            code: "oauth-dir-outside-snapshot",
-            message: `Configured OAuth migration directory is outside the copied state snapshot: ${callerOAuthDir}`,
-          }
-        : {
-            code: "shared-auth-source-outside-snapshot",
-            message: "Selected shared-auth migration source is outside the copied state snapshot.",
-          };
-    const detectionStep = createMigrationDetectionStep({
-      configPath: snapshot.configPath,
-      configIncludedPaths: configBefore.configIncludedPaths,
-      stateDir: snapshot.stateDir,
-      refusal,
-      run: () => ({ changes: [], warnings: [refusal.message] }),
+      : undefined;
+    const oauthDirOutsideSnapshot =
+      callerOAuthDir !== undefined && !isPathInside(requestedSnapshot.stateDir, callerOAuthDir);
+    const pendingStateDirMigration = resolvePendingLegacyStateDirMigrationPaths({
+      env: params.env,
+      homedir: () => requestedSnapshot.homeDir,
     });
-    detectionStep.source = uniqueMigrationEndpoints([
-      ...detectionStep.source,
-      ...(callerOAuthDir && oauthDirOutsideSnapshot
-        ? [{ kind: "path" as const, path: callerOAuthDir }]
-        : []),
-      ...outsideSharedAuthSources,
-    ]);
-    const steps = unresolvedSteps(
-      createAgentTargetDiscoveryStep({
+    // This exported boundary authorizes the paths recorded in the plan. Capture
+    // their identity here so direct callers cannot substitute a symlink or digest.
+    const identityBefore = await captureLegacyStateSnapshotIdentity(requestedSnapshot);
+    const env = createLegacyStateMigrationPlanEnv({
+      env: params.env,
+      snapshot: requestedSnapshot,
+    });
+    if (callerOAuthDir && !oauthDirOutsideSnapshot) {
+      env.OPENCLAW_OAUTH_DIR = callerOAuthDir;
+    }
+    const configBefore = await readLegacyStateMigrationPlanConfig({
+      configPath: requestedSnapshot.configPath,
+      homeDir: requestedSnapshot.homeDir,
+      env,
+    });
+    const snapshot = {
+      ...requestedSnapshot,
+      ...(configBefore.configDigest ? { configDigest: configBefore.configDigest } : {}),
+      ...(identityBefore.stateDigest ? { stateDigest: identityBefore.stateDigest } : {}),
+    };
+    const refusedPlan = (
+      refusal: NonNullable<LegacyStateMigrationPlan["refusal"]>,
+      warnings: string[],
+      steps: PreparedLegacyStateMigrationStep[] = [],
+    ) =>
+      createLegacyStateMigrationPlan({
+        mode: params.mode,
+        candidate: params.candidate,
+        snapshot,
+        steps,
+        warnings: [...(params.initialWarnings ?? []), ...warnings],
+        refusal,
+      });
+    if (identityBefore.warnings.length > 0 || !configBefore.configDigest) {
+      const warnings = [
+        ...(params.initialWarnings ?? []),
+        ...identityBefore.warnings,
+        ...configBefore.warnings,
+      ];
+      return refusedPlan({ code: "snapshot-identity-unavailable", message: warnings.join("\n") }, [
+        ...identityBefore.warnings,
+        ...configBefore.warnings,
+      ]);
+    }
+    // The identity owner refuses unusable snapshot paths first; only an admitted
+    // state directory is scanned for retired files, so a non-directory path keeps
+    // its `snapshot-identity-unavailable` refusal instead of an inspection error.
+    assertNoRetiredRuntimeStateFiles(
+      requestedSnapshot.stateDir,
+      env,
+      () => requestedSnapshot.homeDir,
+    );
+    assertNoRetiredStateFiles(
+      "JSON delivery queues",
+      listRetiredDeliveryQueueFiles(requestedSnapshot.stateDir),
+    );
+    if (identityBefore.configDigest !== configBefore.rootDigest) {
+      const message = "Copied config changed while migration planning was starting.";
+      return refusedPlan({ code: "snapshot-identity-changed", message }, [
+        ...configBefore.warnings,
+        message,
+      ]);
+    }
+    const mismatchedSnapshotDigests = [
+      expectedConfigDigest && expectedConfigDigest !== configBefore.configDigest
+        ? "config"
+        : undefined,
+      expectedStateDigest && expectedStateDigest !== identityBefore.stateDigest
+        ? "state"
+        : undefined,
+    ].filter((label): label is string => label !== undefined);
+    if (mismatchedSnapshotDigests.length > 0) {
+      const message = `Caller-provided copied ${mismatchedSnapshotDigests.join(" and ")} digest did not match the observed snapshot.`;
+      return refusedPlan({ code: "snapshot-identity-mismatch", message }, [message]);
+    }
+    const pluginStateMigrationInventory = resolvePluginDoctorStateMigrationInventory({
+      config: configBefore.config,
+      env,
+      candidateRoot: params.candidate.root,
+      artifactPreservingReadOnly: true,
+    });
+
+    if (
+      pendingStateDirMigration &&
+      path.resolve(pendingStateDirMigration.source) !== requestedSnapshot.stateDir
+    ) {
+      const message = `Pending legacy state root is outside the copied state snapshot: ${pendingStateDirMigration.source}`;
+      return refusedPlan({ code: "state-dir-source-outside-snapshot", message }, [message]);
+    }
+    const unresolvedSteps = (
+      discovery: LegacyStateMigrationStep,
+      detection: LegacyStateMigrationStep,
+    ): LegacyStateMigrationStep[] => [
+      createStateSchemaMigrationStep({
+        stateDir: snapshot.stateDir,
+        env,
+        mode: params.mode,
+        requiredness: "conditional",
+      }),
+      createPluginInstallIndexStep({
+        stateDir: snapshot.stateDir,
+        env,
+        hasLegacy: migrationFileExists(
+          resolveLegacyInstalledPluginIndexStorePath({ stateDir: snapshot.stateDir }),
+        ),
+      }),
+      createConfigMachineStateStep({
+        config: configBefore.config,
         configPath: snapshot.configPath,
         configIncludedPaths: configBefore.configIncludedPaths,
         stateDir: snapshot.stateDir,
         env,
-        run: () => ({ changes: [], warnings: [] }),
       }),
-      detectionStep,
-    );
-    return refusedPlan(
-      refusal,
-      [...configBefore.warnings, refusal.message],
-      closeMigrationPlanTail(steps, detectionStep),
-    );
-  }
-  const configuredSessionStoreEndpoints = resolveConfiguredSessionStoreEndpoints(
-    configBefore.config,
-    env,
-  );
-  const outsideSessionStoreEndpoints = listMigrationEndpointsOutsideRoot(
-    configuredSessionStoreEndpoints,
-    snapshot.stateDir,
-  );
-  if (outsideSessionStoreEndpoints.length > 0) {
-    const refusal = createSessionTargetOutsideSnapshotRefusal(outsideSessionStoreEndpoints);
-    const discoveryStep = createAgentTargetDiscoveryStep({
-      configPath: snapshot.configPath,
-      configIncludedPaths: configBefore.configIncludedPaths,
-      stateDir: snapshot.stateDir,
-      env,
-      refusal,
-      run: () => ({ changes: [], warnings: [refusal.message] }),
-    });
-    discoveryStep.source = uniqueMigrationEndpoints([
-      ...discoveryStep.source,
-      ...outsideSessionStoreEndpoints,
-    ]);
-    const blockedSteps = unresolvedSteps(
-      discoveryStep,
-      createMigrationDetectionStep({
+      discovery,
+      ...buildUnresolvedBlockedPreludeSteps(params.mode, invocationPurpose),
+      detection,
+      ...buildUnresolvedBlockedMigrationSteps({
+        mode: params.mode,
+        stateDir: snapshot.stateDir,
+        env,
+        skipAgentScopedMigrations: hasCustomAgentDirOverride(env),
+        pluginStateMigrationInventory,
+      }),
+    ];
+    // Live Doctor honors the selected auth owner. Copied planning must refuse an
+    // unbound source before discovery, not silently substitute the standard root.
+    const outsideSharedAuthSources =
+      params.mode === "doctor"
+        ? listMigrationEndpointsOutsideRoot(
+            [
+              {
+                kind: "sqlite",
+                path: path.join(resolveSharedMainAuthAgentDir(env), "openclaw-agent.sqlite"),
+              },
+            ],
+            snapshot.stateDir,
+          )
+        : [];
+    if ((callerOAuthDir && oauthDirOutsideSnapshot) || outsideSharedAuthSources.length > 0) {
+      const refusal =
+        callerOAuthDir && oauthDirOutsideSnapshot
+          ? {
+              code: "oauth-dir-outside-snapshot",
+              message: `Configured OAuth migration directory is outside the copied state snapshot: ${callerOAuthDir}`,
+            }
+          : {
+              code: "shared-auth-source-outside-snapshot",
+              message:
+                "Selected shared-auth migration source is outside the copied state snapshot.",
+            };
+      const detectionStep = createMigrationDetectionStep({
         configPath: snapshot.configPath,
         configIncludedPaths: configBefore.configIncludedPaths,
         stateDir: snapshot.stateDir,
-        run: () => ({ changes: [], warnings: [] }),
-      }),
-    );
-    return refusedPlan(
-      refusal,
-      configBefore.warnings,
-      closeMigrationPlanTail(blockedSteps, discoveryStep),
-    );
-  }
-  const doctorOnlyStateMigrations = params.mode === "doctor";
-  const legacySessionSurfaces = params.legacySessionSurfaces ?? EMPTY_LEGACY_SESSION_SURFACES;
-  let detected: LegacyStateDetection;
-  try {
-    detected = await detectLegacyStateMigrations({
-      cfg: configBefore.config,
-      mode: params.mode,
-      env,
-      homedir: () => snapshot.homeDir,
-      pluginSessionStoreAgentIds: [],
-      doctorOnlyStateMigrations,
-      pluginPlanning: "deferred",
-      artifactPreservingReadOnly: true,
-      legacySessionSurfaces,
-    });
-  } catch (error) {
-    const message = `Could not inspect copied state migrations: ${String(error)}`;
-    return refusedPlan({ code: "migration-detection-failed", message }, [
-      ...configBefore.warnings,
-      message,
-    ]);
-  }
-  const planningWarnings = [
-    ...(params.initialWarnings ?? []),
-    ...configBefore.warnings,
-    ...(detected.warningDisposition === "recoverable" ? [] : detected.warnings),
-  ];
-  let agentDatabaseTargets: Array<{ agentId: string; path: string }> = [];
-  let registeredDatabases: readonly { agentId: string; path: string }[] = [];
-  let agentTargetRefusal: PreparedLegacyStateMigrationStep["refusal"];
-  let agentTargetRefusalEndpoints: LegacyStateMigrationEndpoint[] = [];
-  try {
-    registeredDatabases = await inspectOpenClawRegisteredAgentDatabases({
-      env,
-      includeIncompatibleSchemaVersions: true,
-    });
-    agentDatabaseTargets = hasCustomAgentDirOverride(env)
-      ? []
-      : resolveConfiguredAgentDatabaseTargets(configBefore.config, { env, registeredDatabases });
-    const boundTargets = bindAgentDatabaseTargetsToStateRoot(
-      agentDatabaseTargets,
+        refusal,
+        run: () => ({ changes: [], warnings: [refusal.message] }),
+      });
+      detectionStep.source = uniqueMigrationEndpoints([
+        ...detectionStep.source,
+        ...(callerOAuthDir && oauthDirOutsideSnapshot
+          ? [{ kind: "path" as const, path: callerOAuthDir }]
+          : []),
+        ...outsideSharedAuthSources,
+      ]);
+      const steps = unresolvedSteps(
+        createAgentTargetDiscoveryStep({
+          configPath: snapshot.configPath,
+          configIncludedPaths: configBefore.configIncludedPaths,
+          stateDir: snapshot.stateDir,
+          env,
+          run: () => ({ changes: [], warnings: [] }),
+        }),
+        detectionStep,
+      );
+      return refusedPlan(
+        refusal,
+        [...configBefore.warnings, refusal.message],
+        closeMigrationPlanTail(steps, detectionStep),
+      );
+    }
+    const outsideSessionStoreEndpoints = listMigrationEndpointsOutsideRoot(
+      resolveConfiguredSessionStoreEndpoints(configBefore.config, env),
       snapshot.stateDir,
     );
-    agentDatabaseTargets = boundTargets.targets;
-    if (boundTargets.refusal) {
-      planningWarnings.push(boundTargets.refusal.message);
-      agentTargetRefusal = boundTargets.refusal;
-      agentTargetRefusalEndpoints = boundTargets.outsideEndpoints;
+    if (outsideSessionStoreEndpoints.length > 0) {
+      const refusal = createSessionTargetOutsideSnapshotRefusal(outsideSessionStoreEndpoints);
+      const discoveryStep = createAgentTargetDiscoveryStep({
+        configPath: snapshot.configPath,
+        configIncludedPaths: configBefore.configIncludedPaths,
+        stateDir: snapshot.stateDir,
+        env,
+        refusal,
+        run: () => ({ changes: [], warnings: [refusal.message] }),
+      });
+      discoveryStep.source = uniqueMigrationEndpoints([
+        ...discoveryStep.source,
+        ...outsideSessionStoreEndpoints,
+      ]);
+      const blockedSteps = unresolvedSteps(
+        discoveryStep,
+        createMigrationDetectionStep({
+          configPath: snapshot.configPath,
+          configIncludedPaths: configBefore.configIncludedPaths,
+          stateDir: snapshot.stateDir,
+          run: () => ({ changes: [], warnings: [] }),
+        }),
+      );
+      return refusedPlan(
+        refusal,
+        configBefore.warnings,
+        closeMigrationPlanTail(blockedSteps, discoveryStep),
+      );
     }
-  } catch (error) {
-    const message = `Could not resolve configured agent migration targets: ${String(error)}`;
-    planningWarnings.push(message);
-    agentTargetRefusal = { code: "agent-target-discovery-failed", message };
-  }
-  const pluginIds = collectRelevantDoctorPluginIds(configBefore.config);
-  const deferredPluginSessionStores = createDeferredPluginSessionStoreEndpoints(
-    configBefore.config,
-    pluginStateMigrationInventory,
-  );
-  const copiedSessionStores = inspectOrphanSessionStoreEndpoints({
-    config: configBefore.config,
-    env,
-    pluginSessionStoreAgentIds: [],
-    registeredDatabases,
-  });
-  planningWarnings.push(...copiedSessionStores.warnings);
-  const sessionTargetRefusal =
-    copiedSessionStores.warnings.length > 0
-      ? {
-          code: "session-target-discovery-failed",
-          message: copiedSessionStores.warnings.join("\n"),
-        }
-      : createDeferredPluginSessionStoreRefusal(deferredPluginSessionStores);
-  const skipAgentScopedMigrations = hasCustomAgentDirOverride(env);
-  const { preparation, remaining: remainingMainSteps } = buildLegacyStateMigrationSteps({
-    mode: params.mode,
-    detected,
-    config: configBefore.config,
-    env,
-    agentDatabaseEndpoints: agentDatabaseTargets.map(({ path: databasePath }) => ({
-      kind: "sqlite",
-      path: databasePath,
-    })),
-    legacySessionStoreEndpoints: uniqueMigrationEndpoints([
-      ...copiedSessionStores.endpoints,
-      ...deferredPluginSessionStores,
-    ]),
-    legacySessionStoreRefusal: sessionTargetRefusal,
-    skipAgentScopedMigrations,
-    pluginStateMigrationInventory,
-    legacySessionSurfaces,
-  });
-  for (const step of remainingMainSteps) {
-    if (step.id === "skill-workshop") {
-      // Recorded legacy targets can name workspaces outside copied state.
-      // Keep the owner visible without inspecting or granting those paths.
-      step.refusal = {
-        code: "skill-workshop-planning-deferred",
-        message: "Skill Workshop relocation requires separately bound workspace and skill targets.",
-      };
+    const legacySessionSurfaces = params.legacySessionSurfaces ?? EMPTY_LEGACY_SESSION_SURFACES;
+    let detected: LegacyStateDetection;
+    try {
+      detected = await detectLegacyStateMigrations({
+        cfg: configBefore.config,
+        mode: params.mode,
+        env,
+        homedir: () => snapshot.homeDir,
+        pluginSessionStoreAgentIds: [],
+        doctorOnlyStateMigrations: params.mode === "doctor",
+        pluginPlanning: "deferred",
+        artifactPreservingReadOnly: true,
+        legacySessionSurfaces,
+      });
+    } catch (error) {
+      const message = `Could not inspect copied state migrations: ${String(error)}`;
+      return refusedPlan({ code: "migration-detection-failed", message }, [
+        ...configBefore.warnings,
+        message,
+      ]);
     }
-  }
-  const pluginPreparationRefusal = createPluginMigrationPreparationRefusal({
-    inventory: pluginStateMigrationInventory,
-    deferredSessionStoreEndpoints: deferredPluginSessionStores,
-  });
-  const plannedAgentTargetDiscoveryStep = createAgentTargetDiscoveryStep({
-    configPath: snapshot.configPath,
-    configIncludedPaths: configBefore.configIncludedPaths,
-    stateDir: snapshot.stateDir,
-    env,
-    refusal: agentTargetRefusal,
-    run: () => ({
-      changes: [],
-      warnings: agentTargetRefusal ? [agentTargetRefusal.message] : [],
-    }),
-  });
-  plannedAgentTargetDiscoveryStep.source = uniqueMigrationEndpoints([
-    ...plannedAgentTargetDiscoveryStep.source,
-    ...agentTargetRefusalEndpoints,
-  ]);
-  const migrationDetectionStep = createMigrationDetectionStep({
-    configPath: snapshot.configPath,
-    configIncludedPaths: configBefore.configIncludedPaths,
-    stateDir: snapshot.stateDir,
-    refusal:
-      detected.warnings.length > 0 && detected.warningDisposition !== "recoverable"
-        ? {
-            code: "migration-detection-warning",
-            message: detected.warnings.join("\n"),
-          }
-        : undefined,
-    run: () => ({ changes: [], warnings: detected.warnings }),
-  });
-  const executionSteps = [
-    ...preparation,
-    createConfigMachineStateStep({
+    const planningWarnings = [
+      ...(params.initialWarnings ?? []),
+      ...configBefore.warnings,
+      ...(detected.warningDisposition === "recoverable" ? [] : detected.warnings),
+    ];
+    let agentDatabaseTargets: Array<{ agentId: string; path: string }> = [];
+    let registeredDatabases: readonly { agentId: string; path: string }[] = [];
+    let agentTargetRefusal: PreparedLegacyStateMigrationStep["refusal"];
+    let agentTargetRefusalEndpoints: LegacyStateMigrationEndpoint[] = [];
+    try {
+      registeredDatabases = await inspectOpenClawRegisteredAgentDatabases({
+        env,
+        includeIncompatibleSchemaVersions: true,
+      });
+      agentDatabaseTargets = hasCustomAgentDirOverride(env)
+        ? []
+        : resolveConfiguredAgentDatabaseTargets(configBefore.config, { env, registeredDatabases });
+      const boundTargets = bindAgentDatabaseTargetsToStateRoot(
+        agentDatabaseTargets,
+        snapshot.stateDir,
+      );
+      agentDatabaseTargets = boundTargets.targets;
+      if (boundTargets.refusal) {
+        planningWarnings.push(boundTargets.refusal.message);
+        agentTargetRefusal = boundTargets.refusal;
+        agentTargetRefusalEndpoints = boundTargets.outsideEndpoints;
+      }
+    } catch (error) {
+      const message = `Could not resolve configured agent migration targets: ${String(error)}`;
+      planningWarnings.push(message);
+      agentTargetRefusal = { code: "agent-target-discovery-failed", message };
+    }
+    const deferredPluginSessionStores = createDeferredPluginSessionStoreEndpoints(
+      configBefore.config,
+      pluginStateMigrationInventory,
+    );
+    const copiedSessionStores = inspectOrphanSessionStoreEndpoints({
       config: configBefore.config,
-      configPath: snapshot.configPath,
-      configIncludedPaths: configBefore.configIncludedPaths,
-      stateDir: snapshot.stateDir,
       env,
-    }),
-    plannedAgentTargetDiscoveryStep,
-    ...buildLegacyStateMigrationPreludeSteps({
-      mode: params.mode,
-      invocationPurpose,
-      config: configBefore.config,
-      configPath: snapshot.configPath,
-      configIncludedPaths: configBefore.configIncludedPaths,
-      stateDir: snapshot.stateDir,
-      env,
-      homedir: () => snapshot.homeDir,
-      agentDatabaseTargets,
-      orphanSessionStores: copiedSessionStores,
       pluginSessionStoreAgentIds: [],
-      legacySessionSurfaces,
-      deferredPluginSessionStoreEndpoints: deferredPluginSessionStores,
-      readOnlyPlanning: true,
-      ...(params.mode === "doctor"
+      registeredDatabases,
+    });
+    planningWarnings.push(...copiedSessionStores.warnings);
+    const sessionTargetRefusal =
+      copiedSessionStores.warnings.length > 0
         ? {
-            pluginPreparation: createPluginMigrationPreparationStep({
-              configPath: snapshot.configPath,
-              configIncludedPaths: configBefore.configIncludedPaths,
-              pluginIds,
-              refusal: pluginPreparationRefusal,
-              run: () => ({
-                changes: [],
-                warnings: pluginPreparationRefusal ? [pluginPreparationRefusal.message] : [],
-              }),
-            }),
+            code: "session-target-discovery-failed",
+            message: copiedSessionStores.warnings.join("\n"),
           }
-        : {}),
-    }),
-    migrationDetectionStep,
-    ...remainingMainSteps,
-  ];
-  let steps = executionSteps.map(migrationStepPlan);
-  if (detected.stateSchema.hasLegacy) {
-    const sharedAuthStep = steps.find((step) => step.id === "shared-auth-store");
-    if (sharedAuthStep) {
-      sharedAuthStep.requiredness = "conditional";
-      sharedAuthStep.refusal = {
-        code: "state-schema-planning-deferred",
-        message:
-          "Shared auth migration inspection is deferred until the copied state schema is repaired.",
+        : createDeferredPluginSessionStoreRefusal(deferredPluginSessionStores);
+    const { preparation, remaining: remainingMainSteps } = buildLegacyStateMigrationSteps({
+      mode: params.mode,
+      detected,
+      config: configBefore.config,
+      env,
+      agentDatabaseEndpoints: agentDatabaseTargets.map(({ path: databasePath }) => ({
+        kind: "sqlite",
+        path: databasePath,
+      })),
+      legacySessionStoreEndpoints: uniqueMigrationEndpoints([
+        ...copiedSessionStores.endpoints,
+        ...deferredPluginSessionStores,
+      ]),
+      legacySessionStoreRefusal: sessionTargetRefusal,
+      skipAgentScopedMigrations: hasCustomAgentDirOverride(env),
+      pluginStateMigrationInventory,
+      legacySessionSurfaces,
+    });
+    for (const step of remainingMainSteps) {
+      if (step.id === "skill-workshop") {
+        // Recorded legacy targets can name workspaces outside copied state.
+        // Keep the owner visible without inspecting or granting those paths.
+        step.refusal = {
+          code: "skill-workshop-planning-deferred",
+          message:
+            "Skill Workshop relocation requires separately bound workspace and skill targets.",
+        };
+      }
+    }
+    const pluginPreparationRefusal = createPluginMigrationPreparationRefusal({
+      inventory: pluginStateMigrationInventory,
+      deferredSessionStoreEndpoints: deferredPluginSessionStores,
+    });
+    const plannedAgentTargetDiscoveryStep = createAgentTargetDiscoveryStep({
+      configPath: snapshot.configPath,
+      configIncludedPaths: configBefore.configIncludedPaths,
+      stateDir: snapshot.stateDir,
+      env,
+      refusal: agentTargetRefusal,
+      run: () => ({
+        changes: [],
+        warnings: agentTargetRefusal ? [agentTargetRefusal.message] : [],
+      }),
+    });
+    plannedAgentTargetDiscoveryStep.source = uniqueMigrationEndpoints([
+      ...plannedAgentTargetDiscoveryStep.source,
+      ...agentTargetRefusalEndpoints,
+    ]);
+    const migrationDetectionStep = createMigrationDetectionStep({
+      configPath: snapshot.configPath,
+      configIncludedPaths: configBefore.configIncludedPaths,
+      stateDir: snapshot.stateDir,
+      refusal:
+        detected.warnings.length > 0 && detected.warningDisposition !== "recoverable"
+          ? {
+              code: "migration-detection-warning",
+              message: detected.warnings.join("\n"),
+            }
+          : undefined,
+      run: () => ({ changes: [], warnings: detected.warnings }),
+    });
+    let steps = [
+      ...preparation,
+      createConfigMachineStateStep({
+        config: configBefore.config,
+        configPath: snapshot.configPath,
+        configIncludedPaths: configBefore.configIncludedPaths,
+        stateDir: snapshot.stateDir,
+        env,
+      }),
+      plannedAgentTargetDiscoveryStep,
+      ...buildLegacyStateMigrationPreludeSteps({
+        mode: params.mode,
+        invocationPurpose,
+        config: configBefore.config,
+        configPath: snapshot.configPath,
+        configIncludedPaths: configBefore.configIncludedPaths,
+        stateDir: snapshot.stateDir,
+        env,
+        homedir: () => snapshot.homeDir,
+        agentDatabaseTargets,
+        orphanSessionStores: copiedSessionStores,
+        pluginSessionStoreAgentIds: [],
+        legacySessionSurfaces,
+        deferredPluginSessionStoreEndpoints: deferredPluginSessionStores,
+        readOnlyPlanning: true,
+        ...(params.mode === "doctor"
+          ? {
+              pluginPreparation: createPluginMigrationPreparationStep({
+                configPath: snapshot.configPath,
+                configIncludedPaths: configBefore.configIncludedPaths,
+                pluginIds: collectRelevantDoctorPluginIds(configBefore.config),
+                refusal: pluginPreparationRefusal,
+                run: () => ({
+                  changes: [],
+                  warnings: pluginPreparationRefusal ? [pluginPreparationRefusal.message] : [],
+                }),
+              }),
+            }
+          : {}),
+      }),
+      migrationDetectionStep,
+      ...remainingMainSteps,
+    ].map(migrationStepPlan);
+    if (detected.stateSchema.hasLegacy) {
+      const sharedAuthStep = steps.find((step) => step.id === "shared-auth-store");
+      if (sharedAuthStep) {
+        sharedAuthStep.requiredness = "conditional";
+        sharedAuthStep.refusal = {
+          code: "state-schema-planning-deferred",
+          message:
+            "Shared auth migration inspection is deferred until the copied state schema is repaired.",
+        };
+      }
+    }
+    if (sessionTargetRefusal) {
+      for (const step of steps) {
+        if (step.id === "acp-session-metadata") {
+          step.refusal = sessionTargetRefusal;
+        }
+      }
+    }
+    const channelPairingStep = steps.find((step) => step.id === "channel-pairing");
+    if (channelPairingStep && detected.channelPairing.accountDiscoveryDeferred) {
+      channelPairingStep.requiredness = "conditional";
+      channelPairingStep.refusal = {
+        code: "plugin-planning-deferred",
+        message: "Channel pairing accounts will be checked with the updated plugins.",
       };
     }
-  }
-  if (sessionTargetRefusal) {
-    for (const step of steps) {
-      if (step.id === "acp-session-metadata") {
-        step.refusal = sessionTargetRefusal;
-      }
+    const firstRefusal = steps.find((step) => step.refusal !== undefined);
+    if (firstRefusal) {
+      steps = closeMigrationPlanTail(steps, firstRefusal);
     }
-  }
-  const channelPairingStep = steps.find((step) => step.id === "channel-pairing");
-  if (channelPairingStep && detected.channelPairing.accountDiscoveryDeferred) {
-    channelPairingStep.requiredness = "conditional";
-    channelPairingStep.refusal = {
-      code: "plugin-planning-deferred",
-      message: "Channel pairing accounts will be checked with the updated plugins.",
-    };
-  }
-  const firstRefusal = steps.find((step) => step.refusal !== undefined);
-  if (firstRefusal) {
-    steps = closeMigrationPlanTail(steps, firstRefusal);
-  }
-  const stateDirRefusal = pendingStateDirMigration
-    ? {
-        code: "state-dir-planning-deferred",
-        message:
-          "Legacy state-root relocation must complete before copied-state migrations are planned.",
-      }
-    : undefined;
-  const plannedSteps = pendingStateDirMigration
-    ? [
-        {
-          id: "state-dir",
-          phase: "shared" as const,
-          source: [{ kind: "path" as const, path: pendingStateDirMigration.source }],
-          target: [{ kind: "path" as const, path: pendingStateDirMigration.target }],
-          requiredness: "required" as const,
-          reversibility: "checkpoint-required" as const,
-          refusal: stateDirRefusal,
-        },
-        ...steps.map((step) => ({
-          ...step,
-          source: step.source.map((endpoint) =>
-            remapMigrationEndpointRoot(
-              endpoint,
-              pendingStateDirMigration.source,
-              pendingStateDirMigration.target,
-            ),
-          ),
-          target: step.target.map((endpoint) =>
-            remapMigrationEndpointRoot(
-              endpoint,
-              pendingStateDirMigration.source,
-              pendingStateDirMigration.target,
-            ),
-          ),
-          refusal: {
-            code: "blocked-by-prior-refusal",
-            message: `Migration step "${step.id}" is deferred until legacy state-root relocation is complete.`,
-          },
-        })),
-      ]
-    : steps;
-  const plan = createLegacyStateMigrationPlan({
-    mode: params.mode,
-    candidate: params.candidate,
-    snapshot,
-    steps: plannedSteps,
-    warnings: planningWarnings,
-    advisoryWarnings: detected.warningDisposition === "recoverable" ? detected.warnings : [],
-    ...(stateDirRefusal ? { refusal: stateDirRefusal } : {}),
-  });
-  // Validate the config owner's exact inputs and state at one final boundary;
-  // a separate concurrent config read can finish before the state traversal.
-  const identityAfter = await captureLegacyStateSnapshotIdentity({
-    ...requestedSnapshot,
-    configInputHashes: configBefore.configInputHashes,
-  });
-  if (identityAfter.warnings.length > 0) {
-    const message = identityAfter.warnings.join("\n");
-    return refuseLegacyStateMigrationPlan(plan, {
-      code: "snapshot-identity-unavailable",
-      message,
+    const stateDirRefusal = pendingStateDirMigration
+      ? {
+          code: "state-dir-planning-deferred",
+          message:
+            "Legacy state-root relocation must complete before copied-state migrations are planned.",
+        }
+      : undefined;
+    const plan = createLegacyStateMigrationPlan({
+      mode: params.mode,
+      candidate: params.candidate,
+      snapshot,
+      steps: pendingStateDirMigration
+        ? [
+            {
+              id: "state-dir",
+              phase: "shared" as const,
+              source: [{ kind: "path" as const, path: pendingStateDirMigration.source }],
+              target: [{ kind: "path" as const, path: pendingStateDirMigration.target }],
+              requiredness: "required" as const,
+              reversibility: "checkpoint-required" as const,
+              refusal: stateDirRefusal,
+            },
+            ...steps.map((step) => ({
+              ...step,
+              source: step.source.map((endpoint) =>
+                remapMigrationEndpointRoot(
+                  endpoint,
+                  pendingStateDirMigration.source,
+                  pendingStateDirMigration.target,
+                ),
+              ),
+              target: step.target.map((endpoint) =>
+                remapMigrationEndpointRoot(
+                  endpoint,
+                  pendingStateDirMigration.source,
+                  pendingStateDirMigration.target,
+                ),
+              ),
+              refusal: {
+                code: "blocked-by-prior-refusal",
+                message: `Migration step "${step.id}" is deferred until legacy state-root relocation is complete.`,
+              },
+            })),
+          ]
+        : steps,
+      warnings: planningWarnings,
+      advisoryWarnings: detected.warningDisposition === "recoverable" ? detected.warnings : [],
+      ...(stateDirRefusal ? { refusal: stateDirRefusal } : {}),
     });
-  }
-  if (
-    identityAfter.configDigest !== configBefore.rootDigest ||
-    identityBefore.stateDigest !== identityAfter.stateDigest
-  ) {
-    return refuseLegacyStateMigrationPlan(plan, {
-      code: "snapshot-identity-changed",
-      message: "Copied config or state changed while migration planning was in progress.",
+    // Validate the config owner's exact inputs and state at one final boundary;
+    // a separate concurrent config read can finish before the state traversal.
+    const identityAfter = await captureLegacyStateSnapshotIdentity({
+      ...requestedSnapshot,
+      configInputHashes: configBefore.configInputHashes,
     });
-  }
-  return plan;
+    if (identityAfter.warnings.length > 0) {
+      const message = identityAfter.warnings.join("\n");
+      return refuseLegacyStateMigrationPlan(plan, {
+        code: "snapshot-identity-unavailable",
+        message,
+      });
+    }
+    if (
+      identityAfter.configDigest !== configBefore.rootDigest ||
+      identityBefore.stateDigest !== identityAfter.stateDigest
+    ) {
+      return refuseLegacyStateMigrationPlan(plan, {
+        code: "snapshot-identity-changed",
+        message: "Copied config or state changed while migration planning was in progress.",
+      });
+    }
+    return plan;
+  });
 }
 
 function completedPluginMigrationFields(
