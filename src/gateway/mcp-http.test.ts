@@ -2361,6 +2361,10 @@ describe("collector result tool across the loopback MCP boundary", () => {
   });
 
   beforeEach(async () => {
+    getRuntimeConfigMock.mockImplementation(() => ({
+      session: { mainKey: "main" },
+      tools: { web: { search: { provider: "duckduckgo" } } },
+    }));
     const { resolveGatewayScopedTools: resolveActual } =
       await vi.importActual<typeof import("./tool-resolution.js")>("./tool-resolution.js");
     resolveGatewayScopedToolsMock.mockImplementation(
