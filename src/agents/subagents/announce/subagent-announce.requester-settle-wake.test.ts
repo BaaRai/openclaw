@@ -1,5 +1,5 @@
 // Requester settle wake tests cover the registry-less top-level requester.
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { matchesTranscriptEvent } from "../../../sessions/transcript-visible-record.js";
 import { buildAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";

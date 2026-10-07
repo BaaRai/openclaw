@@ -26,7 +26,6 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
-import { getActiveGatewayRootWorkHolders } from "../../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import {
@@ -904,19 +903,10 @@ describe("registered completion source custody", () => {
           ending === "completed-followup-original-revoked" ||
           ending === "completed-followup-successor-revoked"
         ) {
-          const requesterReply = createDeferredCore();
-          setSubagentAnnounceDeliveryDepsForTest({
-            dispatchGatewayMethodInProcess: vi.fn(async () => {
-              await requesterReply.promise;
-              return {
-                status: "ok",
-                result: { payloads: [{ text: "reviewed" }], meta: { durationMs: 1 } },
-              };
-            }),
-          });
           await updateRun(entry.runId, (draft) => {
             draft.execution = { status: "terminal", endedAt: 1, outcome: { status: "ok" } };
             draft.delivery = { status: "pending" };
+            draft.cleanupHandled = true; // Delivery is outside this custody proof.
           });
           const successorClient = createOperatorClient({
             profileName: "followup-owner",
@@ -986,14 +976,9 @@ describe("registered completion source custody", () => {
             expect(completionSource(revokeOriginal ? successor : retained)).toBe(
               revokeOriginal ? successorSource.authority.source : source.authority.source,
             );
-            // The retained result's delivery holds its source until the requester answers.
-            requesterReply.resolve();
-            await vi.waitFor(() => expect(getActiveGatewayRootWorkHolders()).toEqual([]));
             await releaseSubagentRun(entry.runId);
             await releaseSubagentRun(successor.runId);
           } finally {
-            requesterReply.resolve();
-            setSubagentAnnounceDeliveryDepsForTest();
             successorSource.release();
           }
         } else if (ending === "release-rejected") {

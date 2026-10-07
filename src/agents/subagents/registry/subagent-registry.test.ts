@@ -46,7 +46,6 @@ import { subagentRuns } from "./subagent-registry-memory.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { publishSubagentRunChanges } from "./subagent-registry-publication.js";
 import { registerSubagentResultRefreshCases } from "./subagent-registry-result-refresh.test-support.js";
-import { saveSubagentRegistryChangesToSqlite } from "./subagent-registry-state.fixture.test-support.js";
 import { registerYieldFollowupAdoptionTests } from "./subagent-registry-yield-followup-adoption.test-support.js";
 import { registerYieldedParentCleanupCase } from "./subagent-registry-yielded-cleanup.test-support.js";
 import {

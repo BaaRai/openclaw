@@ -1296,6 +1296,13 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
+  registerRequesterSettleRetirementTests({
+    createRunEntry,
+    createLifecycleController,
+    waitForLifecycleState,
+    completeRun,
+  });
+
   it("keeps a same-run replacement from hiding another session successor", () => {
     const entry = createRunEntry({
       runId: "fence-original",
