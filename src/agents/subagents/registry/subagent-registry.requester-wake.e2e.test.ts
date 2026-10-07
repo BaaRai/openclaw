@@ -14,6 +14,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
+import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
 import type { deliverAgentCommandResult } from "../../command/delivery.js";
 import type { EmbeddedAgentRunResult } from "../../embedded-agent-runner/types.js";
@@ -885,11 +886,7 @@ describe("requester settle wake product flow", () => {
     await registry.activateSubagentRegistry(() => context);
     const { withLocalSessionPlacementTurnSettlement } =
       await import("../../session-placement-admission.js");
-    const settleTurn = async (
-      runId: string,
-      accepted: Array<{ runId: string }>,
-      yielded: boolean,
-    ) =>
+    const settleTurn = async (runId: string, accepted: AcceptedSessionSpawn[], yielded: boolean) =>
       await withLocalSessionPlacementTurnSettlement(
         { sessionId: "sess-main", sessionKey: MAIN_REQUESTER_SESSION_KEY, agentId: "main", runId },
         async () => ({
