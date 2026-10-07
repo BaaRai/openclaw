@@ -54,6 +54,17 @@ const dispatch = vi.hoisted(() =>
     throw new Error("Unexpected reply dispatch for a retired event target");
   }),
 );
+const eventLogError = vi.hoisted(() => vi.fn());
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (subsystem: string) => {
+      const logger = actual.createSubsystemLogger(subsystem);
+      return subsystem === "session-events" ? { ...logger, error: eventLogError } : logger;
+    },
+  };
+});
 // mock-isolation: Reject unexpected reply execution; retired-target cases stop before admission.
 vi.mock("../dispatch.js", () => ({
   dispatchInboundMessageWithRoutedChannelDispatcher: dispatch,
@@ -108,6 +119,7 @@ async function withTargetFixture(
 }
 
 beforeEach(() => {
+  eventLogError.mockClear();
   continuation.mockClear();
   dispatch.mockClear();
   resetSystemEventsForTest();
@@ -579,30 +591,50 @@ describe("session event target custody", () => {
     },
   );
 
-  it("rejects a queued event when its runtime policy changes before dispatch", async () => {
-    await withTargetFixture(async ({ env }) => {
-      const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
-      const receipt = enqueueSessionEventForHost("Process completed", {
-        agentId: "main",
-        sessionKey,
-        source: "exec",
-        expectedTarget: target,
-      });
-      setRuntimeConfigSnapshot({
-        ...getRuntimeConfigSnapshot(),
-        tools: { deny: ["write", "message"] },
-      });
+  it.each(["awaited", "ignored"] as const)(
+    "reports a queued event's policy failure once with an %s receipt",
+    async (receiptUse) => {
+      await withTargetFixture(async ({ env }) => {
+        const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
+        const receipt = enqueueSessionEventForHost("Process completed", {
+          agentId: "main",
+          sessionKey,
+          source: "exec",
+          expectedTarget: target,
+        });
+        setRuntimeConfigSnapshot({
+          ...getRuntimeConfigSnapshot(),
+          tools: { deny: ["write", "message"] },
+        });
 
-      await expect(receipt.settled).resolves.toMatchObject({
-        status: "failed",
-        executionStarted: false,
-        delivered: false,
-        error: expect.stringContaining("configuration changed"),
+        if (receiptUse === "awaited") {
+          await expect(receipt.settled).resolves.toMatchObject({
+            status: "failed",
+            executionStarted: false,
+            delivered: false,
+            error: expect.stringContaining("configuration changed"),
+          });
+        }
+        // Join the independent owner without requiring a producer to consume its receipt.
+        await Promise.allSettled(
+          continuation.mock.results.flatMap((result) =>
+            result.type === "return" ? [result.value] : [],
+          ),
+        );
+        expect(receipt.cancel()).toBe(false);
+        resetSystemEventsForTest();
+        expect(eventLogError).toHaveBeenCalledExactlyOnceWith("session event execution failed", {
+          source: "exec",
+          agentId: "main",
+          sessionKey,
+          eventId: receipt.id,
+          error: expect.stringContaining("configuration changed"),
+        });
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       });
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
-    });
-  });
+    },
+  );
 
   it("retires a reset generation's deferred notice without poisoning its automation", async () => {
     await withTargetFixture(async ({ env, storePath }) => {
@@ -694,6 +726,7 @@ describe("session event target custody", () => {
         expect(gatewayWork.getGatewaySuspendAdmissionPhase()).toBe("prepared");
         expect(peekSystemEventEntries(sessionKey)).toEqual([]);
         expect(dispatch).not.toHaveBeenCalled();
+        expect(eventLogError).not.toHaveBeenCalled();
       } finally {
         suspension?.release();
       }

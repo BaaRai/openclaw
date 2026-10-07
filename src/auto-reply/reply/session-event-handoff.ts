@@ -22,6 +22,7 @@ import {
   enqueueRequiredSystemEventEntry,
   type SystemEvent,
 } from "../../infra/system-events.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -57,6 +58,8 @@ export type {
   SessionEventSource,
   SessionEventTarget,
 } from "./session-event-contract.js";
+
+const log = createSubsystemLogger("session-events");
 
 /** Producer-owned occurrence; passive notices continue to use enqueueSystemEvent. */
 export function enqueueSessionEventForHost(
@@ -264,6 +267,15 @@ export function enqueueSessionEventForHost(
       finished = true;
       acceptanceAssertion = undefined;
       const status = signal.aborted ? "cancelled" : failure ? "failed" : "completed";
+      if (status === "failed") {
+        log.error("session event execution failed", {
+          source: options.source,
+          agentId,
+          sessionKey,
+          eventId: occurrence.id,
+          error: failure,
+        });
+      }
       if (!accepted) {
         acceptance.resolve({
           ok: false,
