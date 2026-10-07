@@ -1,14 +1,14 @@
 /**
- * Debounced realtime voice talkback queue for delegated OpenClaw consults.
+ * Debounced realtime voice talkback for delegated OpenClaw consults.
  *
- * Transcript fragments can arrive quickly while one consult is already running;
- * this queue batches compatible fragments, runs consults serially, and aborts
- * cleanly when the voice session closes.
+ * Fragments from the same lane that arrive within the debounce window merge into
+ * one question. Each question then starts its own consult; the session mailbox
+ * orders those turns. Close aborts every in-flight consult.
  */
 import type { RuntimeLogger } from "../plugins/runtime/types-core.js";
 
-const MAX_PENDING_QUESTIONS = 32;
-const MAX_PENDING_QUESTION_CHARS = 32 * 1024;
+/** Overflow policy: questions beyond this many in-flight consults are dropped with a warning. */
+const MAX_IN_FLIGHT_CONSULTS = 8;
 
 export type RealtimeVoiceAgentTalkbackResult = {
   text: string;
@@ -47,165 +47,99 @@ type PendingQuestion = {
 export function createRealtimeVoiceAgentTalkbackQueue(
   params: RealtimeVoiceAgentTalkbackQueueParams,
 ): RealtimeVoiceAgentTalkbackQueue {
-  let active = false;
   let closed = false;
-  let pendingQuestions: PendingQuestion[] = [];
-  let pendingQuestionChars = 0;
-  let overflowWarned = false;
+  let batch: PendingQuestion | undefined;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-  let activeAbortController: AbortController | undefined;
+  const inFlight = new Set<AbortController>();
 
   const shouldStop = () => closed || params.isStopped();
 
-  const clearDebounceTimer = () => {
-    clearTimeout(debounceTimer);
-    debounceTimer = undefined;
-  };
-
-  const appendPendingQuestion = (next: PendingQuestion): boolean => {
-    const current = pendingQuestions.at(-1);
-    const mergeWithCurrent = current !== undefined && Object.is(current.metadata, next.metadata);
-    const addedChars = next.question.length + (mergeWithCurrent ? 1 : 0);
-    const exceedsQuestionLimit =
-      !mergeWithCurrent && pendingQuestions.length >= MAX_PENDING_QUESTIONS;
-    const exceedsCharacterLimit = pendingQuestionChars + addedChars > MAX_PENDING_QUESTION_CHARS;
-    if (exceedsQuestionLimit || exceedsCharacterLimit) {
-      if (!overflowWarned) {
-        overflowWarned = true;
-        params.logger.warn(
-          `${params.logPrefix} consult queue full: droppedChars=${next.question.length} queued=${pendingQuestions.length} queuedChars=${pendingQuestionChars}`,
-        );
-      }
-      return false;
-    }
-    if (current && mergeWithCurrent) {
-      // Metadata identity represents the caller/context lane; merge only when the
-      // same lane produced adjacent fragments.
-      current.question = `${current.question}\n${next.question}`;
-    } else {
-      pendingQuestions.push(next);
-    }
-    pendingQuestionChars += addedChars;
-    return true;
-  };
-
-  const shiftPendingQuestion = (): PendingQuestion | undefined => {
-    const next = pendingQuestions.shift();
-    if (!next) {
-      return undefined;
-    }
-    pendingQuestionChars -= next.question.length;
-    if (pendingQuestions.length === 0) {
-      overflowWarned = false;
-    }
-    return next;
-  };
-
-  const clearPendingQuestions = () => {
-    pendingQuestions = [];
-    pendingQuestionChars = 0;
-    overflowWarned = false;
-  };
-
-  const run = async (pending: PendingQuestion): Promise<void> => {
-    if (shouldStop()) {
-      return;
-    }
-    if (active) {
-      appendPendingQuestion(pending);
-      return;
-    }
-    active = true;
-    let nextQuestion: PendingQuestion | undefined = pending;
-    let consultStartedAt: number | undefined;
+  // Runs one consult and delivers its answer, or the fallback on failure.
+  const consult = async (pending: PendingQuestion, controller: AbortController) => {
+    const startedAt = Date.now();
+    params.logger.info(
+      `${params.logPrefix} consult: chars=${pending.question.length} inFlight=${inFlight.size}`,
+    );
     try {
-      while (nextQuestion) {
-        if (shouldStop()) {
-          return;
-        }
-        const currentQuestion = nextQuestion;
-        consultStartedAt = Date.now();
-        params.logger.info(
-          `${params.logPrefix} consult: chars=${currentQuestion.question.length} queued=${pendingQuestions.length}`,
-        );
-        activeAbortController = new AbortController();
-        const result = await params.consult({
-          question: currentQuestion.question,
-          metadata: currentQuestion.metadata,
-          responseStyle: params.responseStyle,
-          signal: activeAbortController.signal,
-        });
-        activeAbortController = undefined;
-        const text = result.text.trim();
-        params.logger.info(
-          `${params.logPrefix} consult done: elapsedMs=${Date.now() - consultStartedAt} answerChars=${text.length} queued=${pendingQuestions.length}`,
-        );
-        if (!shouldStop() && text) {
-          params.deliver(text);
-        }
-        nextQuestion = shiftPendingQuestion();
+      const result = await params.consult({
+        question: pending.question,
+        metadata: pending.metadata,
+        responseStyle: params.responseStyle,
+        signal: controller.signal,
+      });
+      const text = result.text.trim();
+      params.logger.info(
+        `${params.logPrefix} consult done: elapsedMs=${Date.now() - startedAt} answerChars=${text.length}`,
+      );
+      if (!shouldStop() && text) {
+        params.deliver(text);
       }
     } catch (error) {
-      activeAbortController = undefined;
       if (shouldStop() || isAbortError(error)) {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      const elapsedDetail =
-        consultStartedAt === undefined ? "" : ` elapsedMs=${Date.now() - consultStartedAt}`;
-      params.logger.warn(`${params.logPrefix} consult failed:${elapsedDetail} ${message}`);
+      params.logger.warn(
+        `${params.logPrefix} consult failed: elapsedMs=${Date.now() - startedAt} ${message}`,
+      );
       params.deliver(params.fallbackText);
     } finally {
-      active = false;
-      if (shouldStop()) {
-        clearPendingQuestions();
-      } else {
-        const queuedQuestion = shiftPendingQuestion();
-        if (queuedQuestion) {
-          void run(queuedQuestion);
-        }
-      }
+      inFlight.delete(controller);
     }
   };
 
+  // Ends the debounce window and starts the merged question as its own consult.
+  const flush = () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = undefined;
+    const pending = batch;
+    batch = undefined;
+    if (!pending || shouldStop()) {
+      return;
+    }
+    if (inFlight.size >= MAX_IN_FLIGHT_CONSULTS) {
+      params.logger.warn(
+        `${params.logPrefix} consult dropped: inFlight=${inFlight.size} droppedChars=${pending.question.length}`,
+      );
+      return;
+    }
+    const controller = new AbortController();
+    inFlight.add(controller);
+    void consult(pending, controller);
+  };
+
   return {
-    isIdle: () => !active && pendingQuestions.length === 0,
+    isIdle: () => debounceTimer === undefined && inFlight.size === 0,
     close: () => {
       if (closed) {
         return;
       }
       closed = true;
-      clearDebounceTimer();
-      clearPendingQuestions();
-      activeAbortController?.abort();
+      clearTimeout(debounceTimer);
+      debounceTimer = undefined;
+      batch = undefined;
+      for (const controller of inFlight) {
+        controller.abort();
+      }
     },
     enqueue: (question, metadata) => {
       const trimmed = question.trim();
       if (!trimmed || shouldStop()) {
         return;
       }
-      if (active) {
-        if (appendPendingQuestion({ question: trimmed, metadata })) {
-          params.logger.info(
-            `${params.logPrefix} consult queued: chars=${trimmed.length} queued=${pendingQuestions.length}`,
-          );
-        }
-        clearDebounceTimer();
-        return;
+      // Metadata identity is the caller/context lane; only one lane merges per window.
+      if (batch && !Object.is(batch.metadata, metadata)) {
+        flush();
       }
-      if (!appendPendingQuestion({ question: trimmed, metadata })) {
-        return;
+      if (batch) {
+        batch.question = `${batch.question}\n${trimmed}`;
+      } else {
+        batch = { question: trimmed, metadata };
       }
-      clearDebounceTimer();
       // Debounce short transcript bursts so partial ASR fragments become a
       // single consult question instead of multiple back-to-back agent turns.
-      debounceTimer = setTimeout(() => {
-        debounceTimer = undefined;
-        const queuedQuestion = shiftPendingQuestion();
-        if (queuedQuestion && !shouldStop()) {
-          void run(queuedQuestion);
-        }
-      }, params.debounceMs);
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(flush, params.debounceMs);
       debounceTimer.unref?.();
     },
   };
