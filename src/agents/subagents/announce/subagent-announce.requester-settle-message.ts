@@ -5,6 +5,7 @@ import {
   SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION,
 } from "../completion/subagent-completion-instructions.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
+import { isSubagentObligationRetired } from "../registry/subagent-requester-settle-identity.js";
 import {
   buildSubagentRestartRecoveryRoster,
   SUBAGENT_RESTART_RECOVERY_INSTRUCTION,
@@ -59,7 +60,7 @@ export function buildRequesterSettleWakeMessage(params: {
       : routeNotices;
   const recoveryRoster = buildSubagentRestartRecoveryRoster(params.recoveryChildren);
   return [
-    "[Subagent Context] Every subagent in this batch has now settled, including its descendants.",
+    describeSettledBatch(params.children),
     "[Subagent Context] Do not keep waiting or call sessions_yield again for this batch; no further completion events will arrive for it. Other batches may still be running.",
     // Private completion guidance already includes the shared outcome policy.
     ...(params.parentOnly ? [] : [`[Subagent Context] ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION}`]),
@@ -85,4 +86,15 @@ export function buildRequesterSettleWakeMessage(params: {
     params.findings ??
       "(each child result was announced individually in earlier completion events)",
   ].join("\n");
+}
+
+// A cohort whose every member was stopped, killed, or deleted resolves with no result to review.
+function describeSettledBatch(children: readonly SubagentRunRecord[]): string {
+  if (children.length === 0 || !children.every(isSubagentObligationRetired)) {
+    return "[Subagent Context] Every subagent in this batch has now settled, including its descendants.";
+  }
+  const labels = children.map(
+    (child) => child.label?.trim() || child.taskName?.trim() || child.task.trim() || child.runId,
+  );
+  return `[Subagent Context] Every child in this batch ended without a result: ${children.length} stopped, killed, or deleted before finishing (${labels.join("; ")}).`;
 }

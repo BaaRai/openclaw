@@ -120,6 +120,7 @@ async function killLatestSubagentRun(params: {
   tree: KillTree;
   scope: KillScope;
   suppressTaskDelivery?: boolean;
+  requesterNotified?: boolean;
   beforeSessionKill?: () => boolean;
   requiredSessionId?: string;
   expectedRunId?: string;
@@ -232,6 +233,8 @@ type KillTraversal = {
   cfg: OpenClawConfig;
   scope: KillScope;
   suppressTaskDelivery?: boolean;
+  /** A requester-wide Stop or reset cancels the tree; that requester needs no report. */
+  requesterNotified?: boolean;
 };
 
 async function visitAll(work: Promise<void>[]): Promise<void> {
@@ -338,9 +341,11 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
     }
     if (!stopped.result.superseded && !stopped.result.declined && params.tree.canTraverse()) {
       // Exact admin constraints belong only to its selected root, not each descendant.
+      // Descendants of a cancelled root lose their requester; nothing is reported to it.
       cascade = await killSubagentRunTree({
         cfg: params.cfg,
         suppressTaskDelivery: params.suppressTaskDelivery,
+        requesterNotified: true,
         suppressCompletedWakes: !stopped.result.error && !stopped.result.completedCleanupError,
         scope: params.scope,
         trees: params.tree.children,
@@ -420,6 +425,7 @@ async function killSelectedSubagentRuns(
     const stopped = await killSubagentRunTree({
       cfg: params.cfg,
       suppressTaskDelivery: params.suppressTaskDelivery,
+      requesterNotified: params.suppressTaskDelivery,
       trees: acceptedTrees,
       scope,
     });
@@ -564,8 +570,9 @@ export async function killSubagentRunAdmin(
 }
 
 /**
- * Deleting a child session ends the completion it still owes its requester. Rows that
- * owe nothing, such as a collector its own spawn is cleaning up, stay with their owner.
+ * Deleting a child session ends the completion it still owes its requester; a yielded
+ * requester learns of it through its cohort. Rows that owe nothing, such as a collector
+ * its own spawn is cleaning up, stay with their owner.
  */
 export async function retireDeletedSubagentSession(
   params: Omit<SubagentAdminKillParams, "suppressTaskDelivery">,

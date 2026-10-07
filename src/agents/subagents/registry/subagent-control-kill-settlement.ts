@@ -34,6 +34,7 @@ type SubagentKillSettlementOwnerParams = {
   cancellationControl: Pick<SubagentCancellationControl, "assertCurrent">;
   stopAcceptance: { accepted: boolean };
   suppressTaskDelivery?: boolean;
+  requesterNotified?: boolean;
   withdrawQueuedReservation: () => void;
 };
 
@@ -128,11 +129,15 @@ export function createSubagentKillSettlementOwner(params: SubagentKillSettlement
     }
     try {
       // The killed row may already have a successor; retirement binds to this exact row.
-      await retireSubagentObligations(current, () => {
-        if (getCurrentSubagentRunOwner(subagentRuns, current) !== current) {
-          throw new Error("Killed subagent row changed before obligation retirement.");
-        }
-      });
+      await retireSubagentObligations(
+        current,
+        () => {
+          if (getCurrentSubagentRunOwner(subagentRuns, current) !== current) {
+            throw new Error("Killed subagent row changed before obligation retirement.");
+          }
+        },
+        { requesterNotified: params.requesterNotified },
+      );
       return result;
     } catch (error) {
       if (hasSqliteWorkerOutcomeUnknown(error)) {

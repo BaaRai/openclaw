@@ -307,12 +307,7 @@ export async function markRequesterTurnYieldedInRuns(params: {
   const { preparedAuthority } = params;
   let cronAuthority: Awaited<ReturnType<PreparedRequesterCronAuthority["bind"]>>;
   try {
-    const boundCount = selectRequesterTurnChildren(
-      params.runs,
-      requesterSessionKey,
-      params.requesterAgentId,
-      requesterTurnRunId,
-    ).length;
+    // Only owed completions can wake a yield; retired children leave nothing to wait for.
     const selectedEntries = selectOwingRequesterTurnChildren(
       params.runs,
       requesterSessionKey,
@@ -320,7 +315,7 @@ export async function markRequesterTurnYieldedInRuns(params: {
       requesterTurnRunId,
     );
     if (selectedEntries.length === 0) {
-      return boundCount;
+      return 0;
     }
     await params.transfer({
       entries: selectedEntries,
@@ -362,7 +357,7 @@ export async function markRequesterTurnYieldedInRuns(params: {
         throw new SubagentRegistryWriteError("committed", error, "published");
       }
     }
-    return boundCount;
+    return selectedEntries.length;
   } catch (error) {
     cronAuthority?.revoke();
     throw error;
@@ -421,8 +416,12 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
   if (requiredRunIds.size > 0 || boundEntries.length === 0) {
     return false;
   }
-  // Retired children owe nothing; a cohort holds only the remaining obligations.
-  const selectedEntries = boundEntries.filter(owesRequesterCompletion);
+  // A cohort holds the remaining obligations, plus members the yield claimed that retired
+  // since; those resolve into the cohort's one continuation instead of disappearing.
+  const isCohortMember = (entry: SubagentRunRecord) =>
+    owesRequesterCompletion(entry) ||
+    (params.requesterYielded && entry.requesterTurnYielded === true);
+  const selectedEntries = boundEntries.filter(isCohortMember);
   if (selectedEntries.length === 0) {
     return true;
   }
@@ -460,12 +459,12 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
         "Requester pause owner appeared outside the admitted cohort",
       );
     }
-    const current = selectOwingRequesterTurnChildren(
+    const current = selectRequesterTurnChildren(
       params.runs,
       requesterSessionKey,
       params.requesterAgentId,
       requesterTurnRunId,
-    );
+    ).filter(isCohortMember);
     if (
       current.length !== childRunIds.size ||
       current.some((entry) => !childRunIds.has(entry.runId))

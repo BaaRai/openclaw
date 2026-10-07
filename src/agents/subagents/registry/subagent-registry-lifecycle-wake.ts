@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import { isGatewayRestartDrainError } from "../../../process/gateway-work-admission.js";
+import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
@@ -65,19 +66,24 @@ function releaseRequesterSettleWakeBatch(
 }
 
 /**
- * Kill, suppression, and deletion retire a child's owed inputs and its cohort membership.
- * Whatever wake the current row still owes is retired; a wake already settled needs nothing.
+ * Kill, suppression, and deletion retire a child's owed inputs. A yielded cohort keeps the
+ * retired member, so the cohort still resolves into one continuation that reports it; the
+ * member leaves the cohort only when its requester already knows: the requester's own live
+ * turn retired it, or a requester-wide Stop or reset did.
  */
 export async function retireSubagentObligations(
   context: SubagentLifecycleWakeContext,
   entry: SubagentRunRecord,
   assertCurrent: () => void,
+  options: { requesterNotified?: boolean } = {},
 ): Promise<void> {
   assertCurrent();
   retireSubagentControllerInputs(entry);
   if (!entry.requesterSettleWake) {
     return;
   }
+  const requesterNotified =
+    options.requesterNotified === true || isRetiredByLiveRequesterTurn(entry);
   const workerContext = captureOpenClawStateWorkerContext();
   await mutateSubagentRuns(
     [entry.runId],
@@ -95,16 +101,31 @@ export async function retireSubagentObligations(
       }
       const next = structuredClone(current);
       next.suppressCompletionDelivery = true;
-      next.requesterSettleWake = undefined;
-      return { value: wake, postimages: new Map([[next.runId, next]]) };
+      const keepsCohort =
+        !requesterNotified &&
+        wake.requesterYieldBatch === true &&
+        Boolean(wake.batchRunIds?.length);
+      if (keepsCohort) {
+        const { pauseNotice: _retiredNotice, ...cohortWake } = wake;
+        next.requesterSettleWake = cohortWake;
+      } else {
+        next.requesterSettleWake = undefined;
+      }
+      return { value: { wake, keepsCohort }, postimages: new Map([[next.runId, next]]) };
     },
     {
       runs: context.options.runs,
       context: workerContext,
       assertCurrent,
-      onPublished: (postimages, wake) => {
+      onPublished: (postimages, retired) => {
         const published = postimages.get(entry.runId);
-        if (!wake || !published) {
+        if (!retired || !published) {
+          return;
+        }
+        const { wake, keepsCohort } = retired;
+        if (keepsCohort) {
+          // The cohort resolves now that this member has ended without a result.
+          scheduleRequesterSettleWake(context, published.runId, published, workerContext);
           return;
         }
         const requesterAgentId = resolveSubagentRequesterAgentId(
@@ -124,6 +145,12 @@ export async function retireSubagentObligations(
       },
     },
   );
+}
+
+/** The requester's own running turn is the caller; it already knows what it stopped. */
+function isRetiredByLiveRequesterTurn(entry: SubagentRunRecord): boolean {
+  const caller = getCurrentSessionControllerOwner();
+  return caller !== undefined && !caller.result && caller.key === entry.requesterSessionKey;
 }
 
 /** One in-flight evaluation per owed continuation; members of one cohort share it. */

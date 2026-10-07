@@ -430,6 +430,67 @@ function startRetiredSiblingModel(retirement: "delete" | "stop") {
   };
 }
 
+const onlyChildTask = "Hold the only child of a yielded parent until it ends.";
+const resolvedCohortMarker = "ended without a result";
+
+/** A parent yields on its only child; the child holds, or pauses, until something ends it. */
+function startYieldedOnlyChildModel(child: "hold" | "pause") {
+  const spawnedChild = createDeferred<{ runId: string; sessionKey: string }>();
+  const childStarted = createDeferred();
+  const continuations: string[] = [];
+  let parentRequestCount = 0;
+  return {
+    child: spawnedChild.promise,
+    childStarted: childStarted.promise,
+    continuations: () => [...continuations],
+    handle: async (
+      body: string,
+      request: IncomingMessage,
+      response: ServerResponse,
+      sequence: number,
+    ) => {
+      if (!body.includes(parentPrompt)) {
+        if (!body.includes(onlyChildTask)) {
+          return false;
+        }
+        if (child === "hold") {
+          await holdUntilStopped(request, response, () => childStarted.resolve());
+          return true;
+        }
+        childStarted.resolve();
+        return body.includes("function_call_output")
+          ? false
+          : writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      if (body.includes(stoppedResult)) {
+        throw new Error("A stopped child result reached its requester");
+      }
+      if (body.includes(resolvedCohortMarker)) {
+        continuations.push(body);
+        return writeVisibleReply(response, "PARENT_RECEIVED_RESOLVED_COHORT", sequence);
+      }
+      parentRequestCount += 1;
+      if (parentRequestCount === 1) {
+        return writeToolCall(
+          response,
+          "sessions_spawn",
+          { task: onlyChildTask, context: "isolated", cleanup: "keep" },
+          sequence,
+        );
+      }
+      if (parentRequestCount === 2) {
+        const [spawned] = spawnReceipts(body);
+        if (!spawned) {
+          throw new Error("Parent did not retain the only-child spawn receipt");
+        }
+        spawnedChild.resolve(spawned);
+        return writeToolCall(response, "sessions_yield", { waitFor: "message" }, sequence);
+      }
+      return false;
+    },
+  };
+}
+
 async function startProofGateway(modelUrl: string, label: string) {
   const state = await createOpenClawTestState({ label });
   setUserProfileRole(ensureProfileForEmail(proxyUser).id, "administrator");
@@ -472,6 +533,24 @@ async function waitForRun(runId: string, matches: (row: SubagentRunRecord) => bo
   const observe = () => {
     const row = getSubagentRunByRunId(runId);
     if (row && matches(row)) {
+      reached.resolve();
+    }
+  };
+  const stop = subscribeSubagentRunChanges("persistence", observe);
+  try {
+    observe();
+    await reached.promise;
+  } finally {
+    stop();
+  }
+}
+
+/** Resolves once the row is gone or satisfies the predicate. */
+async function waitForRunOrRemoval(runId: string, matches: (row: SubagentRunRecord) => boolean) {
+  const reached = createDeferred();
+  const observe = () => {
+    const row = getSubagentRunByRunId(runId);
+    if (!row || matches(row)) {
       reached.resolve();
     }
   };
@@ -583,6 +662,70 @@ it.each(["delete", "stop"] as const)(
       expect(owedControllerInputs(sibling.runId), "the sibling delivered once").toEqual([]);
     } finally {
       script.release();
+      await gateway.close();
+      await model.close();
+    }
+  },
+);
+
+it.each([
+  { ending: "child stop", continuations: 1 },
+  { ending: "child delete", continuations: 1 },
+  { ending: "parent stop", continuations: 0 },
+] as const)(
+  "resolves a yielded parent's only child after $ending with $continuations continuation",
+  async ({ ending, continuations }) => {
+    // Stop reaches a dormant child through its registry row; Stop of an active child is a
+    // provisional kill that a late canonical completion may still replace.
+    const script = startYieldedOnlyChildModel(ending === "child stop" ? "pause" : "hold");
+    const model = await startScriptedModel(script.handle);
+    const label = `subagent-only-child-${ending.replace(" ", "-")}`;
+    const gateway = await startProofGateway(model.url, label);
+    const parentRunId = `${label}-parent`;
+    const parentSessionKey = `agent:main:${parentRunId}`;
+    try {
+      await expect(
+        gateway.client.request("chat.send", {
+          sessionKey: parentSessionKey,
+          message: parentPrompt,
+          idempotencyKey: parentRunId,
+          deliver: false,
+        }),
+      ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
+      const child = await script.child;
+      await script.childStarted;
+      await expect(
+        gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      await waitForRun(
+        child.runId,
+        (row) =>
+          row.requesterSettleWake?.requesterYieldBatch === true &&
+          (ending !== "child stop" || row.pauseReason === "sessions_yield"),
+      );
+      if (ending === "child stop") {
+        await expect(
+          gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
+        ).resolves.toMatchObject({ ok: true, status: "aborted" });
+      } else if (ending === "child delete") {
+        await expect(
+          gateway.client.request("sessions.delete", { key: child.sessionKey }),
+        ).resolves.toMatchObject({ ok: true, deleted: true });
+      } else {
+        await gateway.client.request("sessions.abort", { key: parentSessionKey });
+      }
+      // The cohort resolves when its last member's wake is settled or retired.
+      await waitForRunOrRemoval(
+        child.runId,
+        (row) => row.execution.status === "terminal" && row.requesterSettleWake === undefined,
+      );
+      const delivered = script.continuations();
+      expect(delivered).toHaveLength(continuations);
+      for (const body of delivered) {
+        expect(body).toContain(onlyChildTask);
+      }
+      expect(owedControllerInputs(child.runId), "the resolved cohort owes nothing").toEqual([]);
+    } finally {
       await gateway.close();
       await model.close();
     }

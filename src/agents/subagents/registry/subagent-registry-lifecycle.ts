@@ -481,8 +481,11 @@ export class SubagentLifecycleController {
     scheduleRequesterSettleWake(this, runId, entry);
   };
 
-  retireSubagentObligations = (entry: SubagentRunRecord, assertCurrent: () => void) =>
-    retireSubagentObligations(this, entry, assertCurrent);
+  retireSubagentObligations = (
+    entry: SubagentRunRecord,
+    assertCurrent: () => void,
+    options?: { requesterNotified?: boolean },
+  ) => retireSubagentObligations(this, entry, assertCurrent, options);
 
   adoptSubagentRunForRequesterTurn = (
     params: Omit<Parameters<typeof adoptSubagentRunForRequesterTurnInRuns>[0], "runs">,

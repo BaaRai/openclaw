@@ -283,7 +283,10 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       requesterRun?.suppressCompletionDelivery === true ||
       currentRequester?.killReconciliation?.suppressTaskDelivery === true ||
       currentRequester?.suppressCompletionDelivery === true ||
-      currentBatch.every(isSubagentObligationRetired)
+      // A yielded cohort reports the members it still holds; requester-wide cancellation
+      // already removed its own. An ordinary wave owes nothing once every member retired.
+      (selectedState.requesterYieldBatch !== true &&
+        currentBatch.every(isSubagentObligationRetired))
     );
   };
   if (isBatchDeliveryClosed()) {
