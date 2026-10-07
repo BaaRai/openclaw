@@ -81,6 +81,7 @@ it("rejects an async anchor consumer on the selected execution owner", async () 
               scope,
               { entryIds: ["question"] },
               undefined,
+              // oxlint-disable-next-line typescript/no-misused-promises -- Exercise runtime rejection of an async consumer.
               async (facts) => {
                 expect(facts.anchors).toMatchObject([{ entryId: "question" }]);
                 consumed = true;
