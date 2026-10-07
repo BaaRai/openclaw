@@ -15,7 +15,7 @@ export type ReplyOperationPhase =
   | "aborted";
 export type ReplyOperationResult =
   | { kind: "completed" }
-  /** The backend ended its own turn to await a continuation; no further input is injectable. */
+  /** The backend ended its own turn to await a continuation; recorded when the turn settles. */
   | { kind: "yielded" }
   | {
       kind: "failed";
@@ -45,7 +45,7 @@ export type ReplyOperationState = Readonly<{
 export type ReplyOperationEvent =
   | { type: "phase"; phase: ReplyOperationActivePhase }
   | { type: "maintenance-wait" | "maintenance-ready" | "lane-wait" | "lane-ready" }
-  | { type: "freeze" | "clear" }
+  | { type: "freeze" | "clear" | "yield" }
   | { type: "result"; result: ReplyOperationResult };
 
 export type ReplyOperationEffect =
@@ -70,12 +70,15 @@ export function transitionReplyOperation(
   event: ReplyOperationEvent,
 ): { state: ReplyOperationState; effects: readonly ReplyOperationEffect[] } {
   const unchanged = { state, effects: [] };
-  const active = state.result === null && !state.cleared;
+  // A recorded yield closes the phase without settling: the result arrives at settlement.
+  const active = state.result === null && !state.cleared && state.phase !== "yielded";
   switch (event.type) {
     case "clear":
       return { state: { ...state, cleared: true }, effects: [] };
     case "freeze":
       return { state: { ...state, abortFrozen: true }, effects: [] };
+    case "yield":
+      return active ? { state: { ...state, phase: "yielded" }, effects: ["activity"] } : unchanged;
     case "result":
       return state.result
         ? unchanged

@@ -13,6 +13,7 @@ import {
   findSessionControllerOperationByRunId,
   submitSessionControllerSteer,
   type ReplyOperation,
+  type SessionControllerSteerResult,
 } from "../../../sessions/session-controller.js";
 import {
   reserveSessionControllerSource,
@@ -193,8 +194,12 @@ describe("runEmbeddedAttempt sessions_yield", () => {
     const sessionKey = "agent:main:sessions-yield-steer";
     const runId = "sessions-yield-steer-run";
     const sessionSteer = vi.fn(async () => {});
+    const yieldInterrupt = vi.fn();
     let operation: ReplyOperation | undefined;
     let input: SessionControllerInput | undefined;
+    let duringYield: { phase?: string; result?: unknown } | undefined;
+    let steerOutcome: Promise<SessionControllerSteerResult> | undefined;
+    let yieldOutcome: Promise<unknown> | undefined;
     await createContextEngineAttemptRunner({
       contextEngine: createContextEngineBootstrapAndAssemble(),
       sessionKey,
@@ -202,32 +207,50 @@ describe("runEmbeddedAttempt sessions_yield", () => {
       attemptOverrides: { disableTools: false, runId },
       sessionPrompt: async (session) => {
         session.steer = sessionSteer;
+        // The runtime queues its own interrupt through the agent when the turn yields.
+        Object.assign(session.agent, { steer: yieldInterrupt });
         operation = findSessionControllerOperationByRunId(runId);
         // The steer captures the running turn before the yield and reaches it after.
-        const target = captureCurrentReplyMessageInjectionTarget(sessionKey);
-        expect(target).toBeDefined();
-        input = reserveSessionControllerSource(sessionKey, { policy: { mode: "steer" } });
-        const onYield = hoisted.createOpenClawCodingToolsMock.mock.calls.at(-1)?.[0]?.onYield;
+        const target = expectDefined(
+          captureCurrentReplyMessageInjectionTarget(sessionKey),
+          "running turn injection target",
+        );
+        const steer = reserveSessionControllerSource(sessionKey, { policy: { mode: "steer" } });
+        input = steer;
+        const onYield = expectDefined(
+          hoisted.createOpenClawCodingToolsMock.mock.calls.at(-1)?.[0]?.onYield,
+          "attempt onYield",
+        );
         const yieldTool = createSessionsYieldTool({
           sessionId: "embedded-session",
           claimYield: () => true,
-          onYield,
+          onYield: (...args) => {
+            const ended = onYield(...args);
+            // The steer reaches the turn between the yield and the operation's settlement.
+            duringYield = { phase: operation?.phase, result: operation?.result };
+            steerOutcome = submitSessionControllerSteer({
+              input: steer,
+              target,
+              text: "late steer",
+              options: { steeringMode: "all" },
+            });
+            return ended;
+          },
         });
-        // The tool finishes on its own result after yield() closed the turn's tool authority.
-        await expect(yieldTool.execute("yield", {})).resolves.toMatchObject({
-          details: { status: "yielded" },
-        });
-        await expect(
-          submitSessionControllerSteer({
-            input,
-            target,
-            text: "late steer",
-            options: { steeringMode: "all" },
-          }),
-        ).resolves.toMatchObject({ status: "rejected" });
+        // The aborted prompt can return before this tool result; the test awaits it below.
+        yieldOutcome = yieldTool.execute("yield", {});
+        await yieldOutcome;
       },
     });
 
+    // The tool finishes on its own result after yield() closed the turn's tool authority.
+    await expect(yieldOutcome).resolves.toMatchObject({ details: { status: "yielded" } });
+    expect(duringYield).toEqual({ phase: "yielded", result: null });
+    await expect(steerOutcome).resolves.toMatchObject({
+      status: "rejected",
+      reason: "not_running",
+    });
+    expect(yieldInterrupt).toHaveBeenCalledOnce();
     expect(sessionSteer).not.toHaveBeenCalled();
     expect(operation?.result).toEqual({ kind: "yielded" });
     // The rejected steer keeps its mailbox place for the followup after the turn ends.

@@ -130,12 +130,6 @@ export function resolveActiveReplyOperationForSessionId(
   return resolution.kind === "one" ? resolution.operation : undefined;
 }
 
-// A yield records the outcome before the backend finishes ending its turn, so a yielded
-// operation keeps its run IDs until it settles. Failed and aborted operations own none.
-function ownsRunIds(operation: ReplyOperation): boolean {
-  return !operation.result || operation.result.kind === "yielded";
-}
-
 /**
  * Resolves the one unfinished operation that owns a backend run ID (kept after detach until the
  * operation settles) or a claimed input's protocol run ID; ambiguity fails closed.
@@ -145,7 +139,7 @@ export function findSessionControllerOperationByRunId(runId: string): ReplyOpera
   for (const operation of activeSessionOperations()) {
     const claim = getSessionControllerEntryForOperation(operation).mailbox?.claim;
     if (
-      ownsRunIds(operation) &&
+      !operation.result &&
       (hasOperationBackendRunId(operation, runId) ||
         (claim?.operation === operation &&
           claim.inputs.some((input) => input.protocolRunId === runId)))
@@ -155,7 +149,7 @@ export function findSessionControllerOperationByRunId(runId: string): ReplyOpera
   }
   for (const source of rpcSourcesByRunId.get(runId) ?? []) {
     const claim = source.input.claim;
-    if (claim && !claim.released && claim.operation && ownsRunIds(claim.operation)) {
+    if (claim && !claim.released && claim.operation && !claim.operation.result) {
       matches.add(claim.operation);
     }
   }

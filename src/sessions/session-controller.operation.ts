@@ -77,8 +77,12 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   let terminalRecovery = false;
   let acceptedSteeredInboundAudio = false;
   let sourceReplyDelivered = false;
+  // A recorded yield ends the turn's work before settlement records it as the result.
+  const ended = () => state.result !== null || state.phase === "yielded";
+  const settledResult = (): ReplyOperationResult =>
+    state.phase === "yielded" ? { kind: "yielded" } : { kind: "completed" };
   const toolAuthority = createReplyOperationToolAuthority({
-    isOpen: () => state.result === null,
+    isOpen: () => !ended(),
     ownsRunSlot: () => owner.active === operation,
   });
   const ownerSettlement = createDeferredCore();
@@ -263,11 +267,14 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         failures.push(error);
       }
     }
-    if (cleanup && state.result && owner.active === operation) {
+    if (cleanup && ended() && owner.active === operation) {
       const { failures: fenceFailures, fenced } = await terminalProducerFences.revokeAll();
       failures.push(...fenceFailures);
       if (fenced) {
         // Durable revocation rejects late writers before this exact operation releases its slot.
+        if (!state.result) {
+          setResult(settledResult());
+        }
         clearState();
         settleOwner();
       }
@@ -282,13 +289,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     // Exact custody survives rekey and rotation; never rediscover the owner through its slot.
     isCurrent: () => installed && !ownerSettled,
     readPhase: () =>
-      ownerSettled
-        ? "settled"
-        : state.result
-          ? "terminal"
-          : state.abortFrozen
-            ? "finishing"
-            : "active",
+      ownerSettled ? "settled" : ended() ? "terminal" : state.abortFrozen ? "finishing" : "active",
     requestStop: (effect) => expireOwner(effect, false),
     expireCleanup: (effect) => expireOwner(effect, true),
     onWarning: (decision) =>
@@ -567,17 +568,21 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       watchdog.beginFinalization();
     },
     yield() {
-      if (state.result || state.cleared) {
+      const before = state;
+      apply({ type: "yield" });
+      if (state === before) {
         return false;
       }
-      setResult({ kind: "yielded" });
+      toolAuthority.close();
+      phaseWait?.close();
+      watchdog.beginTerminal();
       return true;
     },
     ownerSettlement: ownerSettlement.promise,
     complete() {
       producerCompletion.resolve();
       if (!state.result) {
-        setResult({ kind: "completed" });
+        setResult(settledResult());
       }
       clearState();
       settleOwner();
@@ -598,7 +603,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         ? Promise.all([ownerCompletionBarrier, completed]).then(() => {})
         : completed;
       if (!state.result) {
-        setResult({ kind: "completed" });
+        setResult(settledResult());
       }
       clearState(barrier, timeoutMs);
       settleOwner();
