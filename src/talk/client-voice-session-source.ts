@@ -8,7 +8,10 @@ import {
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { borrowOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import { assertClientVoiceSessionSettlementCurrent } from "./client-voice-session-lifecycle.js";
+import {
+  assertClientVoiceSessionSettlementCurrent,
+  captureClientVoiceSessionSettlementContext,
+} from "./client-voice-session-lifecycle.js";
 
 /** Voice metadata stays bound to its admitted physical store across provider and queue waits. */
 function sourceOptions(agentId: string) {
@@ -19,11 +22,14 @@ function sourceOptions(agentId: string) {
 }
 
 function capturedSource(options: ReturnType<typeof sourceOptions>, identity: DatabaseFileIdentity) {
+  const settlementContext = captureClientVoiceSessionSettlementContext(options.env);
   return {
     options,
     identity,
+    settlementContext,
     assertCurrent() {
-      assertClientVoiceSessionSettlementCurrent();
+      assertClientVoiceSessionSettlementCurrent(settlementContext);
+      settlementContext.admission.assertCurrent();
       assertExistingDatabaseIdentity(options.path, identity.key, identity.birthtime);
     },
   };

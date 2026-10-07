@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -283,7 +284,9 @@ export const createTalkClient: GatewayRequestHandler = async ({
               consultRunner.getToolAuthorityOverlay(undefined, source),
             appendTranscript: ({ entryId, role, text, confirmation }) =>
               closingFailure
-                ? Promise.reject(closingFailure.error)
+                ? Promise.reject(
+                    toErrorObject(closingFailure.error, "Voice session close admission failed"),
+                  )
                 : appendClientVoiceTranscript(
                     {
                       agentId,

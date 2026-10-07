@@ -10,18 +10,22 @@ import {
   withinTest,
 } from "../../test/helpers/promise.js";
 import * as sessionTurn from "../config/sessions/session-accessor.sqlite-transcript-write.js";
+import {
+  areDiagnosticsEnabledForProcess,
+  emitTrustedDiagnosticEvent,
+  setDiagnosticsEnabledForProcess,
+} from "../infra/diagnostic-events.js";
+import { tryBeginGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
+import * as agentDatabase from "../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { readVoiceSessionRecordInTransaction } from "../talk/client-voice-session-store.js";
-import {
-  completeRun,
-  recordMutation,
-  seedSession,
-} from "../talk/client-voice-session.fixture.test-support.js";
+import { seedSession } from "../talk/client-voice-session.fixture.test-support.js";
 import {
   appendClientVoiceTranscript,
   createOrResumeClientVoiceSession,
   ensureClientVoiceAgentSessionEntry,
+  registerClientVoiceConsultRun,
 } from "../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../talk/client-voice-session.test-support.js";
 import type { RealtimeVoiceBridgeCreateRequest } from "../talk/provider-types.js";
@@ -45,10 +49,12 @@ vi.mock("../sessions/session-upstream-monitor.js", () => ({
   startSessionUpstreamMonitor: () => ({ stop: () => Promise.resolve() }),
 }));
 
-it("settles accepted voice transcripts and provider finals even when provider cleanup fails", async ({
+it("settles accepted voice work with diagnostics disabled even when provider cleanup fails", async ({
   signal,
 }) => {
   const fixture = await createGatewayMetadataCloseFixture("gateway-voice-session-close");
+  const diagnosticsEnabled = areDiagnosticsEnabledForProcess();
+  fixture.config.diagnostics = { enabled: false };
   const entered = createDeferred();
   const release = createDeferred();
   const parentClosed = createDeferred();
@@ -56,6 +62,8 @@ it("settles accepted voice transcripts and provider finals even when provider cl
   const releaseProvider = createDeferred();
   const digestStarted = createDeferred();
   const releaseDigest = createDeferred();
+  const toolStarted = createDeferred();
+  const releaseTool = createDeferred();
   sendDigest.mockImplementation(async () => {
     digestStarted.resolve();
     await releaseDigest.promise;
@@ -71,7 +79,7 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     .spyOn(talkRegistry, "prepareTalkConnectionClose")
     .mockImplementation((...args) => {
       const owner = prepareTalkClose(...args);
-      const drain = owner.drain;
+      const drain = owner.drain.bind(owner);
       owner.drain = () => {
         const pending = drain();
         void pending.then(
@@ -93,6 +101,7 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     });
   let closing: Promise<void> | undefined;
   let writing: Promise<void> | undefined;
+  let toolRun: Promise<void> | undefined;
   let restoreAppend: (() => void) | undefined;
   try {
     const port = await fixture.reservePort();
@@ -101,7 +110,7 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     finishGatewayClose = kernel.closeOnStartupFailure;
     const target = { agentId: "main", sessionKey: "agent:main:voice-close" };
     await ensureClientVoiceAgentSessionEntry(target);
-    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, origin: "client" });
+    const voiceSessionId = createOrResumeClientVoiceSession({ ...target, origin: "client" });
     const relayTarget = { agentId: "main", sessionKey: "agent:main:main" };
     await seedSession(relayTarget.sessionKey, { channel: "discord", to: "channel:voice-updates" });
     const { client } = makeClient("relay-close-client", "operator", ["operator.admin"]);
@@ -133,13 +142,65 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     });
     providerCallbacks?.onReady?.();
     const relayOwner = expectDefined(relaySessions.get(relay.relaySessionId), "Relay owner");
-    await ensureTalkRealtimeRelayVoiceSession({
+    ensureTalkRealtimeRelayVoiceSession({
       relaySessionId: relay.relaySessionId,
       connId: client.connId,
       sessionKey: relayTarget.sessionKey,
     });
-    recordMutation(relay.relaySessionId);
-    await completeRun(`run-${relay.relaySessionId}`);
+    const root = expectDefined(
+      tryBeginGatewayIndependentRootWorkAdmission("voice-consult"),
+      "Voice consult root",
+    );
+    toolRun = root
+      .run(async () => {
+        const runId = `run-${relay.relaySessionId}`;
+        registerClientVoiceConsultRun({
+          ...relayTarget,
+          voiceSessionId: relay.relaySessionId,
+          runId,
+        });
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.started",
+          runId,
+          toolCallId: "delayed-tool",
+          toolName: "message",
+          mutatingAction: true,
+        });
+        toolStarted.resolve();
+        await releaseTool.promise;
+        const failedWrite = vi
+          .spyOn(agentDatabase, "runOpenClawAgentWriteTransaction")
+          .mockImplementationOnce(() => {
+            throw new Error("synthetic tool persistence failure");
+          });
+        try {
+          emitTrustedDiagnosticEvent({
+            type: "tool.execution.started",
+            runId,
+            toolCallId: "parallel-read",
+            toolName: "read",
+            mutatingAction: false,
+          });
+        } finally {
+          failedWrite.mockRestore();
+        }
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.completed",
+          runId,
+          toolCallId: "delayed-tool",
+          toolName: "message",
+          durationMs: 5,
+        });
+        emitTrustedDiagnosticEvent({
+          type: "run.completed",
+          runId,
+          durationMs: 5,
+          outcome: "completed",
+        });
+      })
+      .finally(root.release);
+    await toolStarted.promise;
+    expect(areDiagnosticsEnabledForProcess()).toBe(false);
     let acceptedSignal: AbortSignal | undefined;
     const append = sessionTurn.appendTranscriptMessage;
     const observer = vi
@@ -215,7 +276,18 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     ).toBe(false);
     release.resolve();
     await withinTest(writing!, signal);
-    await withinTest(digestStarted.promise, signal);
+    await withinTest(expectDefined(relayOwner.voiceSessionClose, "Closed voice record"), signal);
+    expect(sendDigest).not.toHaveBeenCalled();
+    releaseTool.resolve();
+    await withinTest(toolRun, signal);
+    await withinTest(
+      awaitGateBeforeSettlement(
+        digestStarted.promise,
+        closeOutcome,
+        "Gateway close lost the final tool digest",
+      ),
+      signal,
+    );
     await nextEventLoopTurn();
     expect(drainSettled, "provider-close digest delivery must retain shutdown custody").toBe(false);
     releaseDigest.resolve();
@@ -246,6 +318,7 @@ it("settles accepted voice transcripts and provider finals even when provider cl
         hasUserTranscript: true,
         transcriptFailureKeys: [],
         digestDeliveredAt: expect.any(Number),
+        effects: [expect.objectContaining({ toolCallId: "delayed-tool", status: "succeeded" })],
       });
       expect(
         database
@@ -263,7 +336,8 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     release.resolve();
     releaseProvider.resolve();
     releaseDigest.resolve();
-    await Promise.allSettled([writing, closing]);
+    releaseTool.resolve();
+    await Promise.allSettled([writing, toolRun, closing]);
     restoreAppend?.();
     // The failed close has been observed. Finish this fixture's Gateway teardown
     // without allowing its exact synthetic provider error to strand the listener.
@@ -272,5 +346,6 @@ it("settles accepted voice transcripts and provider finals even when provider cl
     closeObserver.mockRestore();
     clientVoiceSessionTesting.reset();
     await fixture.cleanup();
+    setDiagnosticsEnabledForProcess(diagnosticsEnabled);
   }
 });

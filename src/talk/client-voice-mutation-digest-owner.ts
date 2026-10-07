@@ -162,7 +162,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
         signal: AbortSignal;
       }) => Promise<boolean>;
       warn: (message: string) => void;
-      captureAttempt?: () => MutationDigestSettlement;
+      captureAttempt?: (context: TContext) => MutationDigestSettlement;
       matchesRetryContext?: (previous: TContext, next: TContext) => boolean;
       deliveryState?: (context: TContext) => "unsent" | "confirmed" | "uncertain";
       updateContext?: (previous: TContext, next: TContext) => TContext;
@@ -200,7 +200,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
       ...params,
       identityBytes,
       failedAttempts: 0,
-      queuedSettlement: this.options.captureAttempt?.(),
+      queuedSettlement: this.options.captureAttempt?.(params.context),
     };
     this.intents.set(key, intent);
     this.retainedIdentityBytes += identityBytes;
@@ -214,7 +214,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
     if (!intent || intent.retryBlocked) {
       return;
     }
-    intent.queuedSettlement ??= this.options.captureAttempt?.();
+    intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
     if (this.activeAttempts.has(key)) {
       this.retryAfterActiveKeys.add(key);
     } else {
@@ -233,7 +233,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
         continue;
       }
       intent.context = this.options.updateContext?.(intent.context, context) ?? context;
-      intent.queuedSettlement ??= this.options.captureAttempt?.();
+      intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
       if (this.activeAttempts.has(key)) {
         this.retryAfterActiveKeys.add(key);
       } else {
@@ -472,12 +472,12 @@ function sameMutationDigestSource(previous: MutationDigestContext, next: Mutatio
 
 export function createClientVoiceMutationDigestDeliveryOwner(
   hasLiveConsultRun: (record: ClientVoiceSessionRecord) => boolean,
-  captureAttempt: NonNullable<
-    ConstructorParameters<typeof ClientVoiceMutationDigestOwner>[0]["captureAttempt"]
-  >,
+  captureAttempt: (
+    source?: ClientVoiceSessionSource["settlementContext"],
+  ) => MutationDigestSettlement,
 ) {
   return new ClientVoiceMutationDigestOwner<MutationDigestContext>({
-    captureAttempt,
+    captureAttempt: (context) => captureAttempt(context.source.settlementContext),
     matchesRetryContext: sameMutationDigestSource,
     deliveryState: ({ delivery }) =>
       delivery?.deliveredAt !== undefined

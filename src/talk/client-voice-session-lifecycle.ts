@@ -89,20 +89,35 @@ function lifetime(context: OpenClawStateWorkerContext) {
   return owner;
 }
 
+/** Retain the original owner for later admissions without retaining an accepted permit. */
+export function captureClientVoiceSessionSettlementContext(
+  env: NodeJS.ProcessEnv,
+): OpenClawStateWorkerContext {
+  const inherited = current.getStore()?.context;
+  const selected =
+    inherited && inherited.environment.OPENCLAW_STATE_DIR === env.OPENCLAW_STATE_DIR
+      ? inherited
+      : captureOpenClawStateWorkerContext({ env });
+  return { ...captureSqliteWorkerStateContext(selected), admission: selected.admission };
+}
+
 /** Retain accepted work before a bounded queue or provider can yield. */
-export function captureClientVoiceSessionSettlement() {
+export function captureClientVoiceSessionSettlement(source?: OpenClawStateWorkerContext) {
   const inherited = current.getStore();
-  if (inherited && !inherited.active) {
+  const selected = source ?? inherited?.context ?? captureOpenClawStateWorkerContext();
+  const inheritedSource =
+    inherited && matchesSettlementContext(inherited.context, selected) ? inherited : undefined;
+  if (inheritedSource && !inheritedSource.active) {
     throw new Error("Voice session persistence lost its accepted owner");
   }
-  const selected = inherited?.context ?? captureOpenClawStateWorkerContext();
-  const context = inherited?.context ?? {
+  selected.admission.assertCurrent();
+  const context = inheritedSource?.context ?? {
     ...captureSqliteWorkerStateContext(selected),
     admission: selected.admission,
   };
   const owner = lifetime(context);
-  owner.assertOpen(Boolean(inherited));
-  const scope = inherited?.scope ?? owner.scope();
+  owner.assertOpen(Boolean(inheritedSource));
+  const scope = inheritedSource?.scope ?? owner.scope();
   const settled = createDeferredCore();
   void scope.track(() => settled.promise);
   const operation = { context, scope, active: true };
@@ -132,11 +147,12 @@ export function captureClientVoiceSessionSettlement() {
 export async function withClientVoiceSessionSettlement<T>(
   run: () => Promise<T>,
   onAdmissionFailure?: (error: unknown) => Promise<T>,
+  source?: OpenClawStateWorkerContext,
 ): Promise<T> {
   let accepted: ReturnType<typeof captureClientVoiceSessionSettlement> | undefined;
   let entered = false;
   try {
-    accepted = captureClientVoiceSessionSettlement();
+    accepted = captureClientVoiceSessionSettlement(source);
     return await accepted.run(() => {
       entered = true;
       return run();
@@ -152,14 +168,27 @@ export async function withClientVoiceSessionSettlement<T>(
   }
 }
 
-export function assertClientVoiceSessionAdmission(): void {
-  const accepted = captureClientVoiceSessionSettlement();
+export function assertClientVoiceSessionAdmission(source?: OpenClawStateWorkerContext): void {
+  const accepted = captureClientVoiceSessionSettlement(source);
   accepted.release();
 }
 
-export function assertClientVoiceSessionSettlementCurrent(): void {
+function matchesSettlementContext(
+  left: OpenClawStateWorkerContext,
+  right: OpenClawStateWorkerContext,
+) {
+  return (
+    left.admission.coordinationKey === right.admission.coordinationKey &&
+    left.admission.identity.key === right.admission.identity.key &&
+    left.admission.identity.birthtime === right.admission.identity.birthtime
+  );
+}
+
+export function assertClientVoiceSessionSettlementCurrent(
+  source?: OpenClawStateWorkerContext,
+): void {
   const accepted = current.getStore();
-  if (accepted) {
+  if (accepted && (!source || matchesSettlementContext(accepted.context, source))) {
     if (!accepted.active) {
       throw new Error("Voice session persistence lost its accepted owner");
     }

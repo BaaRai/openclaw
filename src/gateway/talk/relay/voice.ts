@@ -75,7 +75,7 @@ export function enqueueRelayVoiceTranscript(
   const entryId = String(transcriptSeq);
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
   const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
-  const settlement = captureClientVoiceSessionSettlement();
+  const settlement = captureClientVoiceSessionSettlement(source.settlementContext);
   const admission = settlement.run(() =>
     session.voiceTranscriptQueue.enqueue(
       async () => {
@@ -123,7 +123,7 @@ export function enqueueRelayVoiceTranscript(
     return false;
   }
   session.voiceTranscriptSeq = transcriptSeq;
-  void admission.completion.finally(settlement.release).catch(() => {});
+  void admission.completion.finally(() => settlement.release()).catch(() => {});
   void admission.completion.then(observed?.persisted, (error: unknown) => {
     session.confirmationReadiness.fail(error);
     logRelayVoiceFailure(session, "realtime relay transcript append failed", error);
@@ -163,6 +163,7 @@ export function closeRelayVoiceSession(
       await session.voiceTranscriptQueue.flush();
       throw error;
     },
+    source.settlementContext,
   ).catch((error: unknown) => {
     logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
   });

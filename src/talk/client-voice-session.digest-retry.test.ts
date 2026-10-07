@@ -11,7 +11,10 @@ import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lif
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
-import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
+import {
+  captureClientVoiceSessionSettlement,
+  prepareClientVoiceSessionClose,
+} from "./client-voice-session-lifecycle.js";
 import {
   completeRun,
   recordMutation,
@@ -241,6 +244,88 @@ describe("client voice session digest retry", () => {
       warning.mockRestore();
     }
   });
+
+  it.for([false, true])(
+    "keeps a delayed digest in its original shutdown owner after a state switch (expired successor=%s)",
+    async (expiredSuccessor, { signal }) => {
+      const sessionKey = "agent:main:main";
+      await seedSession(sessionKey, { channel: "discord", to: "channel:original-voice" });
+      const closeOriginal = prepareClientVoiceSessionClose();
+      const voiceSessionId = createOrResumeClientVoiceSession({
+        agentId: "main",
+        sessionKey,
+        origin: "client",
+      });
+      recordMutation(voiceSessionId);
+      const successorStateDir = path.join(tempDir, "successor");
+      const sending = createDeferred();
+      const releaseSend = createDeferred();
+      const failed = createDeferred<never>();
+      void failed.promise.catch(() => {});
+      const warning = vi.spyOn(console, "warn").mockImplementation((message) => {
+        failed.reject(new Error(String(message)));
+      });
+      let closeSuccessor: ReturnType<typeof prepareClientVoiceSessionClose> | undefined;
+      const drains: Promise<void>[] = [];
+      sendDurableMessageBatch.mockImplementationOnce(async () => {
+        sending.resolve();
+        await releaseSend.promise;
+        return { status: "sent" };
+      });
+      try {
+        await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
+        await nextEventLoopTurn();
+        expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
+          active: 0,
+          pending: 0,
+          retained: 1,
+        });
+        expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+
+        setTestEnvValue("OPENCLAW_STATE_DIR", successorStateDir);
+        closeSuccessor = prepareClientVoiceSessionClose();
+        if (expiredSuccessor) {
+          const acceptedSuccessor = captureClientVoiceSessionSettlement();
+          const inSuccessor = acceptedSuccessor.run(() => AsyncLocalStorage.snapshot());
+          acceptedSuccessor.release();
+          await inSuccessor(() => completeRun(`run-${voiceSessionId}`));
+        } else {
+          await completeRun(`run-${voiceSessionId}`);
+        }
+        await withinTest(Promise.race([sending.promise, failed.promise]), signal);
+
+        const settled = { original: false, successor: false };
+        closeOriginal.beginClose();
+        closeSuccessor.beginClose();
+        drains.push(
+          closeOriginal.drain().then(() => {
+            settled.original = true;
+          }),
+          closeSuccessor.drain().then(() => {
+            settled.successor = true;
+          }),
+        );
+        await nextEventLoopTurn();
+        expect({ ...settled }).toEqual({ original: false, successor: true });
+
+        releaseSend.resolve();
+        await withinTest(Promise.race([Promise.all(drains), failed.promise]), signal);
+        setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+        expect(sendDurableMessageBatch).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ to: "channel:original-voice" }),
+        );
+        expect(
+          clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
+        ).toEqual(expect.any(Number));
+      } finally {
+        releaseSend.resolve();
+        setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+        await Promise.allSettled([closeOriginal.drain(), closeSuccessor?.drain(), ...drains]);
+        warning.mockRestore();
+        await cleanupSessionStateForTest({ stateDir: successorStateDir });
+      }
+    },
+  );
 
   it("records post-close effects and defers the digest until the last consult completes", async () => {
     await seedSession("agent:main:main", {

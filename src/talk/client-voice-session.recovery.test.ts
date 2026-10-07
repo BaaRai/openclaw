@@ -9,6 +9,7 @@ import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
 import { resetClientVoiceConfirmationStateForTest } from "./client-voice-confirmation.test-support.js";
+import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
 import * as voiceSessionReads from "./client-voice-session-read.js";
 import { seedSession } from "./client-voice-session.fixture.test-support.js";
 import {
@@ -185,30 +186,44 @@ describe("client voice session recovery", () => {
     }
   });
 
-  it("keeps stale recovery bound to its source after the lookup yields", async () => {
-    const now = 6 * 60 * 60_000 + 2;
-    const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
-    const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
-    const successor = path.join(home.home, "successor");
-    const env = captureEnv(["OPENCLAW_STATE_DIR"]);
-    const lookup = voiceSessionReads.lookupClientVoiceSessions;
-    const read = vi
-      .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
-      .mockImplementationOnce(async (...args) => {
-        const candidates = await lookup(...args);
-        setTestEnvValue("OPENCLAW_STATE_DIR", successor);
-        createOrResumeClientVoiceSession({ ...target, voiceSessionId, now: 1 });
-        return candidates;
-      });
-    try {
-      expect(await closeStaleClientVoiceSessions({ agentId: "main", config: {}, now })).toBe(1);
-      expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("open");
-      env.restore();
-      expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("closed");
-    } finally {
-      read.mockRestore();
-      env.restore();
-      await cleanupSessionStateForTest({ stateDir: successor, rootPath: successor });
-    }
-  });
+  it.each(["original", "successor"] as const)(
+    "keeps stale recovery in its original admission when %s closes after lookup",
+    async (closed) => {
+      const now = 6 * 60 * 60_000 + 2;
+      const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
+      const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
+      const originalClose = prepareClientVoiceSessionClose();
+      let successorClose: ReturnType<typeof prepareClientVoiceSessionClose> | undefined;
+      const successor = path.join(home.home, "successor");
+      const env = captureEnv(["OPENCLAW_STATE_DIR"]);
+      const lookup = voiceSessionReads.lookupClientVoiceSessions;
+      const read = vi
+        .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
+        .mockImplementationOnce(async (...args) => {
+          const candidates = await lookup(...args);
+          setTestEnvValue("OPENCLAW_STATE_DIR", successor);
+          createOrResumeClientVoiceSession({ ...target, voiceSessionId, now: 1 });
+          successorClose = prepareClientVoiceSessionClose();
+          await (closed === "original" ? originalClose : successorClose).drain();
+          return candidates;
+        });
+      try {
+        const warn = vi.fn();
+        expect(
+          await closeStaleClientVoiceSessions({ agentId: "main", config: {}, now, warn }),
+        ).toBe(closed === "original" ? 0 : 1);
+        expect(warn).toHaveBeenCalledTimes(closed === "original" ? 1 : 0);
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("open");
+        env.restore();
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe(
+          closed === "original" ? "open" : "closed",
+        );
+      } finally {
+        read.mockRestore();
+        env.restore();
+        await Promise.all([originalClose.drain(), successorClose?.drain()]);
+        await cleanupSessionStateForTest({ stateDir: successor, rootPath: successor });
+      }
+    },
+  );
 });

@@ -15,6 +15,7 @@ import {
   onTrustedToolExecutionEvent,
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
+import { captureGatewayRootWorkReleaseObserver } from "../process/gateway-work-admission.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
 import {
   type ClientVoiceConfirmationUtteranceContext,
@@ -41,12 +42,13 @@ import {
 import {
   assertVoiceSessionOwnership as assertOwnership,
   type ClientVoiceRunBinding,
-  type ClientVoiceSessionRecord,
-  type ClientVoiceToolEffect,
   operationKey,
   readVoiceSessionRecord as readRecord,
   readVoiceSessionRecordInTransaction as readRecordInTransaction,
   readVoiceSessionFacts,
+  readOwnedVoiceSessionFacts,
+  recordVoiceToolEffectInTransaction,
+  registerVoiceConsultRunInTransaction,
   VOICE_SESSION_RECORD_VERSION as RECORD_VERSION,
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
@@ -59,27 +61,23 @@ import {
   voiceTranscriptEventId,
 } from "./voice-transcript.js";
 
-const voiceSessionByRunId = new Map<string, ClientVoiceRunBinding>();
+type ClientVoiceRun = {
+  binding: ClientVoiceRunBinding;
+  source: ClientVoiceSessionSource;
+  settlement?: ReturnType<typeof captureClientVoiceSessionSettlement>;
+  stopObserving?: () => void;
+};
+
+const voiceSessionByRunId = new Map<string, ClientVoiceRun>();
 const voiceSessionOperations = new VoiceTranscriptOperationRegistry();
 let unsubscribeToolEffects: (() => void) | undefined;
 let unsubscribeRunCompletion: (() => void) | undefined;
-
-function hasLiveConsultRun(record: ClientVoiceSessionRecord): boolean {
-  return record.consultRunIds.some((runId) => {
-    const binding = voiceSessionByRunId.get(runId);
-    return (
-      binding?.agentId === record.agentId &&
-      binding.voiceSessionId === record.voiceSessionId &&
-      binding.sessionKey === record.sessionKey
-    );
-  });
-}
 
 async function closeVoiceSessionOperationOwner(
   params: Omit<Parameters<typeof closeClientVoiceSessionInternal>[0], "source">,
   retainedSource?: ClientVoiceSessionSource,
 ): Promise<boolean> {
-  return withClientVoiceSessionSettlement(async () => {
+  const close = async () => {
     const source = retainedSource ?? captureClientVoiceSessionSource(params.agentId);
     let closed: boolean | undefined;
     await voiceSessionOperations.close(
@@ -93,19 +91,8 @@ async function closeVoiceSessionOperationOwner(
       return closeVoiceSessionOperationOwner(params, source);
     }
     return closed ?? false;
-  });
-}
-
-function effectStatus(
-  event: Exclude<TrustedToolExecutionEvent, { type: "tool.execution.started" }>,
-): ClientVoiceToolEffect["status"] {
-  if (event.type === "tool.execution.completed") {
-    return "succeeded";
-  }
-  if (event.type === "tool.execution.blocked") {
-    return "blocked";
-  }
-  return event.terminalReason === "cancelled" ? "cancelled" : "failed";
+  };
+  return withClientVoiceSessionSettlement(close, undefined, retainedSource?.settlementContext);
 }
 
 function recordClientVoiceToolEffect(event: TrustedToolExecutionEvent): void {
@@ -113,47 +100,51 @@ function recordClientVoiceToolEffect(event: TrustedToolExecutionEvent): void {
   if (!runId) {
     return;
   }
-  const binding = voiceSessionByRunId.get(runId);
-  if (!binding) {
+  const owner = voiceSessionByRunId.get(runId);
+  if (!owner) {
     return;
   }
-  runOpenClawAgentWriteTransaction(
-    (database) => {
-      const record = readRecordInTransaction(database, binding.voiceSessionId);
-      if (!record) {
-        return;
+  const { binding, source } = owner;
+  const capture = () => captureClientVoiceSessionSettlement(source.settlementContext);
+  // An operation failure releases its child, never the run's root-backed custody.
+  const settlement = owner.settlement?.run(capture) ?? capture();
+  try {
+    settlement.run(() => {
+      source.assertCurrent();
+      runOpenClawAgentWriteTransaction(
+        (database) => {
+          source.assertCurrent();
+          recordVoiceToolEffectInTransaction(database, binding, runId, event);
+        },
+        source.options,
+        { operationLabel: "voice.session.tool-effect" },
+      );
+    });
+  } finally {
+    settlement.release();
+  }
+}
+
+function retireClientVoiceRun(runId: string, owner: ClientVoiceRun, retry = true): void {
+  if (voiceSessionByRunId.get(runId) !== owner) {
+    return;
+  }
+  voiceSessionByRunId.delete(runId);
+  owner.stopObserving?.();
+  try {
+    const { binding } = owner;
+    releaseClientVoiceConfirmationRun(binding.agentId, binding.voiceSessionId, runId);
+    if (retry) {
+      const retryDigest = () => mutationDigestDeliveryOwner.retry(binding);
+      if (owner.settlement) {
+        owner.settlement.run(retryDigest);
+      } else {
+        retryDigest();
       }
-      const existing = event.toolCallId
-        ? record.effects.find(
-            (effect) => effect.runId === runId && effect.toolCallId === event.toolCallId,
-          )
-        : record.effects.findLast(
-            (effect) =>
-              effect.runId === runId &&
-              effect.toolName === event.toolName &&
-              effect.status === "started",
-          );
-      if (event.type !== "tool.execution.started" && !existing) {
-        return;
-      }
-      if (event.type !== "tool.execution.started" && existing) {
-        existing.status = effectStatus(event);
-        existing.finishedAt = event.ts;
-      } else if (event.mutatingAction === true && (!event.toolCallId || !existing)) {
-        record.effects.push({
-          runId,
-          ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
-          toolName: event.toolName,
-          startedAt: event.ts,
-          status: "started",
-        });
-      }
-      record.updatedAt = Date.now();
-      writeRecordInTransaction(database, record);
-    },
-    { agentId: binding.agentId },
-    { operationLabel: "voice.session.tool-effect" },
-  );
+    }
+  } finally {
+    owner.settlement?.release();
+  }
 }
 
 function ensureToolEffectSubscription(): void {
@@ -163,13 +154,12 @@ function ensureToolEffectSubscription(): void {
       if (event.type !== "run.completed") {
         return;
       }
-      const binding = voiceSessionByRunId.get(event.runId);
-      if (!binding) {
+      const owner = voiceSessionByRunId.get(event.runId);
+      // Root-backed runs include queued and yielded work beyond diagnostic completion.
+      if (!owner || owner.settlement) {
         return;
       }
-      voiceSessionByRunId.delete(event.runId);
-      releaseClientVoiceConfirmationRun(binding.agentId, binding.voiceSessionId, event.runId);
-      mutationDigestDeliveryOwner.retry(binding);
+      retireClientVoiceRun(event.runId, owner);
     },
     { include: ["run.completed"] },
   );
@@ -188,7 +178,7 @@ export function createOrResumeClientVoiceSession(
   },
   source?: ClientVoiceSessionSource,
 ): string {
-  assertClientVoiceSessionAdmission();
+  assertClientVoiceSessionAdmission(source?.settlementContext);
   const voiceSessionId = params.voiceSessionId?.trim() || randomUUID();
   const provider = params.provider?.trim() || undefined;
   const now = params.now ?? Date.now();
@@ -290,7 +280,6 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   return created.sessionId;
 }
 
-/** Correlate a consult run with its open call for confirmation and mutation evidence. */
 export function registerClientVoiceConsultRun(params: {
   agentId: string;
   sessionKey: string;
@@ -298,78 +287,73 @@ export function registerClientVoiceConsultRun(params: {
   runId: string;
   config?: OpenClawConfig;
 }): void {
-  let recordClosed = false;
-  runOpenClawAgentWriteTransaction(
-    (database) => {
-      const record = readRecordInTransaction(database, params.voiceSessionId);
-      if (!record) {
-        throw new Error("voice session not found");
+  const previous = voiceSessionByRunId.get(params.runId);
+  const sameBinding =
+    previous?.binding.agentId === params.agentId &&
+    previous.binding.voiceSessionId === params.voiceSessionId &&
+    previous.binding.sessionKey === params.sessionKey;
+  const source = sameBinding ? previous.source : captureClientVoiceSessionSource(params.agentId);
+  const observeRelease = sameBinding ? null : captureGatewayRootWorkReleaseObserver();
+  const capture = () => captureClientVoiceSessionSettlement(source.settlementContext);
+  const settlement = (sameBinding ? previous.settlement?.run(capture) : undefined) ?? capture();
+  let registered: ClientVoiceRun | undefined;
+  try {
+    settlement.run(() => {
+      source.assertCurrent();
+      const record = runOpenClawAgentWriteTransaction(
+        (database) => {
+          source.assertCurrent();
+          return registerVoiceConsultRunInTransaction(database, params);
+        },
+        source.options,
+        { operationLabel: "voice.session.register-consult" },
+      );
+      if (!sameBinding) {
+        if (previous) {
+          retireClientVoiceRun(params.runId, previous);
+        }
+        const owner: ClientVoiceRun = {
+          binding: Object.freeze({
+            agentId: params.agentId,
+            voiceSessionId: params.voiceSessionId,
+            sessionKey: params.sessionKey,
+          }),
+          source,
+          ...(observeRelease ? { settlement } : {}),
+        };
+        registered = owner;
+        voiceSessionByRunId.set(params.runId, owner);
+        owner.stopObserving = observeRelease?.((reason) =>
+          retireClientVoiceRun(params.runId, owner, reason === "settled"),
+        );
       }
-      assertOwnership(record, params);
-      recordClosed = record.status === "closed";
-      // A close can race in while chat.send is still acking this run. The run has
-      // already started, so bind it anyway (even on a closed record) to keep effect
-      // capture; aborting here would drop a just-confirmed high-impact action.
-      if (!record.consultRunIds.includes(params.runId)) {
-        record.consultRunIds.push(params.runId);
-        record.updatedAt = Date.now();
-        writeRecordInTransaction(database, record);
+      // Replays re-arm a closed call's digest without replacing its accepted owner.
+      if (record.status === "closed" && params.config) {
+        mutationDigestDeliveryOwner.record({
+          agentId: params.agentId,
+          voiceSessionId: params.voiceSessionId,
+          context: { config: params.config, source },
+        });
       }
-    },
-    { agentId: params.agentId },
-    { operationLabel: "voice.session.register-consult" },
-  );
-  const previousBinding = voiceSessionByRunId.get(params.runId);
-  if (
-    previousBinding &&
-    (previousBinding.agentId !== params.agentId ||
-      previousBinding.voiceSessionId !== params.voiceSessionId)
-  ) {
-    // A run ID has one authoritative voice scope. Replacing it must retire the
-    // prior scope's post-close grant or completion can no longer find that owner.
-    releaseClientVoiceConfirmationRun(
-      previousBinding.agentId,
-      previousBinding.voiceSessionId,
-      params.runId,
-    );
-  }
-  if (
-    previousBinding?.agentId !== params.agentId ||
-    previousBinding.voiceSessionId !== params.voiceSessionId ||
-    previousBinding.sessionKey !== params.sessionKey
-  ) {
-    // Replays keep the operational claim; a reassignment must never revive it.
-    voiceSessionByRunId.set(
-      params.runId,
-      Object.freeze({
-        agentId: params.agentId,
-        voiceSessionId: params.voiceSessionId,
-        sessionKey: params.sessionKey,
-      }),
-    );
-  }
-  // Bound to a call that already closed: re-arm the point-in-time summary owner so
-  // the run completion becomes a retry point without coupling it to transcript work.
-  if (recordClosed && params.config) {
-    mutationDigestDeliveryOwner.record({
-      agentId: params.agentId,
-      voiceSessionId: params.voiceSessionId,
-      context: { config: params.config, source: captureClientVoiceSessionSource(params.agentId) },
+      ensureToolEffectSubscription();
     });
+  } catch (error) {
+    if (registered) {
+      retireClientVoiceRun(params.runId, registered, false);
+    }
+    throw error;
+  } finally {
+    if (settlement !== registered?.settlement) {
+      settlement.release();
+    }
   }
-  ensureToolEffectSubscription();
 }
 
-/** Return the open voice-call binding for one executing run. */
 export function resolveClientVoiceRunBinding(runId?: string): ClientVoiceRunBinding | undefined {
-  return runId ? voiceSessionByRunId.get(runId) : undefined;
+  return runId ? voiceSessionByRunId.get(runId)?.binding : undefined;
 }
 
-/**
- * Confirmation applies only when the session can observe spoken approvals:
- * relay sessions (server hears utterances) or clients that report transcripts.
- * Legacy clients without transcript reporting keep pre-gate behavior.
- */
+/** Relays and transcript-capable clients require confirmation; legacy clients keep pre-gate behavior. */
 export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding): boolean {
   const record = readVoiceSessionFacts(binding.agentId, binding.voiceSessionId);
   return (
@@ -379,18 +363,8 @@ export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding):
   );
 }
 
-function requireOwnedVoiceSession(params: ClientVoiceRunBinding) {
-  const record = readVoiceSessionFacts(params.agentId, params.voiceSessionId);
-  if (!record) {
-    throw new Error("voice session not found");
-  }
-  assertOwnership(record, params);
-  return record;
-}
-
-/** Validate ownership and open state before starting a voice-bound consult. */
 export function assertClientVoiceSessionOpen(params: ClientVoiceRunBinding): "client" | "relay" {
-  const record = requireOwnedVoiceSession(params);
+  const record = readOwnedVoiceSessionFacts(params);
   if (record.status !== "open") {
     throw new Error("voice session is closed");
   }
@@ -399,7 +373,7 @@ export function assertClientVoiceSessionOpen(params: ClientVoiceRunBinding): "cl
 
 /** Validate durable ownership without rejecting an idempotent close retry. */
 export function resolveClientVoiceSessionOrigin(params: ClientVoiceRunBinding): "client" | "relay" {
-  return requireOwnedVoiceSession(params).origin;
+  return readOwnedVoiceSessionFacts(params).origin;
 }
 
 /** Resolve the unique open client-owned call for legacy tool-call clients. */
@@ -441,7 +415,7 @@ function appendVoiceTranscript(
           confirmation: normalized.confirmation,
         })
       : null;
-  return withClientVoiceSessionSettlement(async () => {
+  const append = async () => {
     const source = retainedSource ?? captureClientVoiceSessionSource(normalized.agentId);
     return voiceSessionOperations.run(
       operationKey(normalized.agentId, normalized.voiceSessionId),
@@ -561,7 +535,8 @@ function appendVoiceTranscript(
       },
       { weight: normalized.text.length },
     );
-  });
+  };
+  return withClientVoiceSessionSettlement(append, undefined, retainedSource?.settlementContext);
 }
 
 /** Append one finalized client-owned transcript item idempotently. */
@@ -589,7 +564,15 @@ export function appendRelayVoiceTranscript(
 }
 
 const mutationDigestDeliveryOwner = createClientVoiceMutationDigestDeliveryOwner(
-  hasLiveConsultRun,
+  (record) =>
+    record.consultRunIds.some((runId) => {
+      const binding = voiceSessionByRunId.get(runId)?.binding;
+      return (
+        binding?.agentId === record.agentId &&
+        binding.voiceSessionId === record.voiceSessionId &&
+        binding.sessionKey === record.sessionKey
+      );
+    }),
   captureClientVoiceSessionSettlement,
 );
 
@@ -644,9 +627,9 @@ async function closeClientVoiceSessionInternal(params: {
     return false;
   }
   // Transport close does not end consult runs: live bindings keep effect capture active,
-  // approved grants stay valid for those runs, and the digest waits for the last run.completed.
+  // approved grants stay valid for those runs, and the digest waits for the last accepted run to release its root.
   const liveRunIds = closed.consultRunIds.filter((runId) => {
-    const binding = voiceSessionByRunId.get(runId);
+    const binding = voiceSessionByRunId.get(runId)?.binding;
     return binding?.voiceSessionId === params.voiceSessionId && binding.agentId === params.agentId;
   });
   deactivateClientVoiceConfirmationSession(params.agentId, params.voiceSessionId, liveRunIds);
@@ -760,7 +743,9 @@ const clientVoiceSessionTesting = {
   digestDeliveryPolicy: CLIENT_VOICE_MUTATION_DIGEST_POLICY,
   digestDeliverySnapshot: () => mutationDigestDeliveryOwner.snapshot(),
   reset(): void {
-    voiceSessionByRunId.clear();
+    for (const [runId, owner] of voiceSessionByRunId) {
+      retireClientVoiceRun(runId, owner, false);
+    }
     voiceSessionOperations.clear();
     mutationDigestDeliveryOwner.clear();
     unsubscribeToolEffects?.();

@@ -4,6 +4,11 @@ import {
   emitTrustedDiagnosticEvent,
   waitForDiagnosticEventsDrained,
 } from "../infra/diagnostic-events.js";
+import {
+  retainGatewayRootWorkAdmissionContinuationScope,
+  resetGatewayWorkAdmission,
+  tryBeginGatewayRootWorkAdmission,
+} from "../process/gateway-work-admission.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -17,6 +22,7 @@ import {
   resetClientVoiceConfirmationStateForTest,
   snapshotClientVoiceConfirmationStateForTest,
 } from "./client-voice-confirmation.test-support.js";
+import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
 import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
@@ -98,6 +104,7 @@ describe("client voice confirmation lifecycle", () => {
 
   afterEach(() => {
     clientVoiceSessionTesting.reset();
+    resetGatewayWorkAdmission();
     resetClientVoiceConfirmationStateForTest();
     closeOpenClawAgentDatabasesForTest();
     closeOpenClawStateDatabaseForTest();
@@ -128,6 +135,64 @@ describe("client voice confirmation lifecycle", () => {
     expect(resolveClientVoiceRunBinding("run-active")).toBeUndefined();
     expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
   });
+
+  it.each(["before launch", "after ACK", "runtime reset"] as const)(
+    "releases an accepted run and its grant after failure %s",
+    async (failure) => {
+      const sessionKey = "agent:main:failed-consult";
+      const runId = "failed-consult";
+      const voiceSessionId = createOrResumeClientVoiceSession({
+        agentId: "main",
+        sessionKey,
+        origin: "client",
+      });
+      const close = prepareClientVoiceSessionClose();
+      const root = tryBeginGatewayRootWorkAdmission()!;
+      const retained = await root.run(async () => {
+        registerRun("main", voiceSessionId, sessionKey, runId);
+        bindGrant("main", voiceSessionId, runId, "accepted action");
+        return failure === "after ACK" ? retainGatewayRootWorkAdmissionContinuationScope() : null;
+      });
+      try {
+        // A diagnostic can precede deferred work; it cannot retire accepted ownership.
+        await completeRun(runId);
+        expect(resolveClientVoiceRunBinding(runId)).toMatchObject({ voiceSessionId });
+        close.beginClose();
+        if (failure === "runtime reset") {
+          resetGatewayWorkAdmission();
+        } else {
+          const error = new Error("synthetic consult failure");
+          if (retained) {
+            root.release();
+            expect(resolveClientVoiceRunBinding(runId)).toMatchObject({ voiceSessionId });
+            expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(1);
+            await expect(
+              retained
+                .run(async () => {
+                  throw error;
+                })
+                .finally(retained.release),
+            ).rejects.toBe(error);
+          } else {
+            await expect(
+              root
+                .run(async () => {
+                  throw error;
+                })
+                .finally(root.release),
+            ).rejects.toBe(error);
+          }
+        }
+        expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
+        expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+        await close.drain();
+      } finally {
+        root.release();
+        retained?.release();
+        await close.drain();
+      }
+    },
+  );
 
   it("keeps completion ownership after a close invalidates a detached grant", async () => {
     const sessionKey = "agent:main:stale-bind";
@@ -170,7 +235,10 @@ describe("client voice confirmation lifecycle", () => {
       origin: "client",
       voiceSessionId: "voice-first",
     });
-    registerRun(firstAgentId, firstVoiceSessionId, firstSessionKey, "run-shared");
+    const firstRoot = tryBeginGatewayRootWorkAdmission()!;
+    await firstRoot.run(async () => {
+      registerRun(firstAgentId, firstVoiceSessionId, firstSessionKey, "run-shared");
+    });
     bindGrant(firstAgentId, firstVoiceSessionId, "run-shared", firstMessage);
     await closeClientVoiceSession({
       agentId: firstAgentId,
@@ -198,7 +266,15 @@ describe("client voice confirmation lifecycle", () => {
       origin: "client",
       voiceSessionId: "voice-replacement",
     });
-    registerRun(replacementAgentId, replacementVoiceSessionId, replacementSessionKey, "run-shared");
+    const replacementRoot = tryBeginGatewayRootWorkAdmission()!;
+    await replacementRoot.run(async () => {
+      registerRun(
+        replacementAgentId,
+        replacementVoiceSessionId,
+        replacementSessionKey,
+        "run-shared",
+      );
+    });
 
     expect(resolveClientVoiceRunBinding("run-shared")).toMatchObject({
       voiceSessionId: replacementVoiceSessionId,
@@ -216,6 +292,14 @@ describe("client voice confirmation lifecycle", () => {
         toolParams: { action: "send", message: firstMessage },
       }).allowed,
     ).toBe(false);
+
+    const close = prepareClientVoiceSessionClose();
+    close.beginClose();
+    replacementRoot.release();
+    // Reassignment released the old permit even while its original root survives.
+    await close.drain();
+    firstRoot.release();
+    expect(resolveClientVoiceRunBinding("run-shared")).toBeUndefined();
 
     await completeRun("run-unrelated");
     expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
