@@ -229,16 +229,16 @@ describe("visible yielded session continuation", () => {
         return pending;
       });
       const originalInterrupt = sessionAdmission.interruptSessionControllerEffects;
-      const admissionSpy = vi
-        .spyOn(sessionAdmission, "interruptSessionControllerEffects")
-        .mockImplementation((params) => {
+      vi.spyOn(sessionAdmission, "interruptSessionControllerEffects").mockImplementation(
+        (params) => {
           const pending = originalInterrupt(params);
           void pending.then(
             () => {},
             () => {},
           );
           return pending;
-        });
+        },
+      );
 
       const unsubscribe = onAgentEvent((event) => {
         if (event.stream !== "lifecycle") {
