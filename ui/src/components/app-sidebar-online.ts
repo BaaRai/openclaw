@@ -43,6 +43,8 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
   if (onlineUsers.length === 0) {
     return nothing;
   }
+  const labelFor = (user: PresenceViewer) =>
+    onlinePresenceViewerLabel(user, selfUser, onlineUsers.length > 1);
   const counts = host.sessionData.ownerCounts.counts;
   const countsFor = (user: PresenceViewer) =>
     counts && user.identity?.type === "profile"
@@ -66,13 +68,9 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
               (countsFor(a)?.[host.people.sortMode] ?? -1);
       return (
         order ||
-        onlinePresenceViewerLabel(a, selfUser).localeCompare(
-          onlinePresenceViewerLabel(b, selfUser),
-          undefined,
-          {
-            sensitivity: "base",
-          },
-        )
+        labelFor(a).localeCompare(labelFor(b), undefined, {
+          sensitivity: "base",
+        })
       );
     });
   const routing = personActivityRouting(
@@ -152,11 +150,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                         running: String(workload.running),
                       })
                     : t("presence.sessions.unavailable");
-                  const activity = personActivityLink(
-                    user.identity?.id,
-                    routing,
-                    onlinePresenceViewerLabel(user, selfUser),
-                  );
+                  const activity = personActivityLink(user.identity?.id, routing, labelFor(user));
                   const tag = activity ? literal`a` : literal`button`;
                   return staticHtml`<div
                   class="sidebar-online__row"
@@ -177,7 +171,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                     aria-haspopup="dialog"
                     aria-expanded="false"
                     aria-label=${t(activity ? "presence.card.ariaLabel" : "presence.card.details", {
-                      name: onlinePresenceViewerLabel(user, selfUser),
+                      name: labelFor(user),
                     })}
                   >
                     <span class="sidebar-online__avatar" aria-hidden="true">
@@ -187,7 +181,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                         variant="footer"
                       ></openclaw-viewer-avatar>
                     </span>
-                    <span class="sidebar-online__person-name">${onlinePresenceViewerLabel(user, selfUser)}</span>
+                    <span class="sidebar-online__person-name">${labelFor(user)}</span>
                     ${
                       workload && (workload.open > 0 || workload.running > 0)
                         ? html`<span class="sidebar-online__counts" aria-hidden="true">
