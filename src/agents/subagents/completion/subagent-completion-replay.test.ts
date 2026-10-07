@@ -158,7 +158,7 @@ describe("completed requester delivery replay fence", () => {
       expect(input.subagent).toEqual(retained);
 
       // Older persisted ordinary wake markers are not permission to replay.
-      input.subagent.requesterSettleWake = { status: "pending", attemptCount: 0 };
+      input.subagent.requesterSettleWake = {};
       saveSubagentRegistryToSqlite(subagentRuns);
       await reopenOwners();
       input.subagent = subagentRuns.get(input.subagent.runId)!;
@@ -168,8 +168,6 @@ describe("completed requester delivery replay fence", () => {
 
       // A separately admitted yield batch still owns real pending work.
       input.subagent.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
         batchRunIds: [input.subagent.runId],
@@ -229,7 +227,7 @@ describe("completed requester delivery replay fence", () => {
           const current = rows.get(input.subagent.runId)!;
           const next = {
             ...current,
-            requesterSettleWake: { status: "pending" as const, attemptCount: 0 },
+            requesterSettleWake: {},
           };
           return { value: undefined, postimages: new Map([[next.runId, next]]) };
         },

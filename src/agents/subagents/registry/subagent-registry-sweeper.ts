@@ -74,7 +74,6 @@ export function createSubagentRegistrySweeper(params: {
   completeSubagentRunWithRecovery: CompletionRuntime["completeSubagentRunWithRecovery"];
   getGatewayRecoveryRuntime: () => GatewayRecoveryRuntime | undefined;
   finalizeInterruptedSubagentRun: CompletionRuntime["finalizeInterruptedSubagentRun"];
-  resumeRequesterSettleWake: SubagentLifecycleController["resumeRequesterSettleWake"];
   startSubagentAnnounceCleanupFlow: SubagentLifecycleController["startSubagentAnnounceCleanupFlow"];
   completeCleanupBookkeeping: SubagentLifecycleController["completeCleanupBookkeeping"];
   isCleanupOwnerCurrent: SubagentLifecycleController["isCleanupOwnerCurrent"];
@@ -205,17 +204,15 @@ export function createSubagentRegistrySweeper(params: {
         { requesterSessionKey: string; groupId: string; requesterAgentId?: string }
       >();
       const phase = ([runId, entry]: [string, SubagentRunRecord]) =>
-        entry.requesterSettleWake
-          ? 0
-          : isSuspendedPendingFinalDelivery(entry)
-            ? 1
-            : entry.terminalOwner === "interrupted-recovery"
-              ? 2
-              : !getAgentRunContext(runId) && typeof entry.execution.endedAt !== "number"
-                ? 3
-                : entry.killReconciliation
-                  ? 4
-                  : 5;
+        isSuspendedPendingFinalDelivery(entry)
+          ? 1
+          : entry.terminalOwner === "interrupted-recovery"
+            ? 2
+            : !getAgentRunContext(runId) && typeof entry.execution.endedAt !== "number"
+              ? 3
+              : entry.killReconciliation
+                ? 4
+                : 5;
       const runEntries = [...runs.entries()].toSorted((left, right) => {
         const phaseDelta = phase(left) - phase(right);
         return (
@@ -284,15 +281,13 @@ export function createSubagentRegistrySweeper(params: {
           continue;
         }
         entry = reconciled;
-        // Yield freezes the parent's wake before its children finish. Keep
-        // terminal delivery priority while unfinished children reach recovery.
+        // An owed requester wake is armed by settlement events, never by this sweep.
         if (
           entry.requesterSettleWake &&
           entry.execution.status !== "running" &&
           hasSubagentRunEnded(entry) &&
           !entry.execution.restartRecovery
         ) {
-          params.resumeRequesterSettleWake(runId, entry);
           continue;
         }
         if (isSuspendedPendingFinalDelivery(entry)) {

@@ -59,7 +59,6 @@ function sweeperFixture(): TimerFixture {
     completeSubagentRunWithRecovery: unexpected,
     getGatewayRecoveryRuntime: unexpected,
     finalizeInterruptedSubagentRun: unexpected,
-    resumeRequesterSettleWake: unexpected,
     startSubagentAnnounceCleanupFlow: unexpected,
     completeCleanupBookkeeping: unexpected,
     isCleanupOwnerCurrent: unexpected,

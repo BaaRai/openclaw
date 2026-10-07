@@ -43,19 +43,31 @@ export function reserveSubagentControllerSource(
   });
 }
 
-/** Withdraws every unclaimed input that delivers this run; claimed turns revalidate at execution. */
-export function retireSubagentControllerInputs(entry: SubagentRunRecord, reason?: unknown): void {
+/** Live mailbox inputs that deliver this run, by their stable reservation identities. */
+function* subagentControllerInputs(entry: SubagentRunRecord) {
   const completionId = subagentCompletionSourceId(entry);
   for (const mailbox of sessionControllerMailboxes()) {
     for (const input of mailbox.entries.slice()) {
       const id = input.sourceTurnId;
       if (
-        !input.claim &&
+        input.phase !== "consumed" &&
         (id === completionId ||
           (id?.startsWith("requester-settle:") === true && id.includes(entry.runId)))
       ) {
-        abortSessionControllerInput(input, reason ?? new Error("Subagent obligation retired"));
+        yield input;
       }
+    }
+  }
+}
+
+export const hasSubagentControllerInput = (entry: SubagentRunRecord): boolean =>
+  !subagentControllerInputs(entry).next().done;
+
+/** Withdraws every unclaimed input that delivers this run; claimed turns revalidate at execution. */
+export function retireSubagentControllerInputs(entry: SubagentRunRecord): void {
+  for (const input of subagentControllerInputs(entry)) {
+    if (!input.claim) {
+      abortSessionControllerInput(input, new Error("Subagent obligation retired"));
     }
   }
 }
@@ -101,15 +113,12 @@ export function reserveRestoredSubagentControllerSources(
     if (entry !== batch[0]) {
       continue;
     }
-    const attemptIndex =
-      wake.status === "dispatching" ? Math.max(0, wake.attemptCount - 1) : wake.attemptCount;
-    const { batchKey } = buildRequesterSettleWakeIdentity({
+    const { batchKey: sourceId } = buildRequesterSettleWakeIdentity({
       requesterSessionKey: entry.requesterSessionKey,
       requesterAgentId: entry.requesterAgentId,
       batchRunIds,
       rearmGeneration: wake.rearmGeneration,
     });
-    const sourceId = `${batchKey}:attempt-${attemptIndex}`;
     const caller = Object.freeze({
       deliveryRoute: entry.requesterOrigin && Object.freeze(structuredClone(entry.requesterOrigin)),
       run: <T>(run: () => Promise<T>) => run(),

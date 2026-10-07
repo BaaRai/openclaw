@@ -27,10 +27,8 @@ describe("requester settle wake identity", () => {
       completionTarget: "parent",
       ...(pause ? { pauseReason: "sessions_yield" as const } : {}),
       requesterSettleWake: {
-        status: "dispatching",
         batchRunIds: ["run-b"],
         rearmGeneration: 1,
-        attemptCount: 2,
         ...(pause ? { pauseNotice: { acknowledgment: "Waiting for direction" } } : {}),
         ...(yieldedFinalDeliverable ? { yieldedFinalDeliverable } : {}),
       },

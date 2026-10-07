@@ -4789,7 +4789,6 @@ describe("requester settle wake trigger", () => {
         runId: entry.runId,
         childSessionKey: entry.childSessionKey,
       }),
-      transitionBatch: expect.any(Function),
       completeBatch: expect.any(Function),
       isSourceCurrent: expect.any(Function),
     });
@@ -4930,7 +4929,7 @@ describe("requester settle wake trigger", () => {
       childSessionKey: "agent:main:subagent:later-wave",
       endedAt: 8_000,
     });
-    later.requesterSettleWake = { status: "pending", attemptCount: 0 };
+    later.requesterSettleWake = { attemptCount: 0 };
     const runs = new Map([
       [first.runId, first],
       [later.runId, later],
@@ -4976,7 +4975,7 @@ describe("requester settle wake trigger", () => {
 
   it("does not resume a persisted settle wake until its registry row is terminal", async () => {
     const entry = createRunEntry({
-      requesterSettleWake: { status: "pending", attemptCount: 0 },
+      requesterSettleWake: { attemptCount: 0 },
     });
     const settleWake = vi.fn(async () => false);
     const controller = createLifecycleController({
@@ -5057,8 +5056,6 @@ describe("requester settle wake trigger", () => {
         endedAt: 4_000,
         expectsCompletionMessage: true,
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           requesterYieldBatch: true,
           rearmGeneration: 1,
         },
@@ -5264,94 +5261,6 @@ describe("requester settle wake trigger", () => {
     expect(settleWake).not.toHaveBeenCalled();
   });
 
-  it("marks yielded intentional non-delivery blocked after requester-settle exhaustion", async () => {
-    const entry = createRunEntry({
-      endedAt: 4_000,
-      expectsCompletionMessage: true,
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
-      },
-    });
-    let settleParams:
-      | Parameters<LifecycleControllerParams["maybeWakeRequesterAfterAllChildrenSettled"]>[0]
-      | undefined;
-    const maybeWakeRequesterAfterAllChildrenSettled = vi.fn(async (params) => {
-      settleParams = params;
-      return false;
-    });
-    const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
-      async (announceParams) => {
-        await announceParams.onDeliveryResult?.({
-          delivered: false,
-          path: "none",
-          reason: "completion_handoff_pending",
-          terminal: true,
-          disposition: "intentional_non_delivery",
-        });
-        return "intentional_non_delivery" as const;
-      },
-    );
-    let pendingDescendantRuns = 0;
-    const controller = createLifecycleController({
-      entry,
-      maybeWakeRequesterAfterAllChildrenSettled,
-      runSubagentAnnounceFlow,
-      countPendingDescendantRuns: async () => pendingDescendantRuns,
-    });
-
-    await completeRun(controller, entry, {
-      triggerCleanup: true,
-      terminalReply: { disposition: "empty" },
-    });
-    await waitForLifecycleState(() =>
-      expect(maybeWakeRequesterAfterAllChildrenSettled).toHaveBeenCalledOnce(),
-    );
-    await settleParams?.completeBatch([entry], 1, {
-      delivered: false,
-      path: "none",
-      error: "requester settle wake attempts exhausted",
-    });
-
-    expect(readLifecycleRun(entry).delivery).toMatchObject({
-      status: "failed",
-      disposition: "intentional_non_delivery",
-      lastError: "requester settle wake attempts exhausted",
-    });
-    expect(readLifecycleRun(entry).requesterSettleWake).toBeUndefined();
-    expect(readLifecycleRun(entry).suppressCompletionDelivery).toBe(true);
-
-    await mutateLifecycleRun(entry, (draft) => {
-      draft.cleanupCompletedAt = undefined;
-      draft.cleanupHandled = false;
-      draft.wakeOnDescendantSettle = true;
-    });
-    vi.mocked(runSubagentAnnounceFlow).mockClear();
-
-    pendingDescendantRuns = 1;
-    const joinDeferred = observeRootWork();
-    expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
-    await joinDeferred();
-    expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
-    expect(readLifecycleRun(entry).suppressCompletionDelivery).toBe(true);
-    expect(readLifecycleRun(entry).wakeOnDescendantSettle).toBe(true);
-    expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
-
-    pendingDescendantRuns = 0;
-    expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
-    await waitForLifecycleState(() =>
-      expect(readLifecycleRun(entry).cleanupCompletedAt).toEqual(expect.any(Number)),
-    );
-
-    expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    expect(readLifecycleRun(entry).suppressCompletionDelivery).toBeUndefined();
-    expect(readLifecycleRun(entry).wakeOnDescendantSettle).toBeUndefined();
-    expect(readLifecycleRun(entry).requesterSettleWake).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.status === "delivered").toBe(false);
-  });
-
   it.each(["committed", "failed persistence", "stale generation"] as const)(
     "retires requester cron authority only after its own wake cleanup is %s",
     async (mode) => {
@@ -5502,7 +5411,7 @@ describe("requester settle wake trigger", () => {
     const entry = createRunEntry({
       endedAt: 4_000,
       expectsCompletionMessage: true,
-      requesterSettleWake: { status: "pending", attemptCount: 0, rearmGeneration: 1 },
+      requesterSettleWake: { rearmGeneration: 1 },
     });
     let settleParams:
       | Parameters<LifecycleControllerParams["maybeWakeRequesterAfterAllChildrenSettled"]>[0]
@@ -5829,167 +5738,6 @@ describe("requester settle wake trigger", () => {
     expect(settleWake).not.toHaveBeenCalled();
   });
 
-  it("re-arms a deferred frozen batch at its persisted retry deadline", async () => {
-    const entry = createRunEntry({ endedAt: 4_000 });
-    let invocation = 0;
-    const settleWake = vi.fn(
-      async (
-        params: Parameters<
-          LifecycleControllerParams["maybeWakeRequesterAfterAllChildrenSettled"]
-        >[0],
-      ) => {
-        invocation += 1;
-        if (invocation === 1) {
-          await params.transitionBatch(
-            [params.settledEntry],
-            {
-              status: "pending",
-              attemptCount: 0,
-              nextAttemptAt: 30_000,
-              batchRunIds: [entry.runId],
-            },
-            () => {},
-          );
-        } else {
-          await params.completeBatch([params.settledEntry]);
-        }
-        return false;
-      },
-    );
-    const controller = createLifecycleController({
-      entry,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
-      await controller.completeCleanupBookkeeping({
-        runId: entry.runId,
-        entry,
-        cleanup: "keep",
-        completedAt: 5_000,
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(settleWake).toHaveBeenCalledTimes(1);
-      controller.resumeRequesterSettleWake(entry.runId, entry);
-      controller.resumeRequesterSettleWake(entry.runId, entry);
-      expect(vi.getTimerCount()).toBe(1);
-
-      await vi.advanceTimersByTimeAsync(29_999);
-      expect(settleWake).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(settleWake).toHaveBeenCalledTimes(2);
-      expect(readLifecycleRun(entry).requesterSettleWake).toBeUndefined();
-    } finally {
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-    }
-  });
-
-  it("lets a fresh yield wake preempt a stale retry timer", async () => {
-    const entry = createRunEntry({
-      endedAt: 4_000,
-      expectsCompletionMessage: true,
-      delivery: { status: "delivered" },
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 1,
-        nextAttemptAt: 120_000,
-        rearmGeneration: 1,
-      },
-    });
-    const settleWake = vi.fn(
-      async (
-        params: Parameters<
-          LifecycleControllerParams["maybeWakeRequesterAfterAllChildrenSettled"]
-        >[0],
-      ) => {
-        await params.completeBatch(
-          [params.settledEntry],
-          params.settledEntry.requesterSettleWake?.rearmGeneration,
-        );
-        return true;
-      },
-    );
-    const controller = createLifecycleController({
-      entry,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
-      controller.resumeRequesterSettleWake(entry.runId, entry);
-      expect(vi.getTimerCount()).toBe(1);
-
-      await mutateLifecycleRun(entry, (draft) => {
-        draft.requesterTurnRunId = "run-requester";
-        draft.requesterTurnYielded = true;
-      });
-      expect(
-        await controller.settleRequesterTurnAfterSessionSpawns({
-          requesterSessionKey: entry.requesterSessionKey,
-          requesterTurnRunId: "run-requester",
-          requesterYielded: true,
-          acceptedSessionSpawns: [{ runId: entry.runId, childSessionKey: entry.childSessionKey }],
-        }),
-      ).toBe(true);
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(settleWake).toHaveBeenCalledOnce();
-      expect(vi.getTimerCount()).toBe(0);
-      await vi.advanceTimersByTimeAsync(120_000);
-      expect(settleWake).toHaveBeenCalledOnce();
-    } finally {
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not re-arm coalesced batch rows whose retry deadline already passed", async () => {
-    const state = {
-      status: "pending" as const,
-      attemptCount: 1,
-      nextAttemptAt: 5_000,
-      batchRunIds: ["run-a", "run-b"],
-    };
-    const first = createRunEntry({
-      runId: "run-a",
-      endedAt: 4_000,
-      requesterSettleWake: { ...state },
-    });
-    const second = createRunEntry({
-      runId: "run-b",
-      endedAt: 4_000,
-      requesterSettleWake: { ...state },
-    });
-    const runs = new Map([
-      [first.runId, first],
-      [second.runId, second],
-    ]);
-    const settleWake = vi.fn(async () => false);
-    const controller = createLifecycleController({
-      entry: first,
-      runs,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    vi.useFakeTimers();
-    vi.setSystemTime(10_000);
-    try {
-      controller.resumeRequesterSettleWake(first.runId, first);
-      controller.resumeRequesterSettleWake(second.runId, second);
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(settleWake).toHaveBeenCalledTimes(2);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-    }
-  });
-
   it("fires the settle wake when an announce give-up suspends the delivery", async () => {
     // Suspension leaves cleanup incomplete and nothing retries it, so it is
     // the child's terminal settle for requester-drain purposes.
@@ -6232,7 +5980,7 @@ describe("requester settle wake trigger", () => {
           runId: `run-restored-admission-${index}`,
           requesterSessionKey: `agent:main:requester-${index}`,
           endedAt: 4_000,
-          requesterSettleWake: { status: "pending", attemptCount: 2 },
+          requesterSettleWake: { attemptCount: 2 },
         }),
       );
       const bindExecutionResolver = (entry: SubagentRunRecord, owner: () => undefined) => {
@@ -6341,201 +6089,5 @@ describe("requester settle wake trigger", () => {
       }
     },
   );
-
-  it("does not throttle live requester-settle wakes", async () => {
-    resetGatewayWorkAdmission();
-    const entries = [0, 1, 2].map((index) =>
-      createRunEntry({
-        runId: `run-live-admission-${index}`,
-        requesterSessionKey: `agent:main:live-requester-${index}`,
-        endedAt: 4_000,
-        requesterSettleWake: { status: "pending", attemptCount: 0 },
-      }),
-    );
-    const runs = new Map(entries.map((entry) => [entry.runId, entry] as const));
-    const releases = new Map<string, () => void>();
-    const settleWake = vi.fn(async (params: RequesterSettleWakeParams) => {
-      await new Promise<void>((resolve) => {
-        releases.set(params.settledEntry.runId, resolve);
-      });
-      await params.completeBatch(
-        [params.settledEntry],
-        params.settledEntry.requesterSettleWake?.rearmGeneration,
-      );
-      return false;
-    });
-    const controller = createLifecycleController({
-      entry: entries[0]!,
-      runs,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    try {
-      for (const entry of entries) {
-        controller.resumeRequesterSettleWake(entry.runId, entry);
-      }
-      await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(3));
-    } finally {
-      for (const release of releases.values()) {
-        release();
-      }
-      await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      controller.clearScheduledResumeTimers();
-      resetGatewayWorkAdmission();
-    }
-  });
-
-  it("retires restored classification after a rejected wake settles", async () => {
-    resetGatewayWorkAdmission();
-    const entries = [0, 1, 2].map((index) =>
-      createRunEntry({
-        runId: `run-restored-rejection-${index}`,
-        childSessionKey: `agent:main:subagent:restored-rejection-${index}`,
-        requesterSessionKey: `agent:main:rejection-requester-${index}`,
-        endedAt: 4_000,
-        requesterSettleWake: { status: "pending", attemptCount: 0 },
-      }),
-    );
-    const rejected = entries[0]!;
-    const runs = new Map(entries.map((entry) => [entry.runId, entry] as const));
-    const attempts = new Map<string, number>();
-    const releases = new Map<string, () => void>();
-    const settleWake = vi.fn(async (params: RequesterSettleWakeParams) => {
-      const runId = params.settledEntry.runId;
-      const attempt = (attempts.get(runId) ?? 0) + 1;
-      attempts.set(runId, attempt);
-      if (runId === rejected.runId && attempt === 1) {
-        throw new Error("wake exploded");
-      }
-      await new Promise<void>((resolve) => {
-        releases.set(runId, resolve);
-      });
-      await params.completeBatch(
-        [params.settledEntry],
-        params.settledEntry.requesterSettleWake?.rearmGeneration,
-      );
-      return false;
-    });
-    const controller = createLifecycleController({
-      entry: rejected,
-      runs,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    try {
-      for (const entry of entries) {
-        controller.resumeRequesterSettleWake(entry.runId, entry, "restore");
-      }
-      await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(3));
-      await waitForLifecycleState(() =>
-        expect(runs.get(rejected.runId)?.requesterSettleWake).toBeUndefined(),
-      );
-
-      await mutateLifecycleRun(rejected, (draft) => {
-        draft.requesterSettleWake = { status: "pending", attemptCount: 0 };
-      });
-      controller.resumeRequesterSettleWake(rejected.runId, rejected);
-      await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(4));
-    } finally {
-      while (releases.size > 0) {
-        const pending = Array.from(releases.values());
-        releases.clear();
-        pending.forEach((release) => release());
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
-      }
-      await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      controller.clearScheduledResumeTimers();
-      resetGatewayWorkAdmission();
-    }
-  });
-
-  it("keeps restored requester-settle retries behind the recovery cap", async () => {
-    resetGatewayWorkAdmission();
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const entries = [0, 1, 2].map((index) =>
-      createRunEntry({
-        runId: `run-restored-retry-${index}`,
-        childSessionKey: `agent:main:subagent:restored-retry-${index}`,
-        requesterSessionKey: `agent:main:retry-requester-${index}`,
-        endedAt: 4_000,
-        requesterSettleWake: { status: "pending", attemptCount: 0 },
-      }),
-    );
-    const runs = new Map(entries.map((entry) => [entry.runId, entry] as const));
-    const attempts = new Map<string, number>();
-    const releases: Array<() => void> = [];
-    let active = 0;
-    let maxActive = 0;
-    const settleWake = vi.fn(async (params: RequesterSettleWakeParams) => {
-      const runId = params.settledEntry.runId;
-      const attempt = (attempts.get(runId) ?? 0) + 1;
-      attempts.set(runId, attempt);
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise<void>((resolve) => {
-        releases.push(resolve);
-      });
-      if (attempt === 1) {
-        await params.transitionBatch(
-          [params.settledEntry],
-          { status: "pending", attemptCount: 1, nextAttemptAt: 100, batchRunIds: [runId] },
-          () => {},
-        );
-      } else {
-        await params.completeBatch(
-          [params.settledEntry],
-          params.settledEntry.requesterSettleWake?.rearmGeneration,
-        );
-      }
-      active -= 1;
-      return false;
-    });
-    const controller = createLifecycleController({
-      entry: entries[0]!,
-      runs,
-      maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-    });
-
-    try {
-      for (const entry of entries) {
-        controller.resumeRequesterSettleWake(entry.runId, entry, "restore");
-      }
-      await vi.advanceTimersByTimeAsync(0);
-      expect(settleWake).toHaveBeenCalledTimes(2);
-      expect(maxActive).toBe(2);
-      releases.splice(0, 2).forEach((release) => release());
-      await vi.advanceTimersByTimeAsync(0);
-      expect(settleWake).toHaveBeenCalledTimes(3);
-      releases.shift()?.();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(
-        entries.map((entry) => runs.get(entry.runId)?.requesterSettleWake?.nextAttemptAt),
-      ).toEqual([100, 100, 100]);
-      expect(vi.getTimerCount()).toBe(3);
-
-      await vi.advanceTimersByTimeAsync(100);
-      expect(settleWake).toHaveBeenCalledTimes(5);
-      expect(maxActive).toBe(2);
-      releases.splice(0, 2).forEach((release) => release());
-      await vi.advanceTimersByTimeAsync(0);
-      expect(settleWake).toHaveBeenCalledTimes(6);
-      releases.shift()?.();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(active).toBe(0);
-      expect(maxActive).toBe(2);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        releases.splice(0).forEach((release) => release());
-        await vi.runOnlyPendingTimersAsync();
-      }
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-      resetGatewayWorkAdmission();
-    }
-  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

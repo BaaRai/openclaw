@@ -1,11 +1,7 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
-import {
-  clearDeliveryState,
-  ensureCompletionState,
-  resetRequesterSettleWakeRetry,
-} from "./subagent-delivery-state.js";
+import { clearDeliveryState, ensureCompletionState } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import { mutateSubagentRuns, SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
@@ -87,7 +83,7 @@ export async function claimSubagentYieldInRuns(params: {
       }
       const next = structuredClone(entry);
       next.requesterSettleWake = {
-        ...resetRequesterSettleWakeRetry(entry.requesterSettleWake),
+        ...entry.requesterSettleWake,
         batchRunIds: entry.requesterSettleWake?.batchRunIds ?? [entry.runId],
         pauseNotice: {
           acknowledgment: truncateUtf16Safe(

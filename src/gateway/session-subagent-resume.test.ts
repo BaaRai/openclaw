@@ -106,8 +106,6 @@ it.each(["agent:main:subagent:resume-child", "agent:main:dashboard:resume-child"
     const state = await arrangePausedChild(childSessionKey);
     state.entry = await updateRun(previousRunId, (draft) => {
       draft.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         afterRequesterYield: true,
         rearmGeneration: 1,

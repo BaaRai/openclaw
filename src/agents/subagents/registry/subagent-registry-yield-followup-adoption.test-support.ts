@@ -114,8 +114,6 @@ export function registerYieldFollowupAdoptionTests({
       });
       await updateFixtureRun(PAUSED_RUN_ID, (next) => {
         next.requesterSettleWake = {
-          status: "pending",
-          attemptCount: 0,
           requesterYieldBatch: true,
           afterRequesterYield: true,
           rearmGeneration: 1,

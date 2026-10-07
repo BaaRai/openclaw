@@ -6,9 +6,7 @@ import type { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-annou
 import {
   REQUESTER,
   makeSettledChild,
-  transitionBatch,
   completeBatch,
-  transitionBatchSpy,
   completeBatchSpy,
   deliverSpy,
 } from "./subagent-announce.requester-settle-wake.test-support.js";
@@ -111,7 +109,6 @@ function wakeParams(
     settledEntry:
       listedRequesterRuns().find((entry) => entry.runId === "run-b") ??
       makeSettledChild({ runId: "run-b" }),
-    transitionBatch,
     completeBatch,
     ...overrides,
   };
@@ -125,7 +122,6 @@ beforeEach(() => {
   );
   findTranscriptEventMock.mockReset().mockResolvedValue(undefined);
   deliverSpy.mockClear();
-  transitionBatchSpy.mockClear();
   completeBatchSpy.mockClear();
   sessionStore = { [REQUESTER]: { sessionId: "sess-main" } };
   readDescendantFacts.mockReset().mockResolvedValue({ unsettled: false, active: 0 });

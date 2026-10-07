@@ -41,7 +41,6 @@ import type {
   SessionStoreEntry,
 } from "./subagent-registry.lifecycle-fixture.test-support.js";
 import { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.test-support.js";
-import { registerRequesterWakeReceiptBoundaryTests } from "./subagent-registry.requester-wake-receipts.test-support.js";
 import { registerRequesterWakeSettlementBoundaryTests } from "./subagent-registry.requester-wake-settlement.test-support.js";
 import * as registry from "./subagent-registry.test-helpers.js";
 
@@ -568,46 +567,6 @@ describe("requester settle wake product flow", () => {
     },
   );
 
-  registerRequesterWakeReceiptBoundaryTests({
-    requesterSessionKey: MAIN_REQUESTER_SESSION_KEY,
-    spawnVisibleChild,
-    emitCompleted,
-    flushOwnedWork,
-    waitForDeliveredCleanup,
-    waitForAgentCallCount,
-    getRequesterWakeCalls,
-    createGatewayContext,
-    statePath: (...parts) => testState.statePath(...parts),
-    sendMessageMock,
-    setEmptyReply: (value) => {
-      emptyGatedAgentReply = value;
-    },
-    setWakeRefusal: (wake, persistence) => {
-      rejectNextRequesterWake = wake;
-      armRequesterWakePersistenceFailure = persistence;
-    },
-    holdAgentCall: (sessionKey) => {
-      agentCallGates.set(
-        sessionKey,
-        new Promise<void>((resolve) => {
-          releaseAgentCallGate = resolve;
-        }),
-      );
-    },
-    releaseAgentCall: (sessionKey) => {
-      agentCallGates.delete(sessionKey);
-      releaseAgentCallGate?.();
-    },
-    onReceiptsHeld: (release) => {
-      releaseWakeReceipts = release;
-    },
-    holdRequesterHistory: () => {
-      const gate = { entered: createDeferred(), release: createDeferred() };
-      requesterHistoryGate = gate;
-      return { entered: gate.entered.promise, release: () => gate.release.resolve() };
-    },
-  });
-
   it.each([
     { runtime: "cli", acceptNextChild: true, attachRequesterFinal: false },
     { runtime: "cli", acceptNextChild: false, attachRequesterFinal: false },
@@ -726,7 +685,6 @@ describe("requester settle wake product flow", () => {
               expect(registry.getSubagentRunByRunId(child.runId)).toMatchObject({
                 requesterTurnRunId: undefined,
                 requesterSettleWake: {
-                  status: "pending",
                   requesterYieldBatch: true,
                   batchRunIds: accepted.map((spawn) => spawn.runId).toSorted(),
                 },
@@ -842,7 +800,6 @@ describe("requester settle wake product flow", () => {
               expect(registry.getSubagentRunByRunId(beta.runId)).toMatchObject({
                 requesterTurnRunId: undefined,
                 requesterSettleWake: {
-                  status: "pending",
                   batchRunIds: [beta.runId],
                   requesterYieldBatch: true,
                 },

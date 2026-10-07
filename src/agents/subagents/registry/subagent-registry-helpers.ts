@@ -31,11 +31,10 @@ import {
 import { resolveCompletionFromSessionEntry } from "./subagent-session-reconciliation.js";
 
 export const PROVISIONAL_KILL_RECONCILIATION_MS = 5 * 60_000;
-export const MIN_ANNOUNCE_RETRY_DELAY_MS = 15_000;
+const MIN_ANNOUNCE_RETRY_DELAY_MS = 15_000;
 const MAX_ANNOUNCE_RETRY_DELAY_MS = 5 * 60_000;
 const ANNOUNCE_RETRY_JITTER = 0.2;
 export const ANNOUNCE_EXPIRY_MS = 5 * 60_000;
-export const ANNOUNCE_COMPLETION_HARD_EXPIRY_MS = 30 * 60_000;
 
 const ANNOUNCE_RETRY_BACKOFF = {
   initialMs: MIN_ANNOUNCE_RETRY_DELAY_MS,
@@ -76,7 +75,6 @@ export function logAnnounceGiveUp(
   entry: SubagentRunRecord,
   reason: "expiry" | "permanent_failure",
 ) {
-  const retryCount = entry.delivery?.attemptCount ?? 0;
   const endedAt = entry.execution.endedAt;
   const endedAgoMs = typeof endedAt === "number" ? Math.max(0, Date.now() - endedAt) : undefined;
   const endedAgoLabel = endedAgoMs != null ? `${Math.round(endedAgoMs / 1000)}s` : "n/a";
@@ -85,7 +83,7 @@ export function logAnnounceGiveUp(
     ? ` deliveryError=${formatAnnounceGiveUpLogField(lastDeliveryError)}`
     : "";
   defaultRuntime.log(
-    `[warn] Subagent announce give up (${reason}) run=${entry.runId} child=${entry.childSessionKey} requester=${entry.requesterSessionKey} retries=${retryCount} endedAgo=${endedAgoLabel}${deliveryError}`,
+    `[warn] Subagent announce give up (${reason}) run=${entry.runId} child=${entry.childSessionKey} requester=${entry.requesterSessionKey} endedAgo=${endedAgoLabel}${deliveryError}`,
   );
 }
 

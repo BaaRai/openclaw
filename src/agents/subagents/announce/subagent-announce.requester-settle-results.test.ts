@@ -115,8 +115,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled results", () => {
         terminalReply: buildAgentRunTerminalReplySnapshot({ visibleText: text }),
       },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
       },

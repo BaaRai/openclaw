@@ -1,7 +1,6 @@
 import { vi } from "vitest";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import type { SubagentAnnounceDeliveryResult as Result } from "./subagent-announce-dispatch.js";
-import type { RequesterSettleWakeBatchState } from "./subagent-announce.requester-settle-state.js";
 
 export const REQUESTER = "agent:main:main";
 export const requesterSettleKey = (suffix: string) =>
@@ -28,30 +27,12 @@ export function makeSettledChild(overrides: SettledChildOverrides): SubagentRunR
     execution: execution ?? { status: "terminal", startedAt, endedAt, outcome },
     expectsCompletionMessage: true,
     delivery: { status: "delivered" },
-    requesterSettleWake: { status: "pending", attemptCount: 0 },
+    requesterSettleWake: {},
     ...recordOverrides,
   };
 }
 
-export const transitionBatchSpy = vi.fn();
 export const completeBatchSpy = vi.fn();
-
-export function transitionBatch(
-  batch: readonly SubagentRunRecord[],
-  state: RequesterSettleWakeBatchState,
-  onPublished: (entries: readonly SubagentRunRecord[]) => void,
-): void {
-  transitionBatchSpy(batch.map((entry) => entry.runId).toSorted(), state);
-  for (const entry of batch) {
-    if (entry.requesterSettleWake) {
-      entry.requesterSettleWake = {
-        ...state,
-        ...(entry.requesterSettleWake.retireAfterSettle ? { retireAfterSettle: true } : {}),
-      };
-    }
-  }
-  onPublished(batch);
-}
 
 export function completeBatch(
   batch: readonly SubagentRunRecord[],

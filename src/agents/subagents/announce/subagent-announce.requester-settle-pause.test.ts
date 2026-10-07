@@ -47,8 +47,6 @@ describe("requester pause notices", () => {
           completion: { required: true },
           delivery: { status: "pending" },
           requesterSettleWake: {
-            status: "pending",
-            attemptCount: 0,
             batchRunIds: ["paused-child"],
             pauseNotice: { acknowledgment: "TURNOVER-PAUSE" },
           },
@@ -108,8 +106,6 @@ describe("requester pause notices", () => {
       delivery: { status: "pending" },
       completion: { required: true, resultText: "Final interruption result" },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: ["run-b"],
         pauseNotice: { acknowledgment: "OBSOLETE-PAUSE-INTENT" },
       },
@@ -138,8 +134,6 @@ describe("requester pause notices", () => {
       pauseReason: "sessions_yield",
       delivery: { status: "pending" },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds,
         requesterYieldBatch: true,
         rearmGeneration: 1,
@@ -251,8 +245,6 @@ describe("requester pause notices", () => {
         ? { pauseReason: "sessions_yield" as const }
         : { completion: { required: true, resultText: "Completed before follow-up" } }),
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: ["run-b"],
         ...(paused ? { pauseNotice: { acknowledgment: "STALE-PAUSE" } } : {}),
       },

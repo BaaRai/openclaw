@@ -55,8 +55,6 @@ function child(generation = 1): SubagentRunRecord {
     createdAt: 2,
     execution: { status: "terminal", endedAt: 3, outcome: { status: "ok" } },
     requesterSettleWake: {
-      status: "pending",
-      attemptCount: 0,
       requesterYieldBatch: true,
       rearmGeneration: generation,
       batchRunIds: ["C"],

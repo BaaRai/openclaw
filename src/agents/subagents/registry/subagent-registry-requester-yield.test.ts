@@ -102,8 +102,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
       completion: { required: true },
       delivery: { status: "pending" },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: ["steered-child"],
         requesterYieldBatch: true,
         rearmGeneration: 1,
@@ -132,8 +130,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
       child.childSessionKey = `agent:main:subagent:${child.runId}`;
       child.taskRunId = `original-task-${order}`;
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: [child.runId],
         requesterYieldBatch: true,
         rearmGeneration: 1,
@@ -161,7 +157,7 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
         ...before,
         requesterTurnRunId: REQUESTER_TURN,
         requesterTurnYielded: undefined,
-        requesterSettleWake: { status: "pending", attemptCount: 0, rearmGeneration: 1 },
+        requesterSettleWake: { rearmGeneration: 1 },
       });
       if (!receipt) {
         throw new Error("Expected adoption receipt");
@@ -216,26 +212,20 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
     } else if (reason === "cancelled") {
       child.killIntent = { requestedAt: 2_000, reason: "operator stop" };
     } else if (reason === "dispatching") {
-      child.requesterSettleWake = { status: "dispatching", attemptCount: 1 };
+      child.requesterSettleWake = { attemptCount: 1 };
     } else if (reason === "different-cohort" || reason === "ordinary-cohort") {
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: [child.runId, "another-child"],
         ...(reason === "different-cohort" ? { requesterYieldBatch: true, rearmGeneration: 1 } : {}),
       };
     } else if (reason === "retrying-cohort") {
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 1,
         batchRunIds: [child.runId],
         requesterYieldBatch: true,
         rearmGeneration: 1,
       };
     } else if (reason === "missing-cohort") {
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
       };
@@ -483,7 +473,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
     [
       "valid receipt",
       (entry: SubagentRunRecord) => {
-        entry.requesterSettleWake = { status: "pending", attemptCount: 0 };
+        entry.requesterSettleWake = { attemptCount: 0 };
       },
     ],
     [
@@ -767,7 +757,7 @@ describe("listUnsettledRequesterChildrenInRuns", () => {
   it("lists the ordered current roster while excluding unowned, settled, and superseded children", () => {
     const yielded = runningRun("run-yielded", {
       label: "Work session",
-      requesterSettleWake: { status: "pending", attemptCount: 0, requesterYieldBatch: true },
+      requesterSettleWake: { requesterYieldBatch: true },
     });
     const earlierTurn = runningRun("run-earlier", { requesterTurnRunId: "run-turn-0" });
     const completing = runningRun("run-completing", {
@@ -778,7 +768,7 @@ describe("listUnsettledRequesterChildrenInRuns", () => {
       execution: { status: "terminal", startedAt: NOW - 2_000, endedAt: NOW - 500 },
       pauseReason: "sessions_yield",
       delivery: { status: "pending" },
-      requesterSettleWake: { status: "pending", attemptCount: 0, requesterYieldBatch: true },
+      requesterSettleWake: { requesterYieldBatch: true },
     });
     const excluded: Partial<SubagentRunRecord>[] = [
       { requesterTurnRunId: "run-turn-2" },

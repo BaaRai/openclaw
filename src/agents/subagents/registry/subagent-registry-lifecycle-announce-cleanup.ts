@@ -14,14 +14,8 @@ import {
   clearSubagentPendingDelivery,
   loadPendingFinalDeliveryPayload,
 } from "./subagent-delivery-state.js";
-import {
-  resolveAnnounceDeliveryDeadline,
-  shouldSuspendPendingFinalDelivery,
-} from "./subagent-registry-cleanup.js";
-import {
-  ANNOUNCE_COMPLETION_HARD_EXPIRY_MS,
-  ANNOUNCE_EXPIRY_MS,
-} from "./subagent-registry-helpers.js";
+import { shouldSuspendPendingFinalDelivery } from "./subagent-registry-cleanup.js";
+import { ANNOUNCE_EXPIRY_MS } from "./subagent-registry-helpers.js";
 import {
   retireSupersededCleanupIfNeeded,
   beginSubagentCleanup,
@@ -45,6 +39,7 @@ import {
   maskLifecycleIdentifier,
 } from "./subagent-registry-lifecycle-log.js";
 import { commitSubagentLifecycleMutation } from "./subagent-registry-lifecycle-persistence.js";
+import { scheduleRequesterSettleWake } from "./subagent-registry-lifecycle-wake.js";
 import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
 import {
   assertSubagentRegistryWriteSourceCurrent,
@@ -52,6 +47,7 @@ import {
 } from "./subagent-registry-persistence.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { hasRequesterCompletionCohort } from "./subagent-requester-settle-identity.js";
+import { isClaimedByLiveRequesterTurn } from "./subagent-requester-turn-liveness.js";
 import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 
@@ -86,6 +82,10 @@ export const resumeAncestorCleanup = (
     requesterSessionKey = entry.requesterSessionKey;
     requesterAgentId = entry.requesterAgentId;
     const { runId } = entry;
+    // Descendant settlement is the event that re-evaluates an ancestor's owed wake.
+    if (entry.requesterSettleWake) {
+      scheduleRequesterSettleWake(context, runId, entry);
+    }
     // A failed cleanup belongs to its retry timer or exhausted process-local
     // budget; even descendant settlement must not reopen that attempt early.
     if (
@@ -146,11 +146,11 @@ export const startSubagentAnnounceCleanupFlow = (
   }
   const cleanup = entry.cleanup;
   const skipRequesterDelivery = entry.suppressCompletionDelivery === true;
-  // The spawning turn decides between individual review and a yielded batch.
+  // The live spawning turn decides between individual review and a yielded batch.
   // Keep private results durable without admitting a competing requester turn.
   if (
     entry.completionTarget === "parent" &&
-    entry.requesterTurnRunId &&
+    isClaimedByLiveRequesterTurn(entry) &&
     !skipRequesterDelivery &&
     entry.delivery?.status !== "delivered"
   ) {
@@ -563,20 +563,18 @@ export const startSubagentAnnounceCleanupFlow = (
       let announceOutcome: SubagentAnnounceFlowOutcome = "retryable";
       const deadline = new AbortController();
       let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-      const now = Date.now();
-      const expiryMs =
-        entry.expectsCompletionMessage === true
-          ? ANNOUNCE_COMPLETION_HARD_EXPIRY_MS
-          : ANNOUNCE_EXPIRY_MS;
-      const remainingMs = resolveAnnounceDeliveryDeadline(entry, now, expiryMs) - now;
       const abortDelivery = () => deadline.abort(new Error("subagent announce delivery expired"));
-      // Accepted handoffs can wait behind a busy parent without spending their
-      // execution timeout, but the lifecycle's delivery window still bounds that wait.
-      if (remainingMs <= 0) {
-        abortDelivery();
-      } else {
-        deadlineTimer = setTimeout(abortDelivery, remainingMs);
-        deadlineTimer.unref?.();
+      // A required completion waits in the requester mailbox until it runs or is
+      // retired. Only an optional announcement keeps its short admission window.
+      if (entry.expectsCompletionMessage !== true) {
+        const remainingMs =
+          (entry.execution.endedAt ?? Date.now()) + ANNOUNCE_EXPIRY_MS - Date.now();
+        if (remainingMs <= 0) {
+          abortDelivery();
+        } else {
+          deadlineTimer = setTimeout(abortDelivery, remainingMs);
+          deadlineTimer.unref?.();
+        }
       }
       try {
         announceOutcome = await subagentRuns.runWithCompletionAuthority(entry, () =>

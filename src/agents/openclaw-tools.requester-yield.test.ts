@@ -705,8 +705,6 @@ describe("requester yield ownership", () => {
               execution: { status: "terminal" as const, startedAt: 2_000, endedAt: 3_000 },
               requesterSettleWake: {
                 ...current.requesterSettleWake,
-                status: "dispatching" as const,
-                attemptCount: 1,
               },
             },
           ],

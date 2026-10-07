@@ -31,18 +31,6 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type SessionStore = Record<string, Record<string, unknown>>;
 
-export function expectDeferredSubagentAnnouncement(
-  entry: SubagentRunRecord | undefined,
-  runId: string,
-) {
-  expect(entry, "deferred announcement committed").toMatchObject({
-    cleanupHandled: false,
-    delivery: { status: "pending", attemptCount: 1, payload: { childRunId: runId } },
-  });
-  expect(entry?.cleanupCompletedAt, "deferred cleanup remains unfinished").toBeUndefined();
-  expect(Number.isFinite(entry?.delivery?.nextAttemptAt), "durable retry deadline").toBe(true);
-}
-
 /** Hold the real lazy settlement dependency without replacing its completion policy. */
 export function gateSubagentRequesterSettlement(
   settle: typeof maybeWakeRequesterAfterAllChildrenSettled,
@@ -470,26 +458,22 @@ export function createRestoredRequesterWakeRuns(params: {
   const { activationSettlement, requesterYielded, endedAt } = params;
   return Array.from({ length: 3 }, (_, index): SubagentRunRecord => {
     const runId = `run-restored-wake-${index}`;
-    return createDeliveredWake(
-      runId,
-      requesterYielded ? undefined : { status: "pending", attemptCount: 0 },
-      {
-        childSessionKey: `agent:main:subagent:restored-wake-${index}`,
-        requesterSessionKey: `agent:main:requester-${index}`,
-        requesterDisplayKey: `requester-${index}`,
-        task: "resume a durable requester wake",
-        createdAt: endedAt - 1_000,
-        endedReason: "subagent-complete",
-        startedAt: endedAt - 500,
-        endedAt,
-        ...(activationSettlement
-          ? {
-              requesterTurnRunId: `requester-turn-${index}`,
-              requesterTurnYielded: requesterYielded ?? undefined,
-              taskRunId: runId,
-            }
-          : {}),
-      },
-    );
+    return createDeliveredWake(runId, requesterYielded ? undefined : {}, {
+      childSessionKey: `agent:main:subagent:restored-wake-${index}`,
+      requesterSessionKey: `agent:main:requester-${index}`,
+      requesterDisplayKey: `requester-${index}`,
+      task: "resume a durable requester wake",
+      createdAt: endedAt - 1_000,
+      endedReason: "subagent-complete",
+      startedAt: endedAt - 500,
+      endedAt,
+      ...(activationSettlement
+        ? {
+            requesterTurnRunId: `requester-turn-${index}`,
+            requesterTurnYielded: requesterYielded ?? undefined,
+            taskRunId: runId,
+          }
+        : {}),
+    });
   });
 }

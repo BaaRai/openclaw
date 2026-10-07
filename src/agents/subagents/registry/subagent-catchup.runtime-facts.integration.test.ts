@@ -200,8 +200,6 @@ describe("parent runtime facts from retained completion obligations", () => {
       ...(scenario === "requester final pending"
         ? {
             requesterSettleWake: {
-              status: "dispatching" as const,
-              attemptCount: 1,
               requesterYieldBatch: true as const,
               rearmGeneration: 1,
               batchRunIds: ["catchup-original"],

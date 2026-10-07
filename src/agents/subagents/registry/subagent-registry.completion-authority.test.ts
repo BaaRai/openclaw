@@ -807,7 +807,7 @@ describe("registered completion source custody", () => {
           await updateRun(entry.runId, (draft) => {
             draft.execution = { status: "terminal", endedAt: 1, outcome: { status: "ok" } };
             draft.cleanupCompletedAt = 1;
-            draft.requesterSettleWake = { status: "pending", attemptCount: 0 };
+            draft.requesterSettleWake = { attemptCount: 0 };
           });
           expect(source.authority.assertCurrent).not.toThrow();
           await updateRun(entry.runId, (draft) => {

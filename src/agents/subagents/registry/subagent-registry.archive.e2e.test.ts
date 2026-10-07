@@ -777,8 +777,6 @@ describe("subagent registry archive behavior", () => {
               {
                 ...current,
                 requesterSettleWake: {
-                  status: "pending",
-                  attemptCount: 0,
                   rearmGeneration: 2,
                   batchRunIds: [runId],
                   requesterYieldBatch: true,

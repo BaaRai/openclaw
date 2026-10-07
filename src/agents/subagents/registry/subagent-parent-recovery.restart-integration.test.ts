@@ -78,8 +78,6 @@ describe("subagent parent recovery — durable yielded continuation", () => {
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
       },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
         batchRunIds: [runId],

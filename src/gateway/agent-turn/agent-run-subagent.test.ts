@@ -221,8 +221,6 @@ describe("Gateway native subagent admission", () => {
       createdAt: 1,
       execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
         batchRunIds: ["nested-child"],

@@ -14,12 +14,15 @@ import {
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { testing as announceTesting } from "../../subagents/announce/subagent-announce-output.test-support.js";
+import {
+  ensureDeliveryState,
+  loadPendingFinalDeliveryPayload,
+} from "../../subagents/registry/subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "../../subagents/registry/subagent-lifecycle-events.js";
 import {
   createLifecycleControllerFixture,
   installLifecycleWorkerAckFixture,
 } from "../../subagents/registry/subagent-registry-lifecycle-controller.test-support.js";
-import { markPendingFinalDelivery } from "../../subagents/registry/subagent-registry-lifecycle-delivery.js";
 import { mutateSubagentRuns } from "../../subagents/registry/subagent-registry-persistence.js";
 import { createSubagentRegistryPublicApi } from "../../subagents/registry/subagent-registry-public-api.js";
 import type { SubagentRunRecord } from "../../subagents/registry/subagent-registry.types.js";
@@ -302,7 +305,10 @@ it("injects complete lifecycle results into requester prompts and acknowledges o
           throw new Error("expected completed child");
         }
         const draft = structuredClone(current);
-        markPendingFinalDelivery({ entry: draft });
+        Object.assign(ensureDeliveryState(draft), {
+          status: "pending",
+          payload: loadPendingFinalDeliveryPayload(draft),
+        });
         return { value: undefined, postimages: new Map([[draft.runId, draft]]) };
       },
       { runs },

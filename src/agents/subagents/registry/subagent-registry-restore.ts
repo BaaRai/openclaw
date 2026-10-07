@@ -57,7 +57,6 @@ export function isRestoredQueuedFailureSettlementClaimed(entry: SubagentRunRecor
 export async function recoverSubagentRunGatewayOwner(
   expected: SubagentRunRecord,
   resolver: GatewayContextResolver,
-  onRecovered: (entry: SubagentRunRecord) => void,
 ): Promise<boolean> {
   const previousResolver = getEntryGatewayContextResolver(expected);
   const gateway = resolver();
@@ -81,7 +80,6 @@ export async function recoverSubagentRunGatewayOwner(
         const row = postimages.get(expected.runId);
         if (row) {
           bindGatewayContextResolver(row, resolver);
-          onRecovered(row);
           subagentRuns.commitOwnership(row);
         }
       },
@@ -254,21 +252,18 @@ export function createSubagentRegistryRestorer(config: {
           continue;
         }
         assertCurrent();
-        await settleRequesterTurn(
-          {
-            requesterSessionKey: firstEntry.requesterSessionKey,
-            stateContext,
-            assertCurrent,
-            requesterAgentId: resolveRequesterAgentId(firstEntry),
-            requesterTurnRunId,
-            requesterYielded: entries.every((entry) => entry.requesterTurnYielded === true),
-            acceptedSessionSpawns: entries.map((entry) => ({
-              runId: entry.taskRunId ?? entry.runId,
-              childSessionKey: entry.childSessionKey,
-            })),
-          },
-          "restore",
-        );
+        await settleRequesterTurn({
+          requesterSessionKey: firstEntry.requesterSessionKey,
+          stateContext,
+          assertCurrent,
+          requesterAgentId: resolveRequesterAgentId(firstEntry),
+          requesterTurnRunId,
+          requesterYielded: entries.every((entry) => entry.requesterTurnYielded === true),
+          acceptedSessionSpawns: entries.map((entry) => ({
+            runId: entry.taskRunId ?? entry.runId,
+            childSessionKey: entry.childSessionKey,
+          })),
+        });
         assertCurrent();
       }
     }

@@ -87,7 +87,7 @@ describe("subagent suspended delivery pressure", () => {
 
   it("still reports and deduplicates suspended backlog pressure when a sweep fails", async () => {
     const { entry, resumeRequesterSettleWake, sweeper, warn } = createSuspendedBacklog(25);
-    entry.requesterSettleWake = { status: "pending", attemptCount: 0 };
+    entry.requesterSettleWake = { attemptCount: 0 };
     resumeRequesterSettleWake.mockImplementation(() => {
       throw new Error("requester wake failed");
     });

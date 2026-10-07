@@ -336,7 +336,6 @@ describe("sessions_yield orchestration", () => {
             requesterTurnRunId: undefined,
             requesterTurnYielded: undefined,
             requesterSettleWake: {
-              status: "pending",
               requesterYieldBatch: true,
               batchRunIds: [...runs.keys()].toSorted(),
             },

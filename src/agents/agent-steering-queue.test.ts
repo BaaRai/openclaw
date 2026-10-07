@@ -337,7 +337,7 @@ describe("agent steering queue", () => {
       "retry",
       makeRun({
         runId: "retry",
-        delivery: { status: "pending", attemptCount: 2, payload: payload("retry") },
+        delivery: { status: "pending", payload: payload("retry") },
       }),
     );
     await leaseItems({
@@ -357,7 +357,6 @@ describe("agent steering queue", () => {
     ).toBe(1);
     expect(runs.get("retry")?.delivery).toMatchObject({
       status: "pending",
-      attemptCount: 2,
       lastError: "hook blocked prompt submission",
     });
     expect(runs.get("retry")?.cleanupHandled).toBe(false);

@@ -227,20 +227,17 @@ it("retains quiet admitted execution in listing, admission count, and requester 
       outcome: { status: "ok" },
       cleanupCompletedAt: start + 2,
       expectsCompletionMessage: false,
-      requesterSettleWake: { status: "pending", attemptCount: 0 },
+      requesterSettleWake: { attemptCount: 0 },
     });
     const sibling = subagentRuns.get("settled-sibling")!;
     const completeBatch = vi.fn();
-    const transitionBatch = vi.fn();
     await maybeWakeRequesterAfterAllChildrenSettled({
       isSourceCurrent: () => true,
       requesterSessionKey: parent,
       settledEntry: sibling,
       completeBatch,
-      transitionBatch,
     });
     expect.soft(completeBatch).not.toHaveBeenCalled();
-    expect.soft(transitionBatch).not.toHaveBeenCalled();
   } finally {
     finish.resolve();
     await task;

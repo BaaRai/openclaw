@@ -646,7 +646,7 @@ describe("restored historical cancellation ownership", () => {
       expectsCompletionMessage: true,
       completion: { required: true },
       delivery: { status: "pending" },
-      requesterSettleWake: { status: "dispatching", attemptCount: 3, rearmGeneration: 1 },
+      requesterSettleWake: { rearmGeneration: 1 },
     });
     return input;
   }
@@ -709,8 +709,6 @@ describe("restored historical cancellation ownership", () => {
       };
       input.subagent.completionTarget = "parent";
       input.subagent.requesterSettleWake = {
-        status: "dispatching",
-        attemptCount: 3,
         batchRunIds: [input.subagent.runId],
         rearmGeneration: 1,
         ...(yielded ? { requesterYieldBatch: true, afterRequesterYield: true } : {}),

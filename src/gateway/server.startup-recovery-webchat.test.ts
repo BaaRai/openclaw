@@ -7,10 +7,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { recoverRestartAbortedMainSessions } from "../agents/main-session-recovery/main-session-restart-recovery.js";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../agents/subagents/announce/subagent-announce.requester-settle-wake.js";
-import {
-  mutateRequesterSettleWakeBatch,
-  settleRequesterCompletionBatch,
-} from "../agents/subagents/completion/subagent-completion-admission.store.js";
+import { settleRequesterCompletionBatch } from "../agents/subagents/completion/subagent-completion-admission.store.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
@@ -29,7 +26,6 @@ import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-s
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
-import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { getGatewayRecoveryRuntime } from "./server-recovery-runtime-context.js";
@@ -471,34 +467,16 @@ it(
           isSourceCurrent: () => true,
           requesterSessionKey: sessionKey,
           settledEntry: entry,
-          transitionBatch: async (batch, next, onPublished) => {
-            const result = await mutateRequesterSettleWakeBatch({
-              entries: batch,
-              operation: { kind: "transition", state: next },
-              context: captureOpenClawStateWorkerContext(),
-              assertCurrent: () => {
-                currentBatch(batch);
-              },
-              onCommitted: () => {},
-              onPublished: () => onPublished(currentBatch(batch)),
-            });
-            expect(result.publication).toBe("published");
-          },
-          completeBatch: async (batch, rearmGeneration, outcome, onCommitted) => {
+          completeBatch: async (batch, _rearmGeneration, outcome, onCommitted) => {
             if (!outcome) {
               throw new Error("Saved batch did not produce a delivery outcome");
             }
             const result = await settleRequesterCompletionBatch({
-              entries: batch.map((subagent) => ({ subagent })),
+              entries: batch,
               outcome,
-              isCurrent: () =>
-                batch.every((member) => {
-                  const current = subagentRuns.get(member.runId);
-                  return (
-                    isSameSubagentRun(current, member) &&
-                    current?.requesterSettleWake?.rearmGeneration === rearmGeneration
-                  );
-                }),
+              assertCurrent: () => {
+                currentBatch(batch);
+              },
             });
             expect(result.publication).toBe("published");
             onCommitted?.();
@@ -509,8 +487,6 @@ it(
         completion: { required: true, resultText: "saved interrupted batch result" },
         delivery: { status: "delivered" },
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           batchRunIds: [batchChildMarker],
           requesterYieldBatch: true,
           afterRequesterYield: true,
@@ -528,8 +504,6 @@ it(
       batchChild = await reloadSavedBatch({
         ...expectDefined(subagentRuns.get(batchChild.runId), "settled batch child"),
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           batchRunIds: [batchChild.runId],
           requesterYieldBatch: true,
           afterRequesterYield: true,
@@ -538,17 +512,16 @@ it(
       });
       const fixtureHistory = structuredClone(batchChild);
       await client.request("sessions.reset", { key: sessionKey });
-      const revokedTransition = vi.fn();
+      const revokedCompletion = vi.fn();
       expect(
         await maybeWakeRequesterAfterAllChildrenSettled({
           isSourceCurrent: () => true,
           requesterSessionKey: sessionKey,
           settledEntry: batchChild,
-          transitionBatch: revokedTransition,
-          completeBatch: vi.fn(),
+          completeBatch: revokedCompletion,
         }),
       ).toBe(false);
-      expect(revokedTransition).not.toHaveBeenCalled();
+      expect(revokedCompletion).not.toHaveBeenCalled();
       expect(batchRequests).toHaveLength(1);
       const resetBatchParent = loadSessionEntryReadOnly({ storePath, sessionKey });
       expect(resetBatchParent?.sessionId).toBe(fixtureHistory.completionRequesterSessionId);

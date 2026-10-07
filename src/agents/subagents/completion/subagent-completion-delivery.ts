@@ -17,7 +17,6 @@ import {
   ensureDeliveryState,
   loadPendingFinalDeliveryPayload,
 } from "../registry/subagent-delivery-state.js";
-import { ANNOUNCE_COMPLETION_HARD_EXPIRY_MS } from "../registry/subagent-registry-helpers.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "../registry/subagent-registry-persistence.js";
 import {
@@ -33,6 +32,9 @@ import {
 } from "./subagent-completion-admission.store.js";
 import { SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION } from "./subagent-completion-instructions.js";
 import { resolveSubagentCompletionResultText } from "./subagent-completion-result.js";
+
+// The durable media outbox owns its own delivery window, independent of the mailbox.
+const SESSION_DELIVERY_DEADLINE_MS = 30 * 60_000;
 
 const CLAIM_LEASE_MS = 125_000;
 const CANONICAL_RESULT_PROMPT = `A completed subagent task is ready for parent review. ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION} The canonical result follows.`;
@@ -65,8 +67,7 @@ export async function admitCorrelatedSubagentSessionDelivery(params: {
         const delivery = ensureDeliveryState(subagent);
         const generation = delivery.generation ?? 1;
         const windowStartedAt = delivery.windowStartedAt ?? subagent.execution.endedAt ?? now;
-        const deadlineAt =
-          delivery.deadlineAt ?? windowStartedAt + ANNOUNCE_COMPLETION_HARD_EXPIRY_MS;
+        const deadlineAt = delivery.deadlineAt ?? windowStartedAt + SESSION_DELIVERY_DEADLINE_MS;
         const generationSuffix = generation > 1 ? `:generation:${generation}` : "";
         const queueEntry = prepareClaimedSessionDelivery(
           {
@@ -93,7 +94,6 @@ export async function admitCorrelatedSubagentSessionDelivery(params: {
           queueId: queueEntry.id,
           windowStartedAt,
           deadlineAt,
-          nextAttemptAt: queueEntry.availableAt,
           enqueuedAt: now,
         });
         delivery.payload ??= loadPendingFinalDeliveryPayload(subagent);

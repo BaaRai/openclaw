@@ -4,14 +4,12 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import { maybeWakeRequesterAfterAllChildrenSettled as runRequesterSettleWake } from "../announce/subagent-announce.requester-settle-wake.js";
 import type {
   blockSubagentCompletionDelivery,
-  mutateRequesterSettleWakeBatch,
   settleRequesterCompletionBatch,
 } from "../completion/subagent-completion-admission.store.js";
 import type { SubagentCompletionMutationResult } from "../completion/subagent-completion-mutation.types.js";
 import {
   clearSubagentPendingDelivery,
   completeRequesterSettleWakeState,
-  transitionRequesterSettleWakeState,
 } from "./subagent-delivery-state.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
@@ -76,7 +74,7 @@ function blockedPolicyDraft(
     entry.delivery.suspendedReason = params.suspendedReason;
     entry.delivery.suspendedAt = Date.now();
     entry.cleanupHandled = false;
-    entry.requesterSettleWake ??= { status: "pending", attemptCount: 0 };
+    entry.requesterSettleWake ??= {};
   } else {
     entry.delivery.status = "failed";
     entry.delivery.disposition = params.disposition ?? entry.delivery.disposition;
@@ -84,44 +82,52 @@ function blockedPolicyDraft(
   }
 }
 
-function createRequesterSettleWakeMutationFixture(
+// Records one requester batch outcome against the policy fixture's real row owner.
+function createRequesterBatchFixture(
   owners: CompletionPolicyOwners,
-): typeof mutateRequesterSettleWakeBatch {
+): typeof settleRequesterCompletionBatch {
   return async (params) => {
-    if (params.committed) {
-      throw new Error("Native receipt reconciliation requires the registered worker fixture");
-    }
     const owner = policyOwner(owners, params.entries);
     await mutateSubagentRuns(
       params.entries.map((entry) => entry.runId),
       (rows) => {
-        const original: Array<{ subagent: SubagentRunRecord }> = [];
         const postimages = new Map<string, SubagentRunRecord | null>();
         for (const observed of params.entries) {
           const current = rows.get(observed.runId);
           if (!current || !isSameSubagentRunOwner(current, observed)) {
             throw new Error("Requester policy fixture row was replaced");
           }
-          original.push({ subagent: current });
           const next = structuredClone(current);
-          if (params.operation.kind === "transition") {
-            transitionRequesterSettleWakeState(next, params.operation.state);
-            postimages.set(next.runId, next);
-          } else {
-            postimages.set(next.runId, completeRequesterSettleWakeState(next) ? null : next);
+          const outcome = params.outcome;
+          if (
+            outcome &&
+            next.pauseReason !== "sessions_yield" &&
+            next.expectsCompletionMessage &&
+            ["pending", "in_progress"].includes(next.delivery?.status ?? "pending")
+          ) {
+            if (outcome.delivered) {
+              const deliveredAt = outcome.deliveredAt ?? Date.now();
+              next.delivery = {
+                ...next.delivery,
+                status: "delivered",
+                disposition: "delivered",
+                deliveredAt,
+                announcedAt: deliveredAt,
+              };
+              clearSubagentPendingDelivery(next);
+            } else {
+              blockedPolicyDraft(next, {
+                subagent: current,
+                reason: outcome.error ?? outcome.reason ?? "requester settle wake failed",
+                disposition: outcome.disposition,
+              });
+            }
           }
+          postimages.set(next.runId, completeRequesterSettleWakeState(next) ? null : next);
         }
-        return { value: { entries: original, result: policyReceipt(postimages) }, postimages };
+        return { value: policyReceipt(postimages), postimages };
       },
-      {
-        runs: owner.runs,
-        context: params.context,
-        assertCurrent: params.assertCurrent,
-        onPublished(_postimages, receipt) {
-          params.onCommitted(receipt);
-          params.onPublished();
-        },
-      },
+      { runs: owner.runs, context: params.context, assertCurrent: params.assertCurrent },
     );
     return { applied: true, publication: "published" };
   };
@@ -129,14 +135,14 @@ function createRequesterSettleWakeMutationFixture(
 
 export async function mockRegistryRequesterWakeMutation() {
   const store = await import("../completion/subagent-completion-admission.store.js");
-  const original = store.mutateRequesterSettleWakeBatch;
+  const original = store.settleRequesterCompletionBatch;
   const owners: CompletionPolicyOwners = new Map();
-  const mutate = createRequesterSettleWakeMutationFixture(owners);
+  const settle = createRequesterBatchFixture(owners);
   const spy = vi
-    .spyOn(store, "mutateRequesterSettleWakeBatch")
+    .spyOn(store, "settleRequesterCompletionBatch")
     .mockImplementation((params) =>
       params.entries.some((entry) => owners.has(getSubagentRunRuntimeKey(entry)))
-        ? mutate(params)
+        ? settle(params)
         : original(params),
     );
   onTestFinished(() => spy.mockRestore());
@@ -153,72 +159,12 @@ export async function mockRegistryRequesterWakeMutation() {
 export function mockBlockedCompletionDeliveryOwner(completionDeliveryMocks: {
   blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
   settleRequesterCompletionBatch: Mock<typeof settleRequesterCompletionBatch>;
-  mutateRequesterSettleWakeBatch: Mock<typeof mutateRequesterSettleWakeBatch>;
   ownersByEntry: CompletionPolicyOwners;
 }): void {
   // Policy fixtures use the real row owner; native worker suites own queue receipts.
-  completionDeliveryMocks.mutateRequesterSettleWakeBatch.mockImplementation(
-    createRequesterSettleWakeMutationFixture(completionDeliveryMocks.ownersByEntry),
+  completionDeliveryMocks.settleRequesterCompletionBatch.mockImplementation(
+    createRequesterBatchFixture(completionDeliveryMocks.ownersByEntry),
   );
-  completionDeliveryMocks.settleRequesterCompletionBatch.mockImplementation(async (params) => {
-    const entries = params.entries.map(({ subagent }) => subagent);
-    const owner = policyOwner(completionDeliveryMocks.ownersByEntry, entries);
-    await mutateSubagentRuns(
-      entries.map((entry) => entry.runId),
-      (rows) => {
-        const original: Array<{ subagent: SubagentRunRecord }> = [];
-        const postimages = new Map<string, SubagentRunRecord | null>();
-        for (const observed of entries) {
-          const current = rows.get(observed.runId);
-          if (!current || !isSameSubagentRunOwner(current, observed)) {
-            throw new Error("Requester policy fixture row was replaced");
-          }
-          original.push({ subagent: current });
-          const next = structuredClone(current);
-          if (
-            next.pauseReason !== "sessions_yield" &&
-            next.expectsCompletionMessage &&
-            ["pending", "in_progress"].includes(next.delivery?.status ?? "pending")
-          ) {
-            if (params.outcome.delivered) {
-              const deliveredAt = params.outcome.deliveredAt ?? Date.now();
-              next.delivery = {
-                ...next.delivery,
-                status: "delivered",
-                disposition: "delivered",
-                deliveredAt,
-                announcedAt: deliveredAt,
-              };
-              clearSubagentPendingDelivery(next);
-            } else {
-              blockedPolicyDraft(next, {
-                subagent: current,
-                reason:
-                  params.outcome.error ?? params.outcome.reason ?? "requester settle wake failed",
-                disposition: params.outcome.disposition,
-              });
-            }
-          }
-          postimages.set(next.runId, completeRequesterSettleWakeState(next) ? null : next);
-        }
-        return { value: { entries: original, result: policyReceipt(postimages) }, postimages };
-      },
-      {
-        runs: owner.runs,
-        context: params.context,
-        assertCurrent() {
-          if (!params.isCurrent()) {
-            throw new Error("Requester policy fixture owner changed");
-          }
-        },
-        onPublished(_postimages, receipt) {
-          params.onCommitted?.(receipt);
-          params.onPublished?.();
-        },
-      },
-    );
-    return { applied: true, publication: "published" };
-  });
   completionDeliveryMocks.blockSubagentCompletionDelivery.mockImplementation(async (params) => {
     const owner = policyOwner(completionDeliveryMocks.ownersByEntry, [params.subagent]);
     return mutateSubagentRuns(
@@ -521,8 +467,6 @@ export function registerRequesterSettleRetirementTests({
         endedAt: Date.now(),
         cleanup: "delete",
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 1,
           batchRunIds: ["retirement-intermediate"],
         },
       });
@@ -573,13 +517,10 @@ export function registerRequesterSettleRetirementTests({
           await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
           expect(subagentRuns.has(intermediate.runId)).toBe(true);
           expect(readLifecycleRun(ancestor).cleanupCompletedAt).toBeUndefined();
+          // Nothing retries a failed retirement; the next settlement event re-arms it.
           failRetirement = false;
-          const wake = controller.scheduledRequesterSettleWakeTimers.get(intermediate.runId)!;
-          controller.resumeRequesterSettleWake(intermediate.runId, intermediate);
-          await vi.advanceTimersByTimeAsync(wake.deadline - Date.now() - 1);
-          expect(subagentRuns.has(intermediate.runId)).toBe(true);
-          expect(readLifecycleRun(ancestor).cleanupCompletedAt).toBeUndefined();
-          await vi.advanceTimersByTimeAsync(1);
+          const retained = subagentRuns.get(intermediate.runId)!;
+          controller.resumeRequesterSettleWake(retained.runId, retained);
         }
         await waitForLifecycleState(() => expect(subagentRuns.has(intermediate.runId)).toBe(false));
         await completeRun(controller, descendant, {

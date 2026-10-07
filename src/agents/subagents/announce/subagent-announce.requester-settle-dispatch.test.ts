@@ -1,18 +1,15 @@
 import "./subagent-announce.requester-settle-dispatch-mocks.test-support.js";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { createInternalAgentTurnFacade } from "../../../gateway/agent-turn/internal-facade.js";
 import { registerChatAbortController } from "../../../gateway/chat-abort.js";
 import { createGatewayMethodRegistry } from "../../../gateway/methods/registry.js";
 import { createChatRunState } from "../../../gateway/server-chat-state.js";
 import { waitForGatewayDispatch } from "../../../gateway/server-in-process-dispatch.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
-import { dispatchGatewayMethodInProcess } from "../../../gateway/server-plugin-in-process-dispatch.js";
 import { createSyntheticPluginRuntimeClient } from "../../../gateway/server-plugin-runtime-client.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
-import {
-  bindGatewayContextResolver,
-  withPluginRuntimeGatewayRequestScope,
-} from "../../../plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import {
   captureSessionTarget,
@@ -23,10 +20,8 @@ import { markReplyOperationExecutionStarted } from "../../../sessions/session-co
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
 import { prepareEmbeddedAttemptTimeout } from "../../embedded-agent-runner/run/attempt-timeout-prepare.js";
-import { createEmbeddedRunLaneController } from "../../embedded-agent-runner/run/lane-controller.js";
-import type { RunEmbeddedAgentParams } from "../../embedded-agent-runner/run/params.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { consumeSubagentPauseNotice } from "../registry/subagent-delivery-state.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
@@ -42,10 +37,18 @@ import {
   startTurn,
   REQUESTER_KEY,
   settledChild,
-  publishWakeTransition,
   useRequesterSettleDispatchFixture,
 } from "./subagent-announce.requester-settle-dispatch.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
+
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    for (const dir of tempDirs.dirs) {
+      await closeOpenClawAgentDatabasesAsync(dir);
+    }
+    cleanup();
+  }),
+);
 
 const REQUESTER_TARGET = captureSessionTarget({
   storeScope: "/synthetic/requester-settle-dispatch/sessions.db",
@@ -59,7 +62,6 @@ const REQUESTER_TURN = {
   sessionId: "requester-session",
   agentId: "main",
 };
-const GLOBAL_LANE = "subagent-settle-dispatch-proof";
 
 function createContext(): GatewayRequestContext {
   const chatRunState = createChatRunState();
@@ -108,8 +110,6 @@ describe("requester settle dispatch deadline", () => {
       const child = settledChild();
       child.requesterSessionKey = requesterSessionKey;
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: [child.runId],
         requesterYieldBatch: true,
         afterRequesterYield: afterRequesterYield ? true : undefined,
@@ -154,7 +154,6 @@ describe("requester settle dispatch deadline", () => {
         isSourceCurrent: () => true,
         requesterSessionKey,
         settledEntry: child,
-        transitionBatch: publishWakeTransition,
         completeBatch,
       };
 
@@ -232,7 +231,6 @@ describe("requester settle dispatch deadline", () => {
       requesterSessionKey: REQUESTER_KEY,
       isSourceCurrent: () => true,
       settledEntry: child,
-      transitionBatch: publishWakeTransition,
       completeBatch: () => {
         consumeSubagentPauseNotice(child);
       },
@@ -270,7 +268,6 @@ describe("requester settle dispatch deadline", () => {
     const current = structuredClone(retired);
     registryRead.listSubagentRunsForRequester.mockReturnValue([current]);
     deliver.mockResolvedValue({ delivered: true, path: "direct" });
-    const transitionBatch = vi.fn();
     const completeBatch = vi.fn();
 
     await expect(
@@ -278,156 +275,12 @@ describe("requester settle dispatch deadline", () => {
         isSourceCurrent: () => true,
         requesterSessionKey: REQUESTER_KEY,
         settledEntry: retired,
-        transitionBatch,
         completeBatch,
       }),
     ).resolves.toBe(false);
     expect(deliver).not.toHaveBeenCalled();
-    expect(transitionBatch).not.toHaveBeenCalled();
     expect(completeBatch).not.toHaveBeenCalled();
   });
-
-  it("preserves the final attempt when its Gateway closes during runtime loading", async () => {
-    const retired = settledChild();
-    retired.requesterSettleWake!.attemptCount = 2;
-    const pendingState = structuredClone(retired.requesterSettleWake);
-    const firstContext = createContext();
-    let firstOpen = true;
-    bindGatewayContextResolver(retired, () => (firstOpen ? firstContext : undefined));
-    registryRead.listSubagentRunsForRequester.mockReturnValue([retired]);
-    deliver.mockResolvedValue({ delivered: true, path: "direct" });
-    const transitionBatch = vi.fn(publishWakeTransition);
-    const completeBatch = vi.fn();
-    const loaded = createDeferredCore();
-    const pending = loaded.promise.then(() =>
-      maybeWakeRequesterAfterAllChildrenSettled({
-        isSourceCurrent: () => true,
-        requesterSessionKey: REQUESTER_KEY,
-        settledEntry: retired,
-        transitionBatch,
-        completeBatch,
-      }),
-    );
-    firstOpen = false;
-    loaded.resolve();
-    await expect(pending).resolves.toBe(false);
-    expect(deliver).not.toHaveBeenCalled();
-    expect(transitionBatch).not.toHaveBeenCalled();
-    expect(completeBatch).not.toHaveBeenCalled();
-    expect(retired.requesterSettleWake).toEqual(pendingState);
-
-    const replacement = structuredClone(retired);
-    const nextContext = createContext();
-    bindGatewayContextResolver(replacement, () => nextContext);
-    registryRead.listSubagentRunsForRequester.mockReturnValue([replacement]);
-    await expect(
-      maybeWakeRequesterAfterAllChildrenSettled({
-        isSourceCurrent: () => true,
-        requesterSessionKey: REQUESTER_KEY,
-        settledEntry: replacement,
-        transitionBatch,
-        completeBatch,
-      }),
-    ).resolves.toBe(true);
-    expect(deliver).toHaveBeenCalledOnce();
-    expect(transitionBatch).toHaveBeenCalledWith(
-      [replacement],
-      expect.objectContaining({ attemptCount: 3 }),
-      expect.any(Function),
-    );
-    expect(completeBatch).toHaveBeenCalledOnce();
-  });
-
-  it.each(["bound", "throwing", "incompatible", "unbound"] as const)(
-    "replaces a %s batch only after its owner closes",
-    async (binding) => {
-      const retired = settledChild();
-      const sibling = {
-        ...structuredClone(retired),
-        runId: "settled-sibling",
-        childSessionKey: "agent:main:subagent:settled-sibling",
-      };
-      const retiredBatch = [retired, sibling];
-      const firstContext = createContext();
-      const replacementContext = createContext();
-      let firstOpen = true;
-      if (binding !== "unbound") {
-        retiredBatch.forEach((entry, index) =>
-          bindGatewayContextResolver(entry, () => {
-            if (!firstOpen && binding === "throwing") {
-              throw new Error("old Gateway resolver closed");
-            }
-            return firstOpen
-              ? firstContext
-              : binding === "incompatible"
-                ? index === 0
-                  ? firstContext
-                  : replacementContext
-                : undefined;
-          }),
-        );
-      }
-      registryRead.listSubagentRunsForRequester.mockReturnValue(retiredBatch);
-      const oldDone = createDeferredCore<{ delivered: true; path: "direct" }>();
-      const replacementDone = createDeferredCore<{ delivered: true; path: "direct" }>();
-      deliver
-        .mockImplementationOnce(async () => await oldDone.promise)
-        .mockImplementationOnce(async () => await replacementDone.promise);
-      const wake = (entry: SubagentRunRecord) =>
-        maybeWakeRequesterAfterAllChildrenSettled({
-          isSourceCurrent: () => true,
-          requesterSessionKey: REQUESTER_KEY,
-          settledEntry: entry,
-          transitionBatch: publishWakeTransition,
-          completeBatch: (batch) => {
-            batch.forEach((member) => {
-              member.requesterSettleWake = undefined;
-            });
-          },
-        });
-      const oldWake = wake(retired);
-      let replacementWake: Promise<boolean> | undefined;
-      try {
-        await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
-        await expect(wake(retired)).resolves.toBe(false);
-        const replacementBatch = retiredBatch.map((entry) => structuredClone(entry));
-        const replacement = replacementBatch[0]!;
-        replacementBatch.forEach((entry) =>
-          bindGatewayContextResolver(entry, () => replacementContext),
-        );
-        registryRead.listSubagentRunsForRequester.mockReturnValue(replacementBatch);
-        // A fresh object or another open Gateway is not proof that the prior claim ended.
-        await expect(wake(replacement)).resolves.toBe(false);
-        expect(deliver).toHaveBeenCalledOnce();
-
-        firstOpen = false;
-        if (binding === "unbound") {
-          await expect(wake(replacement)).resolves.toBe(false);
-          expect(deliver).toHaveBeenCalledOnce();
-          oldDone.resolve({ delivered: true, path: "direct" });
-          await oldWake;
-        }
-        replacementWake = wake(replacement);
-        void replacementWake.catch(() => {});
-        await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
-        expect(deliver.mock.calls[1]?.[0].directIdempotencyKey).toBe(
-          deliver.mock.calls[0]?.[0].directIdempotencyKey,
-        );
-        expect(deliver.mock.calls[1]?.[0].resolveGatewayContext?.()).toBe(replacementContext);
-        oldDone.resolve({ delivered: true, path: "direct" });
-        await expect(oldWake).resolves.toBe(true);
-        await expect(wake(replacement)).resolves.toBe(false);
-        expect(deliver).toHaveBeenCalledTimes(2);
-        replacementDone.resolve({ delivered: true, path: "direct" });
-        await expect(replacementWake).resolves.toBe(true);
-      } finally {
-        oldDone.resolve({ delivered: true, path: "direct" });
-        replacementDone.resolve({ delivered: true, path: "direct" });
-        await oldWake;
-        await replacementWake;
-      }
-    },
-  );
 
   it.each(["final", "runtime timeout", "stop"] as const)(
     "keeps an executing completion under requester lifecycle ownership: %s",
@@ -544,7 +397,6 @@ describe("requester settle dispatch deadline", () => {
             requesterSessionKey: REQUESTER_KEY,
             settledEntry: child,
             signal: stop.signal,
-            transitionBatch: publishWakeTransition,
             completeBatch,
           }),
       );
@@ -599,189 +451,4 @@ describe("requester settle dispatch deadline", () => {
       }
     },
   );
-
-  it("cancels timed-out wake runs before retry and later work enter the requester lane", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(10_000);
-    const context = createContext();
-    const child = settledChild();
-    registryRead.listSubagentRunsForRequester.mockReturnValue([child]);
-    const executions: string[] = [];
-    const acceptedSignals: AbortSignal[] = [];
-    let releaseGhost!: () => void;
-    const ghostGate = new Promise<void>((resolve) => {
-      releaseGhost = resolve;
-    });
-
-    startTurn.mockImplementation(async ({ preflight, io }) => {
-      const request = preflight.request as { idempotencyKey: string; sessionKey: string };
-      const registration = registerChatAbortController({
-        target: REQUESTER_TARGET,
-        runId: request.idempotencyKey,
-        sessionId: "requester-session",
-        sessionKey: request.sessionKey,
-        timeoutMs: 60_000,
-        kind: "agent",
-      });
-      let lifecycleGeneration = getAgentEventLifecycleGeneration();
-      let params: RunEmbeddedAgentParams & { sessionFile: string } = {
-        admittedRunContext: createTestAdmittedRunContext(request.idempotencyKey),
-        abortSignal: registration.controller.signal,
-        lifecycleGeneration,
-        prompt: "requester settle wake",
-        runId: request.idempotencyKey,
-        sessionFile: "/tmp/requester-settle-proof.jsonl",
-        sessionId: "requester-session",
-        sessionKey: request.sessionKey,
-        timeoutMs: 60_000,
-        workspaceDir: "/tmp",
-      };
-      const lane = createEmbeddedRunLaneController({
-        getLifecycleGeneration: () => lifecycleGeneration,
-        getParams: () => params,
-        globalLane: GLOBAL_LANE,
-        initialQueuedLifecycleGeneration: lifecycleGeneration,
-        setLifecycleGeneration: (value) => {
-          lifecycleGeneration = value;
-        },
-        setParams: (value) => {
-          params = value;
-        },
-      });
-      acceptedSignals.push(registration.controller.signal);
-      io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }], {
-        runId: request.idempotencyKey,
-      });
-      try {
-        if (!registration.registered) {
-          throw new Error("expected requester RPC source");
-        }
-        await withSessionTurn(
-          {
-            ...REQUESTER_TURN,
-            controllerInput: registration.entry.input,
-            abortSignal: registration.controller.signal,
-          },
-          async (operation) => {
-            params = { ...params, replyOperation: operation };
-            return await lane.enqueueSession(() =>
-              lane.enqueueGlobal(async () => {
-                executions.push(request.idempotencyKey);
-                await ghostGate;
-                return { meta: { durationMs: 1 } };
-              }),
-            );
-          },
-        );
-        io.emitFinal([true, { runId: request.idempotencyKey, status: "ok" }]);
-      } finally {
-        registration.cleanup();
-        await registration.entry?.input.settlement.promise;
-      }
-    });
-
-    deliver.mockImplementation(async (params: { directIdempotencyKey: string }) => {
-      try {
-        await dispatchGatewayMethodInProcess(
-          "agent",
-          {
-            idempotencyKey: params.directIdempotencyKey,
-            message: "all children settled",
-            sessionKey: REQUESTER_KEY,
-          },
-          {
-            cancelOnDeadline: true,
-            expectFinal: true,
-            forceSyntheticClient: true,
-            timeoutMs: 20,
-          },
-        );
-        return { delivered: true, path: "direct" };
-      } catch (error) {
-        return {
-          delivered: false,
-          path: "direct",
-          disposition: "retryable",
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    });
-
-    let releaseBlocker!: () => void;
-    const blockerGate = new Promise<void>((resolve) => {
-      releaseBlocker = resolve;
-    });
-    const blocker = withSessionTurn(REQUESTER_TURN, async () => await blockerGate);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(
-      getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET)?.claim,
-    ).toBeDefined();
-
-    const wake = () =>
-      withPluginRuntimeGatewayRequestScope(
-        {
-          context,
-          client: createSyntheticPluginRuntimeClient(),
-          isWebchatConnect: () => false,
-        },
-        () =>
-          maybeWakeRequesterAfterAllChildrenSettled({
-            isSourceCurrent: () => true,
-            requesterSessionKey: REQUESTER_KEY,
-            settledEntry: child,
-            transitionBatch: publishWakeTransition,
-            completeBatch: () => {},
-          }),
-      );
-
-    let later: Promise<void> | undefined;
-    try {
-      const firstWake = wake();
-      await vi.advanceTimersByTimeAsync(20);
-      await expect(firstWake).resolves.toBe(false);
-      expect(child.requesterSettleWake).toMatchObject({
-        status: "pending",
-        attemptCount: 1,
-      });
-
-      await vi.advanceTimersByTimeAsync(30_000);
-      const replay = wake();
-      await vi.advanceTimersByTimeAsync(20);
-      await expect(replay).resolves.toBe(false);
-
-      const deadlineCancelled = acceptedSignals.map((signal) => signal.aborted);
-      releaseBlocker();
-      await blocker;
-      await vi.advanceTimersByTimeAsync(0);
-
-      let laterRan = false;
-      later = withSessionTurn(REQUESTER_TURN, async () => {
-        laterRan = true;
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      const afterLaterDispatch = getExistingSessionControllerMailbox(
-        REQUESTER_KEY,
-        REQUESTER_TARGET,
-      );
-
-      expect({
-        afterLaterDispatch: {
-          activeCount: Number(Boolean(afterLaterDispatch?.claim)),
-          queuedCount: afterLaterDispatch?.entries.length ?? 0,
-        },
-        deadlineCancelled,
-        executions,
-        laterRan,
-      }).toEqual({
-        afterLaterDispatch: { activeCount: 0, queuedCount: 0 },
-        deadlineCancelled: [true, true],
-        executions: [],
-        laterRan: true,
-      });
-    } finally {
-      releaseBlocker();
-      releaseGhost();
-      await Promise.allSettled([blocker, later]);
-    }
-  });
 });

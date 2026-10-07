@@ -11,7 +11,7 @@ import * as registryDeps from "../registry/subagent-registry-deps.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { loadSubagentRegistryFromSqlite } from "../registry/subagent-registry.store.sqlite.js";
 import { isSameSubagentRunOwner } from "../registry/subagent-run-generation.js";
-import { mutateRequesterSettleWakeBatch } from "./subagent-completion-admission.store.js";
+import { settleRequesterCompletionBatch } from "./subagent-completion-admission.store.js";
 import {
   currentCompletionRun,
   admitCompletionFixtureDatabase,
@@ -22,113 +22,90 @@ import {
 
 vi.mock("../registry/subagent-registry.js", () => ({ resumeSubagentRun: vi.fn() }));
 
-it.each(["transition", "complete"] as const)(
-  "publishes a requester wake %s before recording its concurrent ended hook",
-  async (operation) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const input = armRequesterWake(records());
-      await admitCompletionFixtureDatabase();
-      seedSubagentCompletionDelivery({ subagent: input.subagent });
-      subagentRuns.set(input.subagent.runId, input.subagent);
-      const registry = createEmptyPluginRegistry();
-      const hookRunner = createHookRunner(registry);
-      const hookReached = createDeferred();
-      const runtime = vi
-        .spyOn(registryDeps, "loadSubagentRegistryPluginRuntimeHandle")
-        .mockResolvedValue(registry);
-      const hooks = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner").mockImplementation(() => {
-        hookReached.resolve();
-        return hookRunner;
-      });
-      const warn = vi.fn();
-      const cleanup = createSubagentRegistryContextCleanup({
-        isEndedHookOwnerCurrent: (id, entry) => isSameSubagentRunOwner(subagentRuns.get(id), entry),
-        warn,
-      });
-      const acknowledged = createDeferred();
-      const releaseAcknowledgement = createDeferred();
-      const runWorker = stateWorker.runOpenClawStateWorkerOperation;
-      const worker = vi
-        .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-        .mockImplementation((context, run, options) =>
-          runWorker(
-            context,
-            (scope) =>
-              run({
-                execute: async (command, executeOptions) => {
-                  const receipt = await scope.execute(command, executeOptions);
-                  if (command.type === "sessionDelivery.mutateSubagentCompletion") {
-                    acknowledged.resolve();
-                    await releaseAcknowledgement.promise;
-                  }
-                  return receipt;
-                },
-              }),
-            options,
-          ),
-        );
-      const publication = mutateRequesterSettleWakeBatch({
-        entries: [input.subagent],
-        operation:
-          operation === "complete"
-            ? { kind: "complete" }
-            : {
-                kind: "transition",
-                state: { status: "dispatching", attemptCount: 1, rearmGeneration: 1 },
-              },
-        context: captureOpenClawStateWorkerContext(),
-        assertCurrent: () => {
-          if (subagentRuns.get(input.subagent.runId) !== input.subagent) {
-            throw new Error("Requester wake lost its registered owner");
-          }
-        },
-        onCommitted: () => {},
-        onPublished: () => {},
-      });
-      let hook: Promise<void> | undefined;
-      try {
-        await Promise.race([
-          acknowledged.promise,
-          publication.then(() => {
-            throw new Error("Requester wake returned before its held acknowledgement");
-          }),
-        ]);
-        hook = cleanup.emitSubagentEndedHookForRun({ entry: input.subagent });
-        await Promise.race([
-          hookReached.promise,
-          hook.then(() => {
-            throw new Error("Ended hook returned before reaching its producer");
-          }),
-        ]);
-        expect.soft(input.subagent.endedHookEmittedAt).toBeUndefined();
-        releaseAcknowledgement.resolve();
-        await expect(publication).resolves.toEqual({ applied: true, publication: "published" });
-        await hook;
-        expect(currentCompletionRun(input).endedHookEmittedAt).toEqual(expect.any(Number));
-        const stored = loadSubagentRegistryFromSqlite().get(input.subagent.runId);
-        expect(stored?.endedHookEmittedAt).toBe(currentCompletionRun(input).endedHookEmittedAt);
-        if (operation === "complete") {
-          expect(currentCompletionRun(input).requesterSettleWake).toBeUndefined();
-          expect(stored?.requesterSettleWake).toBeUndefined();
-        } else {
-          expect(currentCompletionRun(input).requesterSettleWake).toMatchObject({
-            status: "dispatching",
-            attemptCount: 1,
-            rearmGeneration: 1,
-          });
-          expect(stored?.requesterSettleWake).toEqual(
-            currentCompletionRun(input).requesterSettleWake,
-          );
-        }
-        expect(warn).not.toHaveBeenCalled();
-      } finally {
-        releaseAcknowledgement.resolve();
-        await Promise.allSettled([publication, ...(hook ? [hook] : [])]);
-        worker.mockRestore();
-        hooks.mockRestore();
-        runtime.mockRestore();
-        subagentRuns.delete(input.subagent.runId);
-      }
+it("publishes a requester wake retirement before recording its concurrent ended hook", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const input = armRequesterWake(records());
+    await admitCompletionFixtureDatabase();
+    seedSubagentCompletionDelivery({ subagent: input.subagent });
+    subagentRuns.set(input.subagent.runId, input.subagent);
+    const registry = createEmptyPluginRegistry();
+    const hookRunner = createHookRunner(registry);
+    const hookReached = createDeferred();
+    const runtime = vi
+      .spyOn(registryDeps, "loadSubagentRegistryPluginRuntimeHandle")
+      .mockResolvedValue(registry);
+    const hooks = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner").mockImplementation(() => {
+      hookReached.resolve();
+      return hookRunner;
     });
-  },
-);
+    const warn = vi.fn();
+    const cleanup = createSubagentRegistryContextCleanup({
+      isEndedHookOwnerCurrent: (id, entry) => isSameSubagentRunOwner(subagentRuns.get(id), entry),
+      warn,
+    });
+    const acknowledged = createDeferred();
+    const releaseAcknowledgement = createDeferred();
+    const runWorker = stateWorker.runOpenClawStateWorkerOperation;
+    const worker = vi
+      .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
+      .mockImplementation((context, run, options) =>
+        runWorker(
+          context,
+          (scope) =>
+            run({
+              execute: async (command, executeOptions) => {
+                const receipt = await scope.execute(command, executeOptions);
+                if (command.type === "sessionDelivery.mutateSubagentCompletion") {
+                  acknowledged.resolve();
+                  await releaseAcknowledgement.promise;
+                }
+                return receipt;
+              },
+            }),
+          options,
+        ),
+      );
+    const publication = settleRequesterCompletionBatch({
+      entries: [input.subagent],
+      context: captureOpenClawStateWorkerContext(),
+      assertCurrent: () => {
+        if (subagentRuns.get(input.subagent.runId) !== input.subagent) {
+          throw new Error("Requester wake lost its registered owner");
+        }
+      },
+    });
+    let hook: Promise<void> | undefined;
+    try {
+      await Promise.race([
+        acknowledged.promise,
+        publication.then(() => {
+          throw new Error("Requester wake returned before its held acknowledgement");
+        }),
+      ]);
+      hook = cleanup.emitSubagentEndedHookForRun({ entry: input.subagent });
+      await Promise.race([
+        hookReached.promise,
+        hook.then(() => {
+          throw new Error("Ended hook returned before reaching its producer");
+        }),
+      ]);
+      expect.soft(input.subagent.endedHookEmittedAt).toBeUndefined();
+      releaseAcknowledgement.resolve();
+      await expect(publication).resolves.toEqual({ applied: true, publication: "published" });
+      await hook;
+      expect(currentCompletionRun(input).endedHookEmittedAt).toEqual(expect.any(Number));
+      const stored = loadSubagentRegistryFromSqlite().get(input.subagent.runId);
+      expect(stored?.endedHookEmittedAt).toBe(currentCompletionRun(input).endedHookEmittedAt);
+      expect(currentCompletionRun(input).requesterSettleWake).toBeUndefined();
+      expect(stored?.requesterSettleWake).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      releaseAcknowledgement.resolve();
+      await Promise.allSettled([publication, ...(hook ? [hook] : [])]);
+      worker.mockRestore();
+      hooks.mockRestore();
+      runtime.mockRestore();
+      subagentRuns.delete(input.subagent.runId);
+    }
+  });
+});

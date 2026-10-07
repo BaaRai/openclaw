@@ -5,25 +5,13 @@ import {
   ensureCompletionState,
   ensureDeliveryState,
   clearSubagentPendingDelivery,
-  loadPendingFinalDeliveryPayload,
 } from "./subagent-delivery-state.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
-import { resolveDeferredCleanupDecision } from "./subagent-registry-cleanup.js";
-import {
-  ANNOUNCE_COMPLETION_HARD_EXPIRY_MS,
-  ANNOUNCE_EXPIRY_MS,
-  MIN_ANNOUNCE_RETRY_DELAY_MS,
-  resolveAnnounceRetryDelayMs,
-} from "./subagent-registry-helpers.js";
-import {
-  retireSupersededCleanupIfNeeded,
-  scheduleResumeSubagentRun,
-} from "./subagent-registry-lifecycle-attempt.js";
+import { retireSupersededCleanupIfNeeded } from "./subagent-registry-lifecycle-attempt.js";
 import type { SubagentLifecycleAnnounceCleanupContext } from "./subagent-registry-lifecycle-context.js";
-import { markPendingFinalDelivery } from "./subagent-registry-lifecycle-delivery.js";
 import {
   finalizeResumedAnnounceGiveUp,
   finishSubagentCleanup,
@@ -153,8 +141,6 @@ export const finalizeSubagentCleanup = async (
         delivery.disposition = "intentional_non_delivery";
         delivery.payload = undefined;
         delivery.createdAt = undefined;
-        delivery.attemptCount = undefined;
-        delivery.nextAttemptAt = undefined;
       }
       draft.wakeOnDescendantSettle = undefined;
       const completion = ensureCompletionState(draft);
@@ -177,59 +163,32 @@ export const finalizeSubagentCleanup = async (
     return;
   }
 
+  // Live descendants re-enter this cleanup when they settle. Otherwise an undelivered
+  // result is recorded once; nothing retries delivery on a timer.
   const activeDescendantRuns = await params.countPendingDescendantRuns(
     entry.childSessionKey,
     assertCurrent,
   );
   assertCurrent();
-  const now = Date.now();
-  const decision: {
-    value?: ReturnType<typeof resolveDeferredCleanupDecision>;
-    delivered?: boolean;
-  } = {};
-  let resumeDelayMs: number | undefined;
-  await commit(
-    (draft) => {
-      decision.delivered = draft.delivery?.status === "delivered";
-      if (decision.delivered) {
-        return false;
-      }
-      const deferredDecision = resolveDeferredCleanupDecision({
-        entry: draft,
-        now,
-        activeDescendantRuns: Math.max(0, activeDescendantRuns),
-        announceExpiryMs: ANNOUNCE_EXPIRY_MS,
-        announceCompletionHardExpiryMs: ANNOUNCE_COMPLETION_HARD_EXPIRY_MS,
-        deferDescendantDelayMs: MIN_ANNOUNCE_RETRY_DELAY_MS,
-        resolveAnnounceRetryDelayMs,
-      });
-      decision.value = deferredDecision;
-      if (deferredDecision.kind === "give-up") {
-        return false;
-      }
-      if (deferredDecision.kind === "defer-descendants") {
-        ensureDeliveryState(draft).lastAttemptAt = now;
+  let delivered = entry.delivery?.status === "delivered";
+  if (!delivered && activeDescendantRuns > 0) {
+    await commit(
+      (draft) => {
+        delivered = draft.delivery?.status === "delivered";
+        if (delivered) {
+          return false;
+        }
         draft.wakeOnDescendantSettle = true;
-        resumeDelayMs = deferredDecision.delayMs;
-      } else {
-        markPendingFinalDelivery({
-          entry: draft,
-          error: "announce deferred or direct delivery failed",
-        });
-        const delivery = ensureDeliveryState(draft);
-        delivery.status = "pending";
-        delivery.payload ??= loadPendingFinalDeliveryPayload(draft);
-        delivery.windowStartedAt ??= draft.execution.endedAt ?? now;
-        delivery.deadlineAt ??= delivery.windowStartedAt + ANNOUNCE_COMPLETION_HARD_EXPIRY_MS;
-        resumeDelayMs = deferredDecision.resumeDelayMs;
-        delivery.nextAttemptAt = now + (resumeDelayMs ?? 0);
-      }
-      draft.cleanupHandled = false;
-      return undefined;
-    },
-    () => params.resumedRuns.delete(runtimeKey),
-  );
-  if (decision.delivered) {
+        draft.cleanupHandled = false;
+        return undefined;
+      },
+      () => params.resumedRuns.delete(runtimeKey),
+    );
+    if (!delivered) {
+      return;
+    }
+  }
+  if (delivered) {
     await finalizeSubagentCleanup(
       context,
       entry,
@@ -239,25 +198,15 @@ export const finalizeSubagentCleanup = async (
       stateContext,
       options,
     );
-  } else if (decision.value?.kind === "give-up") {
-    await finalizeResumedAnnounceGiveUp(context, {
-      runId,
-      entry,
-      reason: decision.value.reason,
-      cleanup,
-      cleanupGeneration,
-      retryCount: decision.value.retryCount,
-      completedAt: now,
-      stateContext,
-    });
-  } else if (resumeDelayMs != null) {
-    scheduleResumeSubagentRun(
-      context,
-      runId,
-      entry,
-      resumeDelayMs,
-      cleanupGeneration,
-      stateContext,
-    );
+    return;
   }
+  await finalizeResumedAnnounceGiveUp(context, {
+    runId,
+    entry,
+    reason: "permanent_failure",
+    cleanup,
+    cleanupGeneration,
+    completedAt: Date.now(),
+    stateContext,
+  });
 };

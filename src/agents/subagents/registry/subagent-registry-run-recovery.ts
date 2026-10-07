@@ -14,11 +14,7 @@ import { removeInternalSessionEffectsSession } from "../../internal-session-effe
 import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import { replaceRequesterCronAuthorityEntry } from "../requester-cron-authority.js";
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
-import {
-  clearDeliveryState,
-  normalizeSubagentRunState,
-  resetRequesterSettleWakeRetry,
-} from "./subagent-delivery-state.js";
+import { clearDeliveryState, normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import {
   safeRemoveAttachmentsDir,
   shouldRemoveSubagentAttachments,
@@ -342,7 +338,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
             wake: RequesterSettleWakeState,
           ): RequesterSettleWakeState => ({
             ...(wake === sourceRequesterSettleWake && wake.pauseNotice
-              ? { ...resetRequesterSettleWakeRetry(wake), pauseNotice: undefined }
+              ? { ...wake, pauseNotice: undefined }
               : wake),
             ...(wake.batchRunIds
               ? {

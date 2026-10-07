@@ -10,7 +10,6 @@ import {
   requesterSettleKey,
   deliverSpy,
   makeSettledChild,
-  transitionBatchSpy,
   completeBatchSpy,
   deliveredCallArg,
 } from "./subagent-announce.requester-settle-wake.test-support.js";
@@ -41,8 +40,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
           resultText: index === 0 ? "private marker" : "public sibling",
         },
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           ...(yielded
             ? {
                 afterRequesterYield: true,
@@ -81,10 +78,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
       expect(trigger).toContain("under its normal reply rules");
       expect(trigger).toContain("must go through the message tool, send your answer with it");
       expect(trigger).toContain("avoid repeating an update already delivered");
-      expect(transitionBatchSpy.mock.calls.at(0)?.[1]).toMatchObject({
-        status: "dispatching",
-        yieldedFinalDeliverable: true,
-      });
     } else {
       expect(trigger).toContain("send it through an available, permitted messaging tool");
       expect(trigger).toContain("briefly record the reviewed outcome and any remaining work");
@@ -96,46 +89,23 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
     }
   });
 
-  // The released yield writer stored private batches without the marker, including
-  // unattempted ones; after an upgrade they keep their admitted private policy.
-  it.each([
-    { status: "dispatching", attemptCount: 1, marked: false },
-    { status: "pending", attemptCount: 1, marked: false },
-    { status: "pending", attemptCount: 0, marked: false },
-    { status: "pending", attemptCount: 1, marked: true },
-  ] as const)(
-    "preserves a $status batch's policy and retry identity (marked=$marked, attempts=$attemptCount)",
-    async ({ status, attemptCount, marked }) => {
-      const children = settledPrivateChildren({
-        mixed: false,
-        yielded: true,
-        single: true,
-        marked,
-      });
-      children[0]!.requesterSettleWake = {
-        ...children[0]!.requesterSettleWake!,
-        status,
-        attemptCount,
-        batchRunIds: ["run-b"],
-      };
-      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
-      expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
-      const call = deliveredCallArg();
-      expect(call.completionTarget).toBe(marked ? undefined : "parent");
-      // Deliverable retries rotate keys; private inputs retain their admitted identity.
-      expect(call.directIdempotencyKey).toBe(
-        requesterSettleKey(marked ? "run-b:yield-1:retry-1" : "run-b:yield-1"),
-      );
-      if (marked) {
-        expect(transitionBatchSpy.mock.calls.at(0)?.[1]).toMatchObject({
-          status: "dispatching",
-          yieldedFinalDeliverable: true,
-        });
-      } else {
-        expect(call.completionRequesterSessionId).toBe("sess-main");
-      }
-    },
-  );
+  // The released yield writer stored private batches without the marker; after an
+  // upgrade they keep their admitted private policy under the same stable identity.
+  it.each([false, true])("preserves a batch's policy and identity (marked=%s)", async (marked) => {
+    const children = settledPrivateChildren({ mixed: false, yielded: true, single: true, marked });
+    children[0]!.requesterSettleWake = {
+      ...children[0]!.requesterSettleWake!,
+      batchRunIds: ["run-b"],
+    };
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
+    expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
+    const call = deliveredCallArg();
+    expect(call.completionTarget).toBe(marked ? undefined : "parent");
+    expect(call.directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
+    if (!marked) {
+      expect(call.completionRequesterSessionId).toBe("sess-main");
+    }
+  });
 
   // `/new` keeps the session id and rotates its lifecycle revision. A deliverable
   // retry after either replacement would post the old findings into a fresh session.
@@ -153,8 +123,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
         delivery: { status: "pending" },
         completion: { required: true, resultText: "private marker" },
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 1,
           batchRunIds: ["run-b"],
           afterRequesterYield: true,
           requesterYieldBatch: true,

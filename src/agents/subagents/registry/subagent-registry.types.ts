@@ -122,13 +122,6 @@ type SwarmQueuedLaunch = {
 export type RequesterSettleWakeState = {
   /** Pending message-wait notice; consuming it leaves the completion cohort armed. */
   pauseNotice?: { acknowledgment: string };
-  status: "pending" | "dispatching";
-  /** Number of delivery attempts already admitted. */
-  attemptCount: number;
-  /** Ambiguous transport replays made with the current idempotency key. */
-  replayCount?: number;
-  /** Persisted retry deadline; restore waits until this instant. */
-  nextAttemptAt?: number;
   /** Frozen wave membership after delivery admission or requester-yield re-admission. */
   batchRunIds?: string[];
   /** Batch frozen while its spawning requester turn was yielding. */
@@ -145,7 +138,6 @@ export type RequesterSettleWakeState = {
   rearmGeneration?: number;
   /** Reference to the conversation receipt for this presentation, not completion credit. */
   progressOperationId?: string;
-  lastError?: string | null;
   /** Cleanup wanted to retire this row; defer deletion until the outbox resolves. */
   retireAfterSettle?: boolean;
 };

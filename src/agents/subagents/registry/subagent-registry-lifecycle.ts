@@ -1,10 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import pLimit from "p-limit";
 import type { ProgressContinuationState } from "../../../channels/progress-continuation.js";
-import {
-  getCanonicalGatewayContextResolver,
-  getGatewayContextResolver,
-} from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   runWithGatewayDetachedWorkContinuation,
   runWithGatewayIndependentRootWorkContinuation,
@@ -31,8 +26,6 @@ import { completeCleanupBookkeeping } from "./subagent-registry-lifecycle-bookke
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
-  PendingRequesterSettleWakeCommit,
-  ScheduledRequesterSettleWake,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
 import { refreshFrozenResultFromSession } from "./subagent-registry-lifecycle-delivery.js";
@@ -48,9 +41,9 @@ import {
   SubagentRegistryMutationRejectedError,
 } from "./subagent-registry-persistence.js";
 import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
-import { commitRequesterInitialTransfer } from "./subagent-registry-requester-wake-commit.js";
 import {
   adoptSubagentRunForRequesterTurnInRuns,
+  commitRequesterTransfer,
   markRequesterTurnYieldedInRuns,
   settleRequesterTurnAfterSessionSpawns,
   type RequesterInitialTransfer,
@@ -71,10 +64,6 @@ export type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle-con
 export class SubagentSessionCleanupRevocationChangedError extends SubagentRegistryMutationRejectedError {
   override name = "SubagentSessionCleanupRevocationChangedError";
 }
-
-// Restored rows can arrive in a large burst. Limit only that startup catch-up
-// so ordinary live settles keep their existing latency and concurrency.
-const RESTORED_REQUESTER_SETTLE_WAKE_CONCURRENCY = 2;
 
 const COMPLETION_SETTLING_ERROR = "Subagent completion is still settling; retry the session reset.";
 
@@ -112,17 +101,8 @@ function terminalPublication(entry: SubagentRunRecord): readonly unknown[] {
 }
 
 export class SubagentLifecycleController {
-  readonly pendingRequesterSettleWakeCommits = new Map<object, PendingRequesterSettleWakeCommit>();
   readonly scheduledResumeTimers = new Set<ReturnType<typeof setTimeout>>();
-  pendingRequesterSettleWakeRearms = new Set<object>();
-  readonly cancelledRequesterSettleWakeRuns = new Set<object>();
-  readonly scheduledRequesterSettleWakeRuns = new Set<object>();
-  private readonly restoredRequesterSettleWakeRuns = new Set<object>();
-  private readonly restoredRequesterSettleWakeLimits = new WeakMap<
-    object,
-    ReturnType<typeof pLimit>
-  >();
-  readonly scheduledRequesterSettleWakeTimers = new Map<string, ScheduledRequesterSettleWake>();
+  readonly activeRequesterSettleWakes = new Map<string, { rearm?: SubagentRunRecord }>();
   private readonly terminalCompletionLocks = new Map<object, Promise<void>>();
   private readonly terminalGenerations = new WeakMap<object, number>();
   private readonly terminalPublications = new WeakMap<object, readonly unknown[]>();
@@ -163,7 +143,6 @@ export class SubagentLifecycleController {
       if (current) {
         this.runtimeRuns.set(identity, current);
       }
-      const pending = this.pendingRequesterSettleWakeCommits.get(identity);
       if (
         current &&
         getSubagentRunRuntimeKey(current) === identity &&
@@ -175,20 +154,12 @@ export class SubagentLifecycleController {
         (current && getSubagentRunRuntimeKey(current) === identity) ||
         this.terminalEffectUsers.has(identity) ||
         this.cleanupReservations.has(identity) ||
-        this.activeCleanupAttempts.has(identity) ||
-        this.scheduledRequesterSettleWakeRuns.has(identity) ||
-        pending?.inFlight ||
-        pending?.ownsRetirement(observed) ||
-        (pending?.initialTransfer && !pending.initialTransfer.completed)
+        this.activeCleanupAttempts.has(identity)
       ) {
         continue;
       }
       this.runtimeRuns.delete(identity);
       this.options.resumedRuns.delete(identity);
-      this.pendingRequesterSettleWakeCommits.delete(identity);
-      this.pendingRequesterSettleWakeRearms.delete(identity);
-      this.cancelledRequesterSettleWakeRuns.delete(identity);
-      this.restoredRequesterSettleWakeRuns.delete(identity);
     }
   };
 
@@ -330,22 +301,7 @@ export class SubagentLifecycleController {
       clearTimeout(timer);
     }
     this.scheduledResumeTimers.clear();
-    for (const scheduled of this.scheduledRequesterSettleWakeTimers.values()) {
-      clearTimeout(scheduled.timer);
-      this.pendingRequesterSettleWakeCommits
-        .get(getSubagentRunRuntimeKey(scheduled.entry))
-        ?.initialTransfer?.retire();
-    }
-    for (const entry of this.options.runs.values()) {
-      this.pendingRequesterSettleWakeCommits
-        .get(getSubagentRunRuntimeKey(entry))
-        ?.initialTransfer?.retire();
-    }
-    this.scheduledRequesterSettleWakeTimers.clear();
-    this.pendingRequesterSettleWakeRearms = new Set();
-    this.cancelledRequesterSettleWakeRuns.clear();
-    this.pendingRequesterSettleWakeCommits.clear();
-    this.scheduledRequesterSettleWakeRuns.clear();
+    this.activeRequesterSettleWakes.clear();
     this.cleanupReservations.clear();
     this.runtimeRuns.clear();
     this.stopRuntimePruning?.();
@@ -430,39 +386,11 @@ export class SubagentLifecycleController {
     isCurrent: () => boolean,
   ): Promise<unknown> => {
     this.trackRun(entry);
-    const runCurrent = async () => (isCurrent() ? run() : undefined);
-    // Retry timers can outlive their original async scope. Reserve a detached
-    // Gateway root before the limiter, then revalidate row ownership when the
-    // execution slot opens; the queued wait still counts during restart drain.
-    return runWithGatewayDetachedWorkContinuation(() => {
-      if (!this.restoredRequesterSettleWakeRuns.has(getSubagentRunRuntimeKey(entry))) {
-        return runCurrent();
-      }
-      const resolve = getGatewayContextResolver(entry);
-      // Native caller wrappers share the instance resolver. Standalone bindings
-      // retain their captured resolver; wholly unbound calls belong to this controller.
-      const owner = (resolve && getCanonicalGatewayContextResolver(resolve)) ?? resolve ?? this;
-      // Retired callbacks keep their queue and roots, but cannot consume the
-      // replacement Gateway's capacity while their old async work unwinds.
-      let limit = this.restoredRequesterSettleWakeLimits.get(owner);
-      if (!limit) {
-        limit = pLimit(RESTORED_REQUESTER_SETTLE_WAKE_CONCURRENCY);
-        this.restoredRequesterSettleWakeLimits.set(owner, limit);
-      }
-      return limit(runCurrent);
-    }, "subagents:lifecycle-wake");
-  };
-  unmarkRequesterSettleWakeRunScheduled = (entry: SubagentRunRecord): void => {
-    this.scheduledRequesterSettleWakeRuns.delete(getSubagentRunRuntimeKey(entry));
-    this.pruneRetiredRuns([entry.runId]);
-    // Retryable durable wakes remain startup recovery. Once settlement retires
-    // that state, the same run id must return to the ordinary live path.
-    if (
-      !getCurrentSubagentRunOwner(this.options.runs, entry)?.requesterSettleWake &&
-      !this.pendingRequesterSettleWakeCommits.get(getSubagentRunRuntimeKey(entry))?.isCurrent(entry)
-    ) {
-      this.restoredRequesterSettleWakeRuns.delete(getSubagentRunRuntimeKey(entry));
-    }
+    // The detached Gateway root keeps restart drain aware of an evaluation in flight.
+    return runWithGatewayDetachedWorkContinuation(
+      async () => (isCurrent() ? run() : undefined),
+      "subagents:lifecycle-wake",
+    );
   };
 
   completeSubagentRun = async (completeParams: SubagentCompletionRequest) => {
@@ -526,11 +454,8 @@ export class SubagentLifecycleController {
     Object.assign(delivery, {
       status: "discarded",
       queueId: undefined,
-      nextAttemptAt: undefined,
       payload: undefined,
       createdAt: undefined,
-      lastAttemptAt: undefined,
-      attemptCount: undefined,
       lastError: undefined,
       announcedAt: undefined,
       suspendedAt: undefined,
@@ -548,25 +473,8 @@ export class SubagentLifecycleController {
   refreshFrozenResultFromSession = (sessionKey: string) =>
     refreshFrozenResultFromSession(this, sessionKey);
 
-  markRequesterSettleWakeRestored = (entry: SubagentRunRecord): void => {
-    const current = getCurrentSubagentRunOwner(this.options.runs, entry);
-    if (current) {
-      this.restoredRequesterSettleWakeRuns.add(this.trackRun(current));
-    }
-  };
-
-  resumeRequesterSettleWake = (
-    runId: string,
-    entry: SubagentRunRecord,
-    source: "live" | "restore" = "live",
-  ) => {
+  resumeRequesterSettleWake = (runId: string, entry: SubagentRunRecord) => {
     this.trackRun(entry);
-    if (
-      source === "restore" &&
-      !this.scheduledRequesterSettleWakeRuns.has(getSubagentRunRuntimeKey(entry))
-    ) {
-      this.markRequesterSettleWakeRestored(entry);
-    }
     scheduleRequesterSettleWake(this, runId, entry);
   };
 
@@ -598,15 +506,13 @@ export class SubagentLifecycleController {
   ): RequesterInitialTransfer {
     // Logical settlement retains run or reply-operation authority beyond individual tool calls.
     return (params) =>
-      commitRequesterInitialTransfer(this, {
-        ...params,
+      commitRequesterTransfer(params, {
+        runs: this.options.runs,
         stateContext,
         assertCurrent: () => {
           assertSubagentRegistryWriteSourceCurrent(stateContext);
           assertCurrent?.();
         },
-        scheduleRetry: (entry) =>
-          scheduleRequesterSettleWake(this, entry.runId, entry, stateContext),
       });
   }
 
@@ -641,19 +547,16 @@ export class SubagentLifecycleController {
     }
   };
 
-  settleRequesterTurnAfterSessionSpawns = (
-    args: {
-      requesterSessionKey: string;
-      requesterAgentId?: string;
-      requesterTurnRunId: string;
-      requesterYielded: boolean;
-      acceptedSessionSpawns: readonly AcceptedSessionSpawn[];
-      progressPresentation?: ProgressContinuationState;
-      assertCurrent?: () => void;
-      stateContext?: OpenClawStateWorkerContext;
-    },
-    source: "live" | "restore" = "live",
-  ) =>
+  settleRequesterTurnAfterSessionSpawns = (args: {
+    requesterSessionKey: string;
+    requesterAgentId?: string;
+    requesterTurnRunId: string;
+    requesterYielded: boolean;
+    acceptedSessionSpawns: readonly AcceptedSessionSpawn[];
+    progressPresentation?: ProgressContinuationState;
+    assertCurrent?: () => void;
+    stateContext?: OpenClawStateWorkerContext;
+  }) =>
     settleRequesterTurnAfterSessionSpawns({
       ...args,
       runs: this.options.runs,
@@ -666,13 +569,6 @@ export class SubagentLifecycleController {
             this.options.resumeSubagentRun(runId);
           }
           return;
-        }
-        if (this.scheduledRequesterSettleWakeRuns.has(getSubagentRunRuntimeKey(entry))) {
-          this.pendingRequesterSettleWakeRearms.add(getSubagentRunRuntimeKey(entry));
-          return;
-        }
-        if (source === "restore") {
-          this.markRequesterSettleWakeRestored(entry);
         }
         scheduleRequesterSettleWake(this, runId, entry);
       },

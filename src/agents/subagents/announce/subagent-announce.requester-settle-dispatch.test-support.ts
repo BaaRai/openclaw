@@ -9,7 +9,6 @@ import {
   startTurn,
   readDescendantFacts,
 } from "./subagent-announce.requester-settle-dispatch-mocks.test-support.js";
-import type { RequesterSettleWakeBatchCallbacks } from "./subagent-announce.requester-settle-state.js";
 
 export { deliver, registryRead, startTurn, readDescendantFacts };
 
@@ -40,17 +39,6 @@ export function useRequesterSettleDispatchFixture() {
 
 export const REQUESTER_KEY = "agent:main:main";
 
-export const publishWakeTransition: RequesterSettleWakeBatchCallbacks["transitionBatch"] = (
-  batch,
-  state,
-  onPublished,
-) => {
-  for (const entry of batch) {
-    entry.requesterSettleWake = state;
-  }
-  onPublished(batch);
-};
-
 export function settledChild(): SubagentRunRecord {
   return {
     runId: "settled-child",
@@ -66,8 +54,6 @@ export function settledChild(): SubagentRunRecord {
     completion: { required: true, resultText: "child result", capturedAt: 3_000 },
     delivery: { status: "delivered" },
     requesterSettleWake: {
-      status: "pending",
-      attemptCount: 0,
       requesterYieldBatch: true,
       rearmGeneration: 1,
     },

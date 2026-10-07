@@ -385,8 +385,6 @@ describe("subagent registry sqlite store", () => {
       completionRequesterSessionId: "original-parent",
       controllerSessionKey: "agent:main:controller",
       requesterSettleWake: {
-        status: "dispatching",
-        attemptCount: 1,
         batchRunIds: ["run-one", "public-run"],
         requesterYieldBatch: true,
         rearmGeneration: 2,
@@ -892,8 +890,6 @@ describe("subagent registry sqlite store", () => {
         completionRequesterSessionId: "original-parent",
         controllerSessionKey: "agent:main:controller",
         requesterSettleWake: {
-          status: "dispatching",
-          attemptCount: 1,
           batchRunIds: ["run-one", "public-run"],
           requesterYieldBatch: true,
           rearmGeneration: 2,

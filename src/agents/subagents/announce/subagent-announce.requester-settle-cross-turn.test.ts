@@ -31,8 +31,6 @@ it.each(["older batch", "cross-agent descendant", "paused member", "pending clea
       createdAt: now - 100,
       endedAt: now,
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
         batchRunIds: sameBatch ? ["short", "long"] : ["short"],
@@ -50,8 +48,6 @@ it.each(["older batch", "cross-agent descendant", "paused member", "pending clea
           : { status: "running", startedAt: now - 200 },
       ...(scenario === "paused member" ? { pauseReason: "sessions_yield" as const } : {}),
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         requesterYieldBatch: true,
         rearmGeneration: 1,
         batchRunIds: sameBatch ? ["short", "long"] : ["long"],

@@ -635,7 +635,6 @@ describe("subagent registry lifecycle error grace", () => {
         isSourceCurrent: () => true,
         requesterSessionKey: MAIN_REQUESTER_SESSION_KEY,
         settledEntry: liveChild,
-        transitionBatch: noop,
         completeBatch: noop,
       }),
     ).toBe(false);

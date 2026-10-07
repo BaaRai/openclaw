@@ -82,9 +82,8 @@ describe("requester receipts after completion expiry", () => {
 
   function settle(input: ReturnType<typeof records>, delivered: boolean) {
     return settleRequesterCompletionBatch({
-      entries: [{ subagent: input.subagent }],
+      entries: [input.subagent],
       outcome: { delivered, path: "direct", error: delivered ? undefined : "requester failed" },
-      isCurrent: () => true,
       databaseOptions: { database },
     });
   }

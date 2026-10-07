@@ -30,7 +30,6 @@ import {
   readDescendantFacts,
   REQUESTER_KEY,
   settledChild,
-  publishWakeTransition,
   useRequesterSettleDispatchFixture,
 } from "./subagent-announce.requester-settle-dispatch.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
@@ -165,7 +164,6 @@ describe("requester settle watch admission", () => {
           requesterSessionKey: REQUESTER_KEY,
           settledEntry: child,
           isSourceCurrent: () => true,
-          transitionBatch: publishWakeTransition,
           completeBatch,
         }),
       ).resolves.toBe(true);

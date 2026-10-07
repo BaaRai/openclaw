@@ -37,7 +37,6 @@ import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
 import {
   resolveSubagentAnnounceTimeoutMs,
-  runAnnounceDeliveryWithRetry,
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
 import {
@@ -60,12 +59,7 @@ import {
 } from "./subagent-announce-origin.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 
-export {
-  loadRequesterSessionEntry,
-  loadSessionEntryByKey,
-  resolveSubagentAnnounceTimeoutMs,
-  runAnnounceDeliveryWithRetry,
-};
+export { loadRequesterSessionEntry, loadSessionEntryByKey, resolveSubagentAnnounceTimeoutMs };
 
 export function isInternalAnnounceRequesterSession(sessionKey: string | undefined): boolean {
   return getSubagentDepthFromSessionStore(sessionKey) >= 1 || isCronSessionKey(sessionKey);

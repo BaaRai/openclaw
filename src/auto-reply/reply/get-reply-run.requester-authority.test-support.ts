@@ -51,8 +51,6 @@ export function registerPendingRequesterAuthorityCases({
         cleanup: "keep",
         createdAt: 1,
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           requesterYieldBatch: true,
           rearmGeneration: 1,
           batchRunIds: ["pending-child"],

@@ -211,8 +211,6 @@ it("patches list facts after keyed publications without rebuilding for progress-
   const initialRevision = context.materializedRevisions.subagentRevision;
   for (let update = 0; update < 100; update++) {
     run.requesterSettleWake = {
-      status: "pending",
-      attemptCount: 0,
       progressOperationId: `progress-${update}`,
     };
     subagentRuns.commitOwnership(run);

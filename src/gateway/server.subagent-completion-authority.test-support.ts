@@ -113,7 +113,8 @@ export async function createRegisteredCompletionPair(context: GatewayRequestCont
       }
       if (
         typeof entry?.cleanupCompletedAt === "number" ||
-        (entry?.cleanupHandled === false && entry.delivery?.nextAttemptAt !== undefined)
+        entry?.delivery?.status === "suspended" ||
+        entry?.delivery?.status === "failed"
       ) {
         run.settled.resolve();
       }

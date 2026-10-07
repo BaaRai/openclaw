@@ -238,7 +238,6 @@ export function registerLifecycleDeliveryReceiptCases({
         status: "pending",
         lastError: "earlier delivery failed",
         lastDropReason: "sink_unavailable",
-        nextAttemptAt: 13_000,
       },
     });
     let releaseAnnounce!: () => void;
@@ -301,7 +300,6 @@ export function registerLifecycleDeliveryReceiptCases({
       await join();
     }
     expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number");
-    expect(readLifecycleRun(entry).delivery?.nextAttemptAt).toBeUndefined();
   });
 
   it("keeps a delivered receipt when a late failure arrives after the next turn starts", async () => {

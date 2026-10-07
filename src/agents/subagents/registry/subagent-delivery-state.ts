@@ -1,7 +1,6 @@
 import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
-import type { RequesterSettleWakeBatchState } from "../announce/subagent-announce.requester-settle-state.js";
 import type {
   PendingFinalDeliveryPayload,
   SubagentCompletionDeliveryState,
@@ -14,27 +13,14 @@ import type {
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
 
-export function resetRequesterSettleWakeRetry(
-  wake?: RequesterSettleWakeState,
-): RequesterSettleWakeState {
-  return {
-    ...wake,
-    status: "pending",
-    attemptCount: 0,
-    replayCount: undefined,
-    nextAttemptAt: undefined,
-    lastError: undefined,
-  };
-}
-
-/** A pause uses the existing retry owner, but never consumes the completion cohort. */
+/** A pause notice is its own obligation; consuming it leaves the completion cohort armed. */
 export function consumeSubagentPauseNotice(entry: SubagentRunRecord): boolean {
   const wake = entry.requesterSettleWake;
   if (entry.pauseReason !== "sessions_yield" || !wake?.pauseNotice) {
     return false;
   }
   const { pauseNotice: _notice, ...completionWake } = wake;
-  entry.requesterSettleWake = resetRequesterSettleWakeRetry(completionWake);
+  entry.requesterSettleWake = completionWake;
   return true;
 }
 
@@ -186,6 +172,7 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
       suppressTaskDelivery: killIntent.suppressTaskDelivery === true ? true : undefined,
     };
   }
+  stripRetiredRetryState(entry);
   // cleanupHandled is an in-process lock; after restart, unfinished cleanup must
   // retry unless durable cleanup completion was recorded.
   if (
@@ -196,6 +183,20 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
     entry.cleanupHandled = false;
   }
   return entry;
+}
+
+// Retry and attempt bookkeeping left by older builds has no owner; strip it on read and write.
+function stripRetiredRetryState(entry: SubagentRunRecord): void {
+  for (const key of ["status", "attemptCount", "replayCount", "nextAttemptAt", "lastError"]) {
+    if (entry.requesterSettleWake) {
+      Reflect.deleteProperty(entry.requesterSettleWake, key);
+    }
+  }
+  for (const key of ["attemptCount", "nextAttemptAt", "lastAttemptAt"]) {
+    if (entry.delivery) {
+      Reflect.deleteProperty(entry.delivery, key);
+    }
+  }
 }
 
 export function ensureCompletionState(entry: SubagentRunRecord): SubagentCompletionState {
@@ -276,8 +277,6 @@ export const markRequesterSettleWakePending = (
   const existing = entry.requesterSettleWake;
   entry.requesterSettleWake = {
     ...structuredClone(existing),
-    status: existing?.status ?? "pending",
-    attemptCount: existing?.attemptCount ?? 0,
     ...(existing?.retireAfterSettle === true || options?.retireAfterSettle === true
       ? { retireAfterSettle: true }
       : {}),
@@ -288,9 +287,6 @@ export const clearSubagentPendingDelivery = (entry: SubagentRunRecord) => {
   const delivery = ensureDeliveryState(entry);
   delivery.payload = undefined;
   delivery.createdAt = undefined;
-  delivery.lastAttemptAt = undefined;
-  delivery.nextAttemptAt = undefined;
-  delivery.attemptCount = undefined;
   delivery.lastError = undefined;
   delivery.suspendedAt = undefined;
   delivery.suspendedReason = undefined;
@@ -324,19 +320,6 @@ export const loadPendingFinalDeliveryPayload = (
     terminalReply: entry.completion?.terminalReply ?? entry.delivery?.payload?.terminalReply,
   };
 };
-
-export function transitionRequesterSettleWakeState(
-  entry: SubagentRunRecord,
-  state: RequesterSettleWakeBatchState,
-): void {
-  entry.requesterSettleWake = {
-    ...state,
-    ...(entry.requesterSettleWake?.progressOperationId
-      ? { progressOperationId: entry.requesterSettleWake.progressOperationId }
-      : {}),
-    ...(entry.requesterSettleWake?.retireAfterSettle === true ? { retireAfterSettle: true } : {}),
-  };
-}
 
 export function completeRequesterSettleWakeState(entry: SubagentRunRecord): boolean {
   let retire = false;

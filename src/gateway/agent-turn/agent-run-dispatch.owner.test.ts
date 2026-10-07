@@ -500,8 +500,6 @@ describe("Gateway dispatch run ownership", () => {
         createdAt: 1,
         execution: { status: "terminal" },
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           rearmGeneration: 1,
           requesterYieldBatch: true,
         },

@@ -46,8 +46,6 @@ import {
 import { retiredCancellationEndedAt } from "./subagent-completion-mutation.kernel.js";
 import type {
   BlockSubagentCompletionRequest,
-  RequesterWakeCommittedWrite,
-  RequesterWakeMutation,
   SubagentCompletionMutation,
   SubagentCompletionMutationResult,
   SubagentCompletionQueueReceipt,
@@ -534,7 +532,6 @@ export async function settleSubagentCompletionDelivery(
           deliveredAt: now,
           announcedAt: now,
           lastError: undefined,
-          nextAttemptAt: undefined,
           queueId: undefined,
           payload: undefined,
         });
@@ -602,20 +599,15 @@ export async function reconcileRetiredSubagentCancellation(
 function currentRequesterEntries(
   rows: ReadonlyMap<string, SubagentRunRecord>,
   entries: readonly SubagentRunRecord[],
-  committed?: RequesterWakeCommittedWrite,
 ): Array<{ subagent: SubagentRunRecord }> {
   return entries.map((expected) => {
-    if (!rows.has(expected.runId) && committed?.result.retiredRunIds.includes(expected.runId)) {
-      return { subagent: expected };
-    }
     const current = currentCompletionOwner(rows, expected);
     if (
-      !committed &&
-      (current.delivery?.generation !== expected.delivery?.generation ||
-        !isDeepStrictEqual(
-          captureRequesterSettleWakeProgress(current),
-          captureRequesterSettleWakeProgress(expected),
-        ))
+      current.delivery?.generation !== expected.delivery?.generation ||
+      !isDeepStrictEqual(
+        captureRequesterSettleWakeProgress(current),
+        captureRequesterSettleWakeProgress(expected),
+      )
     ) {
       throw new SubagentCompletionSourceChangedError(
         "Subagent requester wake cohort changed before mutation",
@@ -625,80 +617,22 @@ function currentRequesterEntries(
   });
 }
 
-type RequesterCompletionMutationOptions = CompletionMutationOptions & {
-  committed?: RequesterWakeCommittedWrite;
-  onCommitted?: (write: RequesterWakeCommittedWrite) => void;
-  onPublished?: () => void;
-};
-
-/** The wake episode retains this receipt until its current host owner can adopt it. */
-async function mutateRequesterBatch(
-  members: readonly SubagentRunRecord[],
-  operation:
-    | { kind: "requesterBatch"; outcome: SubagentAnnounceDeliveryResult }
-    | { kind: "requesterWake"; operation: RequesterWakeMutation },
-  options: RequesterCompletionMutationOptions,
-): Promise<CompletionMutationPublication> {
-  return mutateCompletion(
-    members,
-    (rows) => {
-      const mutation = {
-        ...operation,
-        entries: currentRequesterEntries(rows, members, options.committed),
-        committed: options.committed,
-      };
-      return mutation.kind === "requesterBatch" ? { ...mutation, now: Date.now() } : mutation;
-    },
-    {
-      ...options,
-      onCommitted(result, mutation) {
-        if (
-          !options.committed &&
-          (mutation.kind === "requesterBatch" || mutation.kind === "requesterWake")
-        ) {
-          options.onCommitted?.({ entries: mutation.entries, result });
-        }
-      },
-    },
-  );
-}
-
+/** Records a requester batch's single outcome, or retires a wake that owes no delivery. */
 export async function settleRequesterCompletionBatch(
-  params: RequesterCompletionMutationOptions & {
-    entries: readonly { subagent: SubagentRunRecord }[];
-    outcome: SubagentAnnounceDeliveryResult;
-    isCurrent(): boolean;
-  },
-): Promise<CompletionMutationPublication> {
-  return mutateRequesterBatch(
-    params.entries.map(({ subagent }) => subagent),
-    { kind: "requesterBatch", outcome: params.outcome },
-    {
-      ...params,
-      assertCurrent: () => {
-        if (!params.isCurrent()) {
-          throw new SubagentCompletionSourceChangedError(
-            "Subagent completion owner changed before settlement",
-          );
-        }
-      },
-    },
-  );
-}
-
-export async function mutateRequesterSettleWakeBatch(
-  params: RequesterCompletionMutationOptions & {
+  params: CompletionMutationOptions & {
     entries: readonly SubagentRunRecord[];
-    operation: RequesterWakeMutation;
-    context: OpenClawStateWorkerContext;
-    assertCurrent: () => void;
-    onCommitted: (write: RequesterWakeCommittedWrite) => void;
-    onPublished: () => void;
+    outcome?: SubagentAnnounceDeliveryResult;
   },
 ): Promise<CompletionMutationPublication> {
-  return mutateRequesterBatch(
+  const { outcome } = params;
+  return mutateCompletion(
     params.entries,
-    { kind: "requesterWake", operation: params.operation },
+    (rows) => {
+      const entries = currentRequesterEntries(rows, params.entries);
+      return outcome
+        ? { kind: "requesterBatch", entries, outcome, now: Date.now() }
+        : { kind: "requesterWake", entries };
+    },
     params,
   );
 }

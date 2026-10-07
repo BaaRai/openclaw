@@ -128,7 +128,7 @@ it.each([
     entry.delivery = { status: "pending" };
     entry.cleanupHandled = true;
     entry.cleanupCompletedAt = endedAt;
-    entry.requesterSettleWake = { status: "pending", attemptCount: 0 };
+    entry.requesterSettleWake = { attemptCount: 0 };
     entries.push(entry);
   }
   const entry = entries[0]!;
@@ -138,16 +138,12 @@ it.each([
     privateEntry.completionRequesterSessionId = "requester-session";
     for (const child of entries) {
       child.requesterSettleWake = {
-        status: "pending",
-        attemptCount: 1,
         batchRunIds: entries.map(({ runId }) => runId),
       };
     }
   }
   if (phase === "pending RPC") {
     entry.requesterSettleWake = {
-      status: "pending",
-      attemptCount: 0,
       batchRunIds: [entry.runId],
       requesterYieldBatch: true,
       afterRequesterYield: true,

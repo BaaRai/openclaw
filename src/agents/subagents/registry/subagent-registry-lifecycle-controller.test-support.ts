@@ -272,7 +272,6 @@ export function createLifecycleControllerFixture(
     return fixtureScope.run(owner, () =>
       wake({
         ...request,
-        transitionBatch: runOwned(request.transitionBatch),
         completeBatch: runOwned(request.completeBatch),
       }),
     );

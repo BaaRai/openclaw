@@ -32,13 +32,12 @@ export const finalizeResumedAnnounceGiveUp = async (
     reason: "expiry" | "permanent_failure";
     cleanup?: "delete" | "keep";
     cleanupGeneration?: number;
-    retryCount?: number;
     completedAt?: number;
     stateContext?: OpenClawStateWorkerContext;
   },
 ) => {
   const params = context.options;
-  const { reason, cleanup, cleanupGeneration, retryCount, completedAt } = giveUpParams;
+  const { reason, cleanup, cleanupGeneration, completedAt } = giveUpParams;
   let entry = giveUpParams.entry;
   let runId = entry.runId;
   const stateContext = giveUpParams.stateContext ?? captureOpenClawStateWorkerContext();
@@ -89,10 +88,6 @@ export const finalizeResumedAnnounceGiveUp = async (
       const failedDelivery = ensureDeliveryState(draft);
       failedDelivery.status = "failed";
       failedDelivery.lastError = deliveryError;
-      if (retryCount != null) {
-        failedDelivery.attemptCount = retryCount;
-        failedDelivery.lastAttemptAt = completedAt ?? Date.now();
-      }
       draft.wakeOnDescendantSettle = undefined;
       const completion = ensureCompletionState(draft);
       completion.fallbackResultText = undefined;

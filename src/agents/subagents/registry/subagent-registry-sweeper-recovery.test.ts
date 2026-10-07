@@ -112,33 +112,24 @@ describe("subagent registry recovery scheduling", () => {
     vi.useRealTimers();
   });
 
-  it.each(["terminal", "running"] as const)(
-    "only gives ended %s children requester-wake priority over suspended delivery cleanup",
-    async (executionStatus) => {
-      const { entry, resumeRequesterSettleWake, completeCleanupBookkeeping, sweeper } =
-        createHarness({});
-      entry.execution = {
-        status: executionStatus,
-        endedAt: Date.now() - 60_000,
-        outcome: { status: "ok" },
-      };
-      entry.requesterSettleWake = { status: "pending", attemptCount: 0 };
-      entry.delivery = {
-        status: "suspended",
-        suspendedAt: Date.now() - 8 * 24 * 60 * 60_000,
-        suspendedReason: "expiry",
-      };
+  it("leaves an ended child's owed requester wake to settlement events", async () => {
+    const { entry, completeCleanupBookkeeping, sweeper } = createHarness({});
+    entry.execution = {
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+      outcome: { status: "ok" },
+    };
+    entry.requesterSettleWake = {};
+    entry.delivery = {
+      status: "suspended",
+      suspendedAt: Date.now() - 8 * 24 * 60 * 60_000,
+      suspendedReason: "expiry",
+    };
 
-      await sweeper.sweepOnce();
+    await sweeper.sweepOnce();
 
-      expect(resumeRequesterSettleWake).toHaveBeenCalledTimes(
-        executionStatus === "terminal" ? 1 : 0,
-      );
-      if (executionStatus === "terminal") {
-        expect(completeCleanupBookkeeping).not.toHaveBeenCalled();
-      }
-    },
-  );
+    expect(completeCleanupBookkeeping).not.toHaveBeenCalled();
+  });
 
   it("observes a sibling completion committed while another completion is awaiting", async () => {
     const actual = await vi.importActual<typeof import("./subagent-session-reconciliation.js")>(

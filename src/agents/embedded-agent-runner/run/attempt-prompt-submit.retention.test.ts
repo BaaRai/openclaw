@@ -21,7 +21,10 @@ import {
   streamMocks,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { useSubagentControlFixture } from "../../subagents/registry/subagent-control.test-support.js";
-import { markPendingFinalDelivery } from "../../subagents/registry/subagent-registry-lifecycle-delivery.js";
+import {
+  ensureDeliveryState,
+  loadPendingFinalDeliveryPayload,
+} from "../../subagents/registry/subagent-delivery-state.js";
 import { subagentRuns } from "../../subagents/registry/subagent-registry-memory.js";
 import { mutateSubagentRuns } from "../../subagents/registry/subagent-registry-persistence.js";
 import {
@@ -95,7 +98,10 @@ async function publishChild(runId: string, answer: string) {
       transcriptTarget: target,
     };
     next.completion = { required: true, resultText: terminalReply.text, terminalReply };
-    markPendingFinalDelivery({ entry: next });
+    Object.assign(ensureDeliveryState(next), {
+      status: "pending",
+      payload: loadPendingFinalDeliveryPayload(next),
+    });
     return { value: next, postimages: new Map([[runId, next]]) };
   });
   return { child, target, terminalReply };

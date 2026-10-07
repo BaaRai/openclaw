@@ -790,8 +790,6 @@ describe("main-session-restart-recovery", () => {
         requesterAgentId: "ops",
         expectsCompletionMessage: true,
         requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
           requesterYieldBatch: true,
           rearmGeneration: 1,
           batchRunIds: [`yielded-owner-shared`],

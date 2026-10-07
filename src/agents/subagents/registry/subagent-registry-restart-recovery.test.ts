@@ -393,8 +393,6 @@ describe("interrupted requester-settle continuation ownership", () => {
       expectsCompletionMessage: true,
       execution: { status: "terminal", endedAt: Date.now(), outcome: { status: "ok" } },
       requesterSettleWake: {
-        status: "dispatching",
-        attemptCount: 1,
         batchRunIds: ["settled-leaf"],
         requesterYieldBatch: true,
         rearmGeneration: 1,

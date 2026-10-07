@@ -18,11 +18,7 @@ import { isSilentAgentReplyText } from "../../embedded-agent-runner/message-visi
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
 import { resolveSubagentChildSessionOwner } from "./subagent-child-session-owner.js";
-import {
-  ensureCompletionState,
-  ensureDeliveryState,
-  loadPendingFinalDeliveryPayload,
-} from "./subagent-delivery-state.js";
+import { ensureCompletionState, ensureDeliveryState } from "./subagent-delivery-state.js";
 import { capFrozenResultText } from "./subagent-registry-helpers.js";
 import type {
   SubagentLifecycleCommonContext,
@@ -31,7 +27,6 @@ import type {
 import { commitSubagentLifecycleMutation } from "./subagent-registry-lifecycle-persistence.js";
 import { getCurrentSubagentRunOwner } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
-import type { PendingFinalDeliveryPayload } from "./subagent-registry-read.types.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
@@ -365,19 +360,6 @@ export const refreshFrozenResultFromSession = async (
     },
   });
   return true;
-};
-
-export const markPendingFinalDelivery = (args: { entry: SubagentRunRecord; error?: string }) => {
-  const now = Date.now();
-  const payload: PendingFinalDeliveryPayload = loadPendingFinalDeliveryPayload(args.entry);
-
-  const delivery = ensureDeliveryState(args.entry);
-  delivery.status = "pending";
-  delivery.createdAt ??= now;
-  delivery.lastAttemptAt = now;
-  delivery.attemptCount = (delivery.attemptCount ?? 0) + 1;
-  delivery.lastError = args.error ?? null;
-  delivery.payload = payload;
 };
 
 export const refreshPendingFinalDeliveryPayload = (entry: SubagentRunRecord): boolean => {

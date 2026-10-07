@@ -293,8 +293,6 @@ it("resumes a yielded child through sessions.send and wakes its original parent 
     [previousRunId, siblingRunId],
     [previousRunId, siblingRunId],
   );
-  expect(pausedCohort.map((wake) => wake?.nextAttemptAt)).toEqual([undefined, undefined]);
-  expect(pausedCohort.map((wake) => wake?.status)).toEqual(["pending", "pending"]);
   expect(pausedCohort[0]?.pauseNotice).toBeUndefined();
   expect(dispatch).not.toHaveBeenCalled();
 

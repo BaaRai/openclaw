@@ -3,8 +3,8 @@ import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.j
 import { ReplyRunAlreadyActiveError, type ReplyOperation } from "./session-controller.contracts.js";
 import {
   activeSessionOperations,
-  findSessionControllerEntries,
   getAttachedBackend,
+  findSessionControllerEntries,
   isReplyRunEvidenceStale,
   getSessionControllerOperation,
   hasReplyOperationExecutionStarted,
@@ -12,16 +12,8 @@ import {
   resolveReplyRunForCurrentSessionId,
   getSessionControllerEntryForOperation,
 } from "./session-controller.state.js";
+import { rpcSourcesByRunId } from "./session-controller.storage.js";
 import type { SessionTarget } from "./session-controller.target.js";
-
-function resolveCurrentOperations(sessionId: string): ReplyOperation[] {
-  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
-  return resolution.kind === "none"
-    ? []
-    : resolution.kind === "one"
-      ? [resolution.operation]
-      : resolution.operations;
-}
 
 export function isSessionRunActive(sessionId: string): boolean {
   return resolveReplyRunForCurrentSessionId(sessionId).kind !== "none";
@@ -32,7 +24,14 @@ export function resolveSessionRunProgressState(
   sessionId: string,
   owner?: { agentId?: string; defaultAgentId?: string },
 ): "queued" | "running" | undefined {
-  const eligible = resolveCurrentOperations(sessionId).filter((operation) => {
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operations =
+    resolution.kind === "none"
+      ? []
+      : resolution.kind === "one"
+        ? [resolution.operation]
+        : resolution.operations;
+  const eligible = operations.filter((operation) => {
     if (operation.result) {
       return false;
     }
@@ -53,18 +52,26 @@ export function resolveSessionRunProgressState(
   if (eligible.length === 0) {
     return undefined;
   }
-  return eligible.every(
-    (operation) =>
-      operation.phase === "waiting_for_global_lane" ||
-      !hasReplyOperationExecutionStarted(operation),
-  )
-    ? "queued"
-    : "running";
+  if (
+    eligible.every(
+      (operation) =>
+        operation.phase === "waiting_for_global_lane" ||
+        !hasReplyOperationExecutionStarted(operation),
+    )
+  ) {
+    return "queued";
+  }
+  return "running";
 }
 export function isSessionRunCompactionBlocked(sessionId: string): boolean {
-  return resolveCurrentOperations(sessionId).some(
-    (operation) => !isReplyOperationPreBackendPhase(operation.phase),
-  );
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operations =
+    resolution.kind === "none"
+      ? []
+      : resolution.kind === "one"
+        ? [resolution.operation]
+        : resolution.operations;
+  return operations.some((operation) => !isReplyOperationPreBackendPhase(operation.phase));
 }
 export function getActiveSessionRunCount(): number {
   return [...activeSessionOperations()].length;
@@ -98,7 +105,14 @@ export function resolveActiveSessionRunThreadId(sessionKey: string): string | nu
 }
 
 export function isReplyRunEvidenceStaleBySessionId(sessionId: string): boolean {
-  return resolveCurrentOperations(sessionId).some(isReplyRunEvidenceStale);
+  const resolution = resolveReplyRunForCurrentSessionId(sessionId);
+  const operations =
+    resolution.kind === "none"
+      ? []
+      : resolution.kind === "one"
+        ? [resolution.operation]
+        : resolution.operations;
+  return operations.some(isReplyRunEvidenceStale);
 }
 
 export function listActiveReplyRunSessionKeys(): string[] {
@@ -116,18 +130,18 @@ export function resolveActiveReplyOperationForSessionId(
   return resolution.kind === "one" ? resolution.operation : undefined;
 }
 
-/** Resolves the one slot-owning operation executing a backend or protocol run ID; ambiguity fails closed. */
+/** Finds the unfinished operation that owns a backend or Gateway protocol run ID. */
 export function findSessionControllerOperationByRunId(runId: string): ReplyOperation | undefined {
-  const id = normalizeOptionalString(runId);
-  if (!id) {
-    return undefined;
+  for (const operation of activeSessionOperations()) {
+    if (!operation.result && getAttachedBackend(operation)?.runId === runId) {
+      return operation;
+    }
   }
-  const matches = [...activeSessionOperations()].filter((operation) => {
-    const claim = getSessionControllerEntryForOperation(operation).mailbox?.claim;
-    return (
-      getAttachedBackend(operation)?.runId === id ||
-      (claim?.operation === operation && claim.inputs.some((input) => input.protocolRunId === id))
-    );
-  });
-  return matches.length === 1 ? matches[0] : undefined;
+  for (const source of rpcSourcesByRunId.get(runId) ?? []) {
+    const claim = source.input.claim;
+    if (claim && !claim.released && claim.operation && !claim.operation.result) {
+      return claim.operation;
+    }
+  }
+  return undefined;
 }

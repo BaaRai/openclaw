@@ -95,8 +95,8 @@ export async function recoverInterruptedSubagentRow(
     const lifecycleRunId = sessionEntry?.lifecycleRunId;
     const sessionAgentId = session?.agentId;
     const target = { sessionKey: childSessionKey, sessionId };
-    // A yielded requester can itself be a subagent. Its incoming frozen batch,
-    // not the requester's outgoing parent notice, owns this exact saved attempt.
+    // A yielded requester can itself be a subagent. When its saved run is the stable
+    // continuation of its incoming frozen batch, that batch owns this exact turn.
     // This only defers orphan settlement; the wake still owns replay admission,
     // failure/cancellation, and removal of the continuation obligation.
     const hasPendingRequesterSettleWake = () => {
@@ -123,8 +123,7 @@ export async function recoverInterruptedSubagentRow(
       return [...children.values()].some((child) => {
         const wake = child.requesterSettleWake;
         return (
-          wake?.status === "dispatching" &&
-          wake.requesterYieldBatch === true &&
+          wake?.requesterYieldBatch === true &&
           wake.rearmGeneration !== undefined &&
           isRequesterSettleWakeForRun({
             entry: child,
@@ -143,9 +142,7 @@ export async function recoverInterruptedSubagentRow(
               member.requesterAgentId === sessionAgentId &&
               !member.suppressCompletionDelivery &&
               !member.killReconciliation?.suppressTaskDelivery &&
-              member.requesterSettleWake?.status === "dispatching" &&
-              member.requesterSettleWake.rearmGeneration === wake.rearmGeneration &&
-              member.requesterSettleWake.attemptCount === wake.attemptCount &&
+              member.requesterSettleWake?.rearmGeneration === wake.rearmGeneration &&
               getGatewayContextResolver(member)?.()?.recoveryRuntime === params.gatewayRuntime
             );
           })

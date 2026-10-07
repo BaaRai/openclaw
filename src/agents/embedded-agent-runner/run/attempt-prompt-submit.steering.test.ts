@@ -22,7 +22,10 @@ import {
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { testing as announceTesting } from "../../subagents/announce/subagent-announce-output.test-support.js";
-import { markPendingFinalDelivery } from "../../subagents/registry/subagent-registry-lifecycle-delivery.js";
+import {
+  ensureDeliveryState,
+  loadPendingFinalDeliveryPayload,
+} from "../../subagents/registry/subagent-delivery-state.js";
 import { subagentRuns } from "../../subagents/registry/subagent-registry-memory.js";
 import { mutateSubagentRuns } from "../../subagents/registry/subagent-registry-persistence.js";
 import {
@@ -98,7 +101,10 @@ async function prepareSteering() {
       },
     };
     next.completion = { required: true, resultText: terminalReply.text, terminalReply };
-    markPendingFinalDelivery({ entry: next });
+    Object.assign(ensureDeliveryState(next), {
+      status: "pending",
+      payload: loadPendingFinalDeliveryPayload(next),
+    });
     return { value: next, postimages: new Map([[childRunId, next]]) };
   });
   announceTesting.setDepsForTest({

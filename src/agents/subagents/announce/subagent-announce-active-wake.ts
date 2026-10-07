@@ -1,4 +1,3 @@
-import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { sessionDeliveryChannel } from "../../../utils/delivery-context.read.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
 import {
@@ -8,7 +7,6 @@ import {
   type EmbeddedAgentQueueMessageOutcome,
 } from "../../embedded-agent-runner/runs.js";
 import type { CurrentInboundPromptContext } from "../../internal-runtime-context.js";
-import { waitForAnnounceRetryDelay } from "./subagent-announce-delivery-retry.js";
 import {
   getSubagentRequesterSessionActivity as resolveRequesterSessionActivity,
   loadRequesterSessionEntry,
@@ -19,116 +17,29 @@ export const SOURCE_OWNER_CHANGED = Symbol("source_owner_changed");
 
 export { resolveRequesterSessionActivity };
 
-// Backoff schedule for re-attempting an active-requester steer while the run is
-// compacting. Compaction is transient and usually finishes quickly, so a denser
-// schedule is used than for transient delivery errors. Total wait stays well
-// within the announce delivery timeout, and the loop also stops on cancellation.
-function resolveCompactionSteerRetryDelaysMs() {
-  return isFastTestRuntimeEnv()
-    ? ([8, 16, 32, 64] as const)
-    : ([1_000, 2_000, 4_000, 8_000] as const);
-}
-
-// Wake an active requester run through transient compacting and delivery-mode
-// outcomes. Unsupported transcript-commit waits are terminal refusals: the loop
-// keeps the requested gate intact and lets the caller fall through to the
-// canonical requester-agent handoff instead of re-steering on stale context.
-export async function resolveActiveWakeWithRetries(
+/**
+ * One steer attempt into the active requester run. A refusal, including compaction,
+ * leaves the completion to its queued requester turn; nothing re-steers on a timer.
+ */
+export async function resolveActiveWake(
   sessionId: string,
   message: string,
   wakeOptions: EmbeddedAgentQueueMessageOptions,
-  signal?: AbortSignal,
   isAttemptAllowed?: () => boolean,
   isSourceSessionAdmissionAllowed?: () => boolean,
 ): Promise<EmbeddedAgentQueueMessageOutcome | typeof SOURCE_OWNER_CHANGED> {
-  // Bound the whole active wake by the caller's delivery window. Each retry
-  // passes only the remaining window into transcript-commit waiting so a
-  // near-deadline retry cannot add another full timeout.
-  const compactionDeadlineMs =
-    typeof wakeOptions.deliveryTimeoutMs === "number" && wakeOptions.deliveryTimeoutMs > 0
-      ? Date.now() + wakeOptions.deliveryTimeoutMs
-      : undefined;
-  let currentOptions = wakeOptions;
-  const resolveRetryOptions = (): EmbeddedAgentQueueMessageOptions | undefined => {
-    if (compactionDeadlineMs === undefined) {
-      return currentOptions;
-    }
-    const remainingDeliveryTimeoutMs = compactionDeadlineMs - Date.now();
-    if (remainingDeliveryTimeoutMs <= 0) {
-      return undefined;
-    }
-    return {
-      ...currentOptions,
-      deliveryTimeoutMs: remainingDeliveryTimeoutMs,
-    };
-  };
-  const canInject = isSourceSessionAdmissionAllowed
-    ? () => isAttemptAllowed?.() !== false && isSourceSessionAdmissionAllowed()
-    : undefined;
-  const attemptWake = async (options: EmbeddedAgentQueueMessageOptions) => {
-    if (isAttemptAllowed?.() === false || isSourceSessionAdmissionAllowed?.() === false) {
-      return SOURCE_OWNER_CHANGED;
-    }
-    const result = canInject
-      ? await queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
-          sessionId,
-          message,
-          options,
-          canInject,
-        )
-      : await queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, message, options);
-    return isAttemptAllowed?.() === false ? SOURCE_OWNER_CHANGED : result;
-  };
-  let outcome = await attemptWake(currentOptions);
-  const compactionRetryDelaysMs = resolveCompactionSteerRetryDelaysMs();
-  let compactionRetryIndex = 0;
-  for (;;) {
-    if (outcome === SOURCE_OWNER_CHANGED) {
-      break;
-    }
-    if (outcome.queued || signal?.aborted) {
-      break;
-    }
-    if (isAttemptAllowed?.() === false || isSourceSessionAdmissionAllowed?.() === false) {
-      outcome = SOURCE_OWNER_CHANGED;
-      break;
-    }
-    if (outcome.reason === "compacting") {
-      const remainingDeliveryTimeoutMs =
-        compactionDeadlineMs === undefined ? undefined : compactionDeadlineMs - Date.now();
-      const canRetry =
-        remainingDeliveryTimeoutMs === undefined
-          ? compactionRetryIndex < compactionRetryDelaysMs.length
-          : remainingDeliveryTimeoutMs > 0;
-      if (!canRetry) {
-        break;
-      }
-      const scheduledDelayMs =
-        compactionRetryDelaysMs[
-          Math.min(compactionRetryIndex, compactionRetryDelaysMs.length - 1)
-        ] ?? 0;
-      const delayMs =
-        remainingDeliveryTimeoutMs === undefined
-          ? scheduledDelayMs
-          : Math.min(scheduledDelayMs, remainingDeliveryTimeoutMs);
-      if (delayMs <= 0 && remainingDeliveryTimeoutMs !== undefined) {
-        break;
-      }
-      await waitForAnnounceRetryDelay(delayMs, signal);
-      if (signal?.aborted) {
-        break;
-      }
-      compactionRetryIndex += 1;
-      const retryOptions = resolveRetryOptions();
-      if (!retryOptions) {
-        break;
-      }
-      outcome = await attemptWake(retryOptions);
-      continue;
-    }
-    break;
+  if (isAttemptAllowed?.() === false || isSourceSessionAdmissionAllowed?.() === false) {
+    return SOURCE_OWNER_CHANGED;
   }
-  return outcome;
+  const result = isSourceSessionAdmissionAllowed
+    ? await queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
+        sessionId,
+        message,
+        wakeOptions,
+        () => isAttemptAllowed?.() !== false && isSourceSessionAdmissionAllowed(),
+      )
+    : await queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, message, wakeOptions);
+  return isAttemptAllowed?.() === false ? SOURCE_OWNER_CHANGED : result;
 }
 
 export async function maybeSteerSubagentAnnounce(params: {
@@ -177,11 +88,10 @@ export async function maybeSteerSubagentAnnounce(params: {
       ? { currentInboundContext: params.currentInboundContext }
       : {}),
   };
-  const queueOutcome = await resolveActiveWakeWithRetries(
+  const queueOutcome = await resolveActiveWake(
     sessionId,
     params.steerMessage,
     queueOptions,
-    params.signal,
     params.isSourceSessionEffectsAllowed,
     params.isSourceSessionAdmissionAllowed,
   );

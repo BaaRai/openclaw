@@ -110,6 +110,12 @@ wakes, heartbeats, subagent completion handoffs, and restart-recovery resends. A
 owner's authentication, visibility, routing, idempotency, and acknowledgment
 contract; a common scheduling interface does not make those inputs equivalent.
 
+A subagent completion, a settled `sessions_yield` batch, or a paused child's
+notice is one input on the requester session, keyed by a stable reservation ID.
+The subagent registry keeps the durable obligation and decides whether it is
+owed; only the mailbox decides when it runs. See
+[Subagent yield handoff](/concepts/subagent-yield-handoff).
+
 Stop and lifecycle requests are control events. They must not wait behind the
 work they are supposed to cancel, or be dropped by ordinary mailbox overflow.
 
@@ -172,6 +178,10 @@ policy table:
 | `interrupt`                                         | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
 | `restart`, `operator-revocation`                    | Abort                              | Cancel captured inputs           | Keep                                         | Skip                                    | No                  |
 | `watchdog`, `supersede`                             | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
+
+A Stop that targets a subagent session with no running turn, but with a paused
+(`sessions_yield`) or queued registry row, kills that exact row. The kill retires
+the row's owed inputs; a later follow-up registers its own obligation.
 
 A run whose abort is frozen is already finalizing and refuses active
 cancellation. User sources still perform independent queue cleanup, controlled

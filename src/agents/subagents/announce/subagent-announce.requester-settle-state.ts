@@ -8,11 +8,6 @@ import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatc
 export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "retireAfterSettle">;
 
 export type RequesterSettleWakeBatchCallbacks = {
-  transitionBatch: (
-    batch: readonly SubagentRunRecord[],
-    state: RequesterSettleWakeBatchState,
-    onPublished: (entries: readonly SubagentRunRecord[]) => void,
-  ) => void | Promise<void>;
   completeBatch: (
     batch: readonly SubagentRunRecord[],
     rearmGeneration?: number,
@@ -20,46 +15,6 @@ export type RequesterSettleWakeBatchCallbacks = {
     onCommitted?: () => void,
   ) => void | Promise<void>;
 };
-
-const activeRequesterSettleWakeBatches = new Map<string, () => boolean>();
-
-/** Reads stay independent; the first prepared decision owns mutation and delivery. */
-export function createRequesterSettleBatchClaim(
-  key: string,
-  isGatewayCurrent: (() => boolean) | undefined,
-) {
-  const hadGatewayContext = isGatewayCurrent?.() === true;
-  if (isGatewayCurrent && !hadGatewayContext) {
-    return undefined;
-  }
-  const isGatewayClosed = () => {
-    try {
-      return hadGatewayContext && !isGatewayCurrent?.();
-    } catch {
-      // An incompatible captured batch cannot block a fresh Gateway owner.
-      return hadGatewayContext;
-    }
-  };
-  return {
-    isGatewayClosed,
-    claim: (): boolean => {
-      const owner = activeRequesterSettleWakeBatches.get(key);
-      if (owner === isGatewayClosed) {
-        return true;
-      }
-      if (owner?.() === false) {
-        return false;
-      }
-      activeRequesterSettleWakeBatches.set(key, isGatewayClosed);
-      return true;
-    },
-    release(): void {
-      if (activeRequesterSettleWakeBatches.get(key) === isGatewayClosed) {
-        activeRequesterSettleWakeBatches.delete(key);
-      }
-    },
-  };
-}
 
 export function retainedYieldIdentity(state: RequesterSettleWakeBatchState) {
   return {
@@ -77,14 +32,9 @@ export function readSharedBatchState(
   const states = batch
     .map((entry) => entry.requesterSettleWake)
     .filter((state): state is RequesterSettleWakeState => Boolean(state));
-  const dispatching = states.find((state) => state.status === "dispatching");
-  const source = dispatching ?? states[0];
+  const source = states[0];
   return {
-    status: source?.status ?? "pending",
     ...(source?.pauseNotice ? { pauseNotice: source.pauseNotice } : {}),
-    attemptCount: Math.max(0, ...states.map((state) => state.attemptCount)),
-    ...(source?.replayCount !== undefined ? { replayCount: source.replayCount } : {}),
-    ...(source?.nextAttemptAt !== undefined ? { nextAttemptAt: source.nextAttemptAt } : {}),
     ...(source?.batchRunIds ? { batchRunIds: [...source.batchRunIds] } : {}),
     ...(states.some((state) => state.requesterYieldBatch === true)
       ? { requesterYieldBatch: true }
@@ -94,7 +44,6 @@ export function readSharedBatchState(
       : {}),
     ...(source?.yieldedFinalDeliverable === true ? { yieldedFinalDeliverable: true } : {}),
     ...(source?.rearmGeneration !== undefined ? { rearmGeneration: source.rearmGeneration } : {}),
-    ...(source?.lastError !== undefined ? { lastError: source.lastError } : {}),
   };
 }
 

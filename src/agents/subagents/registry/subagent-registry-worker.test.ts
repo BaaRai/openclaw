@@ -292,7 +292,7 @@ it("settles a requester cohort while many children finish, wake, and one is kill
     ...entry(`child-${index}`),
     completion: { required: true },
     delivery: { status: "pending" as const },
-    requesterSettleWake: { status: "pending" as const, attemptCount: 0, rearmGeneration: 1 },
+    requesterSettleWake: { rearmGeneration: 1 },
   }));
   const stopped = {
     ...entry("killed"),
@@ -651,7 +651,7 @@ it("retains prepared announcement authority across bookkeeping and revokes it fo
 it("retains the execution's Gateway binding through immutable metadata publications", async () => {
   const child = entry("bound");
   child.execution = { status: "terminal", endedAt: 2 };
-  child.requesterSettleWake = { status: "pending", attemptCount: 0 };
+  child.requesterSettleWake = { attemptCount: 0 };
   const gateway = createGatewayContext();
   let gatewayOpen = true;
   const resolver = () => (gatewayOpen ? gateway : undefined);

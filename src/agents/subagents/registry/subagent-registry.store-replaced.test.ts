@@ -117,7 +117,7 @@ it.each([false, true])(
 
       replacement.subagent.requesterStorePath = "replacement-store";
       replacement.subagent.delivery = { status: "pending" };
-      replacement.subagent.requesterSettleWake = { status: "pending", attemptCount: 0 };
+      replacement.subagent.requesterSettleWake = { attemptCount: 0 };
       seedSubagentCompletionDelivery({ subagent: replacement.subagent });
       publishCommittedRecords(replacement.subagent);
       expect(
@@ -144,16 +144,10 @@ it.each([false, true])(
         isSourceCurrent: () => true,
         requesterSessionKey: input.subagent.requesterSessionKey,
         settledEntry,
-        transitionBatch: () => {
-          throw new Error("a replaced store must not admit a delivery attempt");
-        },
         completeBatch: async (batch, _generation, outcome, onCommitted) => {
           await settleRequesterCompletionBatch({
-            entries: batch.map((subagent) => ({
-              subagent,
-            })),
+            entries: batch,
             outcome: expectDefined(outcome, "store replacement disposition"),
-            isCurrent: () => batch.every((entry) => subagentRuns.get(entry.runId) === entry),
           });
           onCommitted?.();
         },

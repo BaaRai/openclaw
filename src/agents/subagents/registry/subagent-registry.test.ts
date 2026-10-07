@@ -753,8 +753,6 @@ describe("subagent registry seam flow", () => {
       completion: { required: true },
       delivery: { status: "pending" },
       requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
         batchRunIds: [runId],
         requesterYieldBatch: true,
         rearmGeneration: 1,
@@ -875,7 +873,6 @@ describe("subagent registry seam flow", () => {
     mocks,
     wakeRequester,
     bindWakeMutation: (entries) => bindWakeMutation(entries),
-    activateRegistry,
     recoveryRuntime,
   });
 
