@@ -9,7 +9,6 @@ import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
 } from "../infra/delivery-queue-state-context.js";
-import { isTruthyEnvValue } from "../infra/env.js";
 import type { GatewayActiveWorkInspectors } from "../infra/gateway-active-work.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { hasRestartSentinel } from "../infra/restart-sentinel.js";
@@ -35,9 +34,13 @@ import type { GatewayRecoveryRuntime } from "./server-instance-runtime.types.js"
 import type { GatewayClient, GatewayContextResolver } from "./server-methods/shared-types.js";
 import type { GatewayPluginRuntimeClaim } from "./server-plugin-runtime-generation.js";
 import type { refreshLatestUpdateRestartSentinel } from "./server-restart-sentinel.js";
-import type { GatewaySidecarStartupMode } from "./server-sidecar-startup-mode.js";
+import {
+  isChannelStartupSuppressedByEnvironment,
+  type GatewaySidecarStartupMode,
+} from "./server-sidecar-startup-mode.js";
 import { scheduleGatewayHandlerPrewarm } from "./server-startup-handler-prewarm.js";
 import type { logGatewayStartup } from "./server-startup-log.js";
+import { markGatewayStartupMainSessionOrphans } from "./server-startup-main-session-orphans.js";
 import {
   hydrateConfiguredExternalCliAuth,
   publishConfiguredModelRuntimeSnapshots,
@@ -72,10 +75,6 @@ type Awaitable<T> = T | Promise<T>;
 
 const loadMainSessionRestartRecoveryModule = createLazyRuntimeModule(
   () => import("../agents/main-session-recovery/main-session-restart-recovery.js"),
-);
-// Startup only needs orphan marking; keep resume and delivery runtime out of the pre-channel path.
-const loadMainSessionRestartRecoveryMarkingModule = createLazyRuntimeModule(
-  () => import("../agents/main-session-recovery/main-session-restart-recovery-marking.js"),
 );
 
 const loadAgentDefaultsModule = createLazyRuntimeModule(() => import("../agents/defaults.js"));
@@ -143,6 +142,7 @@ export async function startGatewaySidecars(params: {
   startupTrace?: GatewayStartupTrace;
   startupOutcomes?: GatewayStartupOutcomeRecorder;
   mainSessionRecoveryStartupCheckedStorePaths?: Set<string>;
+  isRestartRecoverySuppressed?: () => boolean;
   waitForPostReadyWork?: () => Promise<void>;
 }) {
   const restartSentinelContext =
@@ -195,30 +195,10 @@ export async function startGatewaySidecars(params: {
 
   const mainSessionRecoveryStartupCheckedStorePaths =
     params.mainSessionRecoveryStartupCheckedStorePaths ?? new Set<string>();
-  const skipChannels =
-    isTruthyEnvValue(process.env.OPENCLAW_SKIP_CHANNELS) ||
-    isTruthyEnvValue(process.env.OPENCLAW_SKIP_PROVIDERS);
+  const skipChannels = isChannelStartupSuppressedByEnvironment();
   // These runs were orphaned by the previous Gateway lifecycle. Record that fact
   // even if this process later fails model preparation and never starts channels.
-  await measureStartup(params.startupTrace, "sidecars.main-session-recovery", async () => {
-    try {
-      const { markStartupOrphanedMainSessionsForRecovery } = await measureStartup(
-        params.startupTrace,
-        "sidecars.main-session-recovery-load",
-        loadMainSessionRestartRecoveryMarkingModule,
-      );
-      await measureStartup(params.startupTrace, "sidecars.main-session-recovery-scan", () =>
-        markStartupOrphanedMainSessionsForRecovery({
-          cfg: params.cfg,
-          startupCheckedStorePaths: mainSessionRecoveryStartupCheckedStorePaths,
-        }),
-      );
-    } catch (err) {
-      params.log.warn(
-        `main-session startup orphan marking failed before channel startup: ${String(err)}`,
-      );
-    }
-  });
+  await markGatewayStartupMainSessionOrphans(params, mainSessionRecoveryStartupCheckedStorePaths);
   const getModelRuntimeConfig = params.getModelRuntimeConfig ?? (() => params.cfg);
   // Agent RPC remains available when transports are disabled. Publish configured/static facts before
   // accepting work; live provider catalogs stay advisory and never enter the Gateway lifecycle.
@@ -626,6 +606,7 @@ export async function startGatewayPostAttachRuntime(
     startChannels: () => Promise<void>;
     refreshChatMetadata?: () => Promise<void>;
     recoveryRuntime: GatewayRecoveryRuntime;
+    isRestartRecoverySuppressed: () => boolean;
     resolveGatewayContext: GatewayContextResolver;
     logHooks: {
       info: (msg: string) => void;
@@ -906,6 +887,7 @@ export async function startGatewayPostAttachRuntime(
                   broadcastPluginEvent: params.broadcastPluginEvent,
                   startupOutcomes,
                   mainSessionRecoveryStartupCheckedStorePaths,
+                  isRestartRecoverySuppressed: params.isRestartRecoverySuppressed,
                   waitForPostReadyWork: params.waitForPostReadyWork,
                 }),
               );

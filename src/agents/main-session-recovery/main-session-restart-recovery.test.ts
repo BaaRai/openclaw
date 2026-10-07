@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/index.js";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import {
   emptySqliteCounts,
   observeParentSqlite,
@@ -29,6 +29,7 @@ import { resolveAgentRestartRecoveryExecutionIdentityAdmission } from "../../gat
 import { callGateway } from "../../gateway/call.js";
 import type { RestartRecoveryCandidate } from "../../gateway/chat-abort.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
+import { createMockGatewayRecoveryRuntime } from "../../gateway/server-recovery-runtime.test-support.js";
 import { persistGatewaySessionLifecycleEvent } from "../../gateway/session-lifecycle-state.js";
 import {
   getAgentEventLifecycleGeneration,
@@ -417,10 +418,11 @@ async function loadTestTranscript(
   })) as Array<{ message?: Record<string, unknown> }>;
 }
 
-function observeRecoveryRootCompletions(
+function observeRecoveryRoots(
   expectedOrigin: "main-session:startup-recovery" | "main-session:restart-recovery",
   expectedCount: number,
 ) {
+  const requested = createDeferred();
   const completed = createDeferred();
   const admit = gatewayWorkAdmission.runWithGatewayIndependentRootWorkAdmission;
   let count = 0;
@@ -429,7 +431,11 @@ function observeRecoveryRootCompletions(
     .mockImplementation(
       async <T>(run: () => Promise<T>, origin?: string, signal?: AbortSignal): Promise<T> => {
         try {
-          return await admit(run, origin, signal);
+          const result = admit(run, origin, signal);
+          if (origin === expectedOrigin) {
+            requested.resolve();
+          }
+          return await result;
         } finally {
           if (origin === expectedOrigin && ++count === expectedCount) {
             completed.resolve();
@@ -437,7 +443,11 @@ function observeRecoveryRootCompletions(
         }
       },
     );
-  return { completed: completed.promise, restore: () => spy.mockRestore() };
+  return {
+    requested: requested.promise,
+    completed: completed.promise,
+    restore: () => spy.mockRestore(),
+  };
 }
 
 function getHarnessRecoveryFixture() {
@@ -3077,32 +3087,25 @@ describe("main-session-restart-recovery", () => {
     }
   });
 
-  it("stops startup recovery while its Gateway admission is suspended", async () => {
+  it("stops startup recovery while its Gateway admission is suspended", async ({ signal }) => {
     tmpDir = transcriptFixture.prepareRoot();
     const { storePath } = await makeMainSessionFixture({
       pendingFinalDelivery: makePendingFinalDelivery(),
     });
     const suspension = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspension).not.toBeNull();
-    vi.useFakeTimers();
+    const admission = observeRecoveryRoots("main-session:startup-recovery", 1);
     const recovery = scheduleRestartAbortedMainSessionRecovery({
       getConfig: () => ({}),
       delayMs: 0,
       stateDir: tmpDir,
     });
-    let stopping: Promise<void> | undefined;
     try {
-      await vi.advanceTimersByTimeAsync(0);
+      await withinTest(admission.requested, signal);
       expect(getActiveGatewayRootWorkCount()).toBe(0);
-      let stopped = false;
-      stopping = recovery.stop().then(() => {
-        stopped = true;
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(stopped).toBe(true);
+      await withinTest(recovery.stop(), signal);
 
       suspension?.rollback();
-      await vi.advanceTimersByTimeAsync(0);
       expect(callGateway).not.toHaveBeenCalled();
       expect(loadSessionEntry({ sessionKey: "agent:main:main", storePath })).toMatchObject({
         status: "running",
@@ -3110,8 +3113,8 @@ describe("main-session-restart-recovery", () => {
       });
     } finally {
       suspension?.rollback();
-      await (stopping ?? recovery.stop());
-      vi.useRealTimers();
+      await recovery.stop();
+      admission.restore();
     }
   });
 
@@ -3432,10 +3435,7 @@ describe("main-session-restart-recovery", () => {
         firstDispatch.resolve();
         return { runId: "run-resumed" };
       });
-      const attempts = observeRecoveryRootCompletions(
-        "main-session:startup-recovery",
-        transient ? 2 : 1,
-      );
+      const attempts = observeRecoveryRoots("main-session:startup-recovery", transient ? 2 : 1);
       const recovery = scheduleRestartAbortedMainSessionRecovery({
         getConfig: () => cfg,
         delayMs: transient ? 1 : 0,
@@ -3634,7 +3634,7 @@ describe("main-session-restart-recovery", () => {
       .mockResolvedValueOnce({ runId: "run-resumed", status: "running" })
       .mockResolvedValueOnce({ runId: "run-resumed" });
 
-    const attempts = observeRecoveryRootCompletions("main-session:restart-recovery", 2);
+    const attempts = observeRecoveryRoots("main-session:restart-recovery", 2);
     try {
       scheduleRestartAbortedMainSessionRecoveryAfterOwnerRelease({
         delayMs: 0,
@@ -3781,7 +3781,7 @@ describe("main-session-restart-recovery", () => {
       .mockRejectedValueOnce(new Error("final ambiguous dispatch failure"))
       .mockResolvedValueOnce({ runId: "run-resumed", status: "running" });
 
-    const attempts = observeRecoveryRootCompletions("main-session:restart-recovery", 2);
+    const attempts = observeRecoveryRoots("main-session:restart-recovery", 2);
     scheduleRestartAbortedMainSessionRecoveryAfterOwnerRelease({
       delayMs: 0,
       expectedSessionId: "main-session",
@@ -3916,12 +3916,10 @@ describe("main-session-restart-recovery", () => {
           message: "resume",
           sessionKey: "agent:main:main",
         },
-        gatewayRuntime: {
-          dispatchSessionMethod: vi.fn(),
+        gatewayRuntime: createMockGatewayRecoveryRuntime({
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
-          sendRecoveryNotice: vi.fn(),
           waitForAgent: vi.fn(),
-        },
+        }),
       });
 
       await vi.advanceTimersByTimeAsync(10_000);
@@ -3974,8 +3972,7 @@ describe("main-session-restart-recovery", () => {
         expectedSessionId: "main-session",
         sessionKey: "agent:main:main",
         storePath,
-        gatewayRuntime: {
-          dispatchSessionMethod: vi.fn(),
+        gatewayRuntime: createMockGatewayRecoveryRuntime({
           dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
           waitForAgent: vi.fn(async () => ({
             runId: "recovery-main",
@@ -3983,8 +3980,7 @@ describe("main-session-restart-recovery", () => {
             timeoutPhase: "queue",
             providerStarted: false,
           })) as GatewayRecoveryRuntime["waitForAgent"],
-          sendRecoveryNotice: vi.fn(),
-        },
+        }),
       });
 
       expect(result).toEqual({ started: 0, settled: 0, failed: 1, skipped: 0 });
@@ -4114,8 +4110,7 @@ describe("main-session-restart-recovery", () => {
           expectedSessionId: "main-session",
           sessionKey: "agent:main:main",
           storePath,
-          gatewayRuntime: {
-            dispatchSessionMethod: vi.fn(),
+          gatewayRuntime: createMockGatewayRecoveryRuntime({
             dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
             waitForAgent: vi.fn(async () => ({
               runId: "recovery-main",
@@ -4123,8 +4118,7 @@ describe("main-session-restart-recovery", () => {
               timeoutPhase: "queue",
               providerStarted: false,
             })) as GatewayRecoveryRuntime["waitForAgent"],
-            sendRecoveryNotice: vi.fn(),
-          },
+          }),
         });
 
         await accepted.promise;

@@ -290,6 +290,7 @@ export async function finishGatewayStartup(params: {
           deps,
           startChannels,
           recoveryRuntime: gatewayInstanceRuntime.recovery,
+          isRestartRecoverySuppressed: () => channelManager.getAutostartSuppression() !== null,
           resolveGatewayContext: gatewayRequestContext.resolveGatewayContext!,
           logHooks,
           logChannels,

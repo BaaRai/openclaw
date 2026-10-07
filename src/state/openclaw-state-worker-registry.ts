@@ -24,6 +24,7 @@ import type { WorkerTranscriptCommitOperations } from "../gateway/worker-environ
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type { DevicePairingWorkerOperations } from "../infra/device-pairing-worker-contract.js";
 import type { ExecAuthorizationWorkerOperations } from "../infra/exec-approvals-authorization.worker-contract.js";
+import type { gatewayBootOperations } from "../infra/gateway-boot-lifecycle.worker.js";
 import type { CurrentConversationBindingWorkerOperations } from "../infra/outbound/current-conversation-bindings.worker.js";
 import type { PromotionWorkerOperations } from "../infra/promotions-feed.worker.js";
 import type { ApnsRegistrationWorkerOperations } from "../infra/push-apns-store.worker-contract.js";
@@ -49,9 +50,11 @@ import type { TranscriptWriteOperations } from "../transcripts/store-write.worke
 import type { OnboardingRecommendationWriteOperations } from "./onboarding-recommendations.kernel.js";
 import type { RepositoryWorkspaceWorkerOperations } from "./session-repository-workspaces.worker-contract.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
+import type { WorkerOperations } from "./worker-operation-registry.js";
 import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
 
-export type RegisteredStateWorkerOperations = ClawProvenanceWriteOperations &
+export type RegisteredStateWorkerOperations = WorkerOperations<typeof gatewayBootOperations> &
+  ClawProvenanceWriteOperations &
   GeneratedHtmlProvenanceOperations &
   MentionWorkerOperations &
   ConfigSnapshotWorkerOperations &
@@ -102,6 +105,8 @@ export type RegisteredStateWorkerOperations = ClawProvenanceWriteOperations &
   UserProfileWorkerOperations;
 
 export const stateWorkerRegistry = createWorkerOperationRegistry<RegisteredStateWorkerOperations>({
+  gatewayBoot: () =>
+    import("../infra/gateway-boot-lifecycle.worker.js").then((m) => m.gatewayBootOperations),
   generatedHtmlProvenance: () =>
     import("../media/generated-html-provenance.worker.js").then(
       (m) => m.generatedHtmlProvenanceOperations,

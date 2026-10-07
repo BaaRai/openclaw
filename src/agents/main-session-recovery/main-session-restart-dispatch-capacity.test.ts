@@ -31,6 +31,7 @@ function recoveryRuntime(
       throw new Error("session dispatch is unused");
     },
     sendRecoveryNotice: async () => ({ suppressed: false }),
+    prepareRestartRecovery: () => undefined,
     waitForAgent,
   };
 }
