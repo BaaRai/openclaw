@@ -670,16 +670,17 @@ it.each(["delete", "stop"] as const)(
 
 it.each([
   { ending: "child stop", continuations: 1 },
+  { ending: "active child stop", continuations: 1 },
   { ending: "child delete", continuations: 1 },
   { ending: "parent stop", continuations: 0 },
 ] as const)(
   "resolves a yielded parent's only child after $ending with $continuations continuation",
   async ({ ending, continuations }) => {
-    // Stop reaches a dormant child through its registry row; Stop of an active child is a
-    // provisional kill that a late canonical completion may still replace.
+    // Stop reaches a dormant child through its registry row. Stop of an active child is
+    // confirmed when its controller operation settles, with no reconciliation delay.
     const script = startYieldedOnlyChildModel(ending === "child stop" ? "pause" : "hold");
     const model = await startScriptedModel(script.handle);
-    const label = `subagent-only-child-${ending.replace(" ", "-")}`;
+    const label = `subagent-only-child-${ending.replaceAll(" ", "-")}`;
     const gateway = await startProofGateway(model.url, label);
     const parentRunId = `${label}-parent`;
     const parentSessionKey = `agent:main:${parentRunId}`;
@@ -703,7 +704,7 @@ it.each([
           row.requesterSettleWake?.requesterYieldBatch === true &&
           (ending !== "child stop" || row.pauseReason === "sessions_yield"),
       );
-      if (ending === "child stop") {
+      if (ending === "child stop" || ending === "active child stop") {
         await expect(
           gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
         ).resolves.toMatchObject({ ok: true, status: "aborted" });
