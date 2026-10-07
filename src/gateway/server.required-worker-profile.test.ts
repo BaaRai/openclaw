@@ -116,7 +116,7 @@ test.each(["channel", "shared"] as const)(
       sessionId: inbound.sessionEntry.sessionId,
     };
     expect(identity.sessionKey).toBe(key);
-    expect(managedWorktrees.findLiveByOwner("session", key)).toBeUndefined();
+    expect(await managedWorktrees.findLiveByOwner("session", key)).toBeUndefined();
     if (kind === "shared") {
       expect(
         (await prepareSqliteTranscriptReadScope({ ...identity, storePath })).databaseAgentId,
@@ -172,7 +172,7 @@ test.each(["channel", "shared"] as const)(
         { waitForReady: false },
       );
       expect(() => retainedAssertion!()).toThrow("scope was released");
-      const worktree = managedWorktrees.findLiveByOwner("session", key)!;
+      const worktree = (await managedWorktrees.findLiveByOwner("session", key))!;
       ownedWorktrees.add(worktree.id);
       expect(await fs.readdir(worktree.path)).toEqual([".git"]);
       expect(loadSessionEntry({ ...identity, storePath })).toMatchObject({
@@ -195,13 +195,13 @@ test.each(["channel", "shared"] as const)(
         waitForReady: false,
       });
       expect(dispatch).toHaveBeenCalledOnce();
-      expect(managedWorktrees.findLiveByOwner("session", key)?.id).toBe(worktree.id);
+      expect((await managedWorktrees.findLiveByOwner("session", key))?.id).toBe(worktree.id);
       // Coordinator custody survives RPC completion, not a runtime selection change.
       expect(() => dispatchAssertion!()).not.toThrow();
       await patchSessionEntryCore({ ...identity, storePath }, () => ({ execNode: "other-node" }));
       expect(() => dispatchAssertion!()).toThrow("Session changed during worker admission");
     } finally {
-      const owned = managedWorktrees.findLiveByOwner("session", key);
+      const owned = await managedWorktrees.findLiveByOwner("session", key);
       if (owned) {
         ownedWorktrees.add(owned.id);
       }
@@ -347,11 +347,13 @@ test.each(["unallocated", "missing", "different", "matching"] as const)(
             : "another worker profile",
         );
         expect(dispatch).not.toHaveBeenCalled();
-        expect(managedWorktrees.findLiveByOwner("session", identity.sessionKey)).toBeUndefined();
+        expect(
+          await managedWorktrees.findLiveByOwner("session", identity.sessionKey),
+        ).toBeUndefined();
         expect(placements.get(identity.sessionId)).toEqual(failed);
       }
     } finally {
-      const owned = managedWorktrees.findLiveByOwner("session", identity.sessionKey);
+      const owned = await managedWorktrees.findLiveByOwner("session", identity.sessionKey);
       if (owned) {
         ownedWorktrees.add(owned.id);
       }
@@ -488,7 +490,7 @@ test.each([
     }
     expect(freshDispatch).not.toHaveBeenCalled();
     expect(freshWorkspace).not.toHaveBeenCalled();
-    expect(managedWorktrees.findLiveByOwner("session", identity.sessionKey)).toBeUndefined();
+    expect(await managedWorktrees.findLiveByOwner("session", identity.sessionKey)).toBeUndefined();
     expect(placements.get(identity.sessionId)).toEqual(terminal);
   },
 );

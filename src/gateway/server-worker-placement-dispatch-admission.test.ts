@@ -29,7 +29,7 @@ it.each(["replacement", "database-close"] as const)(
       store: { [identity.sessionKey]: entry },
     };
     const admit = createGatewayWorkerDispatchAdmission(async () => ({
-      managedWorktrees: { findLiveByOwner: () => undefined },
+      managedWorktrees: { findLiveByOwner: async () => undefined },
       resolveGatewaySessionStoreTargetWithStore: () => target,
       resolveCanonicalSessionEntryFromStoreKeys: () => entry,
     }));
