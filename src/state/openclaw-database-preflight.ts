@@ -29,6 +29,7 @@ import type {
   AgentDeletionJournalDisposition,
   AgentDeletionJournalPurpose,
 } from "./agent-deletion-journal.types.js";
+import { isArtifactPreservingStateRead } from "./artifact-preserving-state-reads.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
@@ -288,9 +289,12 @@ export async function preflightOpenClawStateDatabasePath(
 
 /** Read schema headers and optionally verify current schema shape without repairing it. */
 export async function preflightOpenClawDatabaseSchemas(
-  options: OpenClawDatabasePreflightOptions,
+  input: OpenClawDatabasePreflightOptions,
   purpose: AgentDeletionJournalPurpose = "maintenance",
 ): Promise<OpenClawDatabaseSchemaPreflight> {
+  const options = isArtifactPreservingStateRead("agent")
+    ? { ...input, preserveSourceArtifacts: true }
+    : input;
   options.signal?.throwIfAborted();
   const supportedVersions = options.supportedVersions ?? {
     state: OPENCLAW_STATE_SCHEMA_VERSION,

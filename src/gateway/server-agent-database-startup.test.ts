@@ -22,7 +22,6 @@ import {
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { sqliteWorkerPreloadEnv } from "../infra/sqlite-worker-preload.test-support.js";
 import * as workerCpu from "../infra/worker-cpu.js";
 import * as logging from "../logging/subsystem.js";
 import { runExec } from "../process/exec.js";
@@ -52,6 +51,7 @@ import { clearOpenClawAgentIntegrityVerification } from "../state/openclaw-quara
 import { resolveQuarantineStorePath } from "../state/openclaw-state-db.paths.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
+import { pauseIntegrityInspections } from "./server-agent-database-startup.test-support.js";
 import { loadGatewayTestConfig } from "./test-helpers.config-runtime.js";
 import { testState } from "./test-helpers.runtime-state.js";
 import {
@@ -72,76 +72,6 @@ afterEach(async () => {
     vi.unstubAllEnvs();
   }
 });
-
-function pauseIntegrityInspections(params: {
-  root: string;
-  paths: string[];
-  pausePaths?: string[];
-  pausePreparation?: boolean;
-  pauseSchema?: boolean;
-}) {
-  const releasePath = path.join(params.root, "release-inspection");
-  const enteredPaths = params.paths.map((_, index) =>
-    path.join(params.root, `inspection-entered-${index}`),
-  );
-  const preparationReleasePath = `${releasePath}-preparation`;
-  const releasePaths = params.paths.map((_, index) => `${releasePath}-${index}`);
-  const preparationReleasePaths = releasePaths.map((pathname) => `${pathname}-preparation`);
-  const preparationEnteredPaths = enteredPaths.map((pathname) => `${pathname}-preparation`);
-  const pausedPaths = params.pausePaths ?? params.paths;
-  const preload = path.join(params.root, "pause-inspection.cjs");
-  fs.writeFileSync(
-    preload,
-    `
-const fs = require('node:fs'), path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
-const { isMainThread, threadId } = require('node:worker_threads');
-const paths = ${JSON.stringify(params.paths.map((pathname) => fs.realpathSync.native(pathname)))};
-const paused = ${JSON.stringify(params.paths.map((pathname) => pausedPaths.includes(pathname)))};
-const preparation = ${params.pausePreparation === true} && (!isMainThread || process.argv[1]?.includes('sqlite-integrity.worker'));
-const markers = preparation ? ${JSON.stringify(preparationEnteredPaths)} : ${JSON.stringify(enteredPaths)};
-const release = preparation ? ${JSON.stringify(preparationReleasePath)} : ${JSON.stringify(releasePath)};
-const releases = preparation ? ${JSON.stringify(preparationReleasePaths)} : ${JSON.stringify(releasePaths)};
-let startupInspection = false;
-process.on('message', (request) => {
-  startupInspection = request?.type === 'inspect' && request.input?.requireStartupMigrationReadiness === true;
-});
-const prepare = DatabaseSync.prototype.prepare;
-DatabaseSync.prototype.prepare = function(sql) {
-  const location = this.location();
-  const selected = ${params.pauseSchema === true} && !preparation ? startupInspection && /PRAGMA user_version/i.test(sql) : /integrity_check/.test(sql);
-  const index = selected && location ? paths.indexOf(fs.realpathSync.native(location)) : -1;
-  if (index >= 0) {
-    // Existence is the shutdown gate; never expose a truncated PID.
-    const marker = markers[index];
-    const pendingMarker = marker + '.' + process.pid + '.tmp';
-    if (!isMainThread) fs.writeFileSync(marker + '.thread', String(threadId));
-    fs.writeFileSync(pendingMarker, String(process.pid));
-    fs.renameSync(pendingMarker, marker);
-    const pause = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 60000;
-    while (paused[index] && !fs.existsSync(release) && !fs.existsSync(releases[index])) {
-      if (Date.now() > deadline) throw new Error('inspection fixture pause expired');
-      Atomics.wait(pause, 0, 0, 10);
-    }
-  }
-  return prepare.call(this, sql);
-};
-`,
-  );
-  const env = sqliteWorkerPreloadEnv(preload);
-  for (const [key, value] of Object.entries(env)) {
-    vi.stubEnv(key, value);
-  }
-  return {
-    env,
-    releasePath,
-    releasePaths,
-    enteredPaths,
-    preparationReleasePath,
-    preparationEnteredPaths,
-  };
-}
 
 it.for([
   { outcome: "recover", agentId: "worker" },
@@ -396,16 +326,19 @@ it.for([
             },
           });
         }
-        return spawnBroker.runWithSpawnBroker(suppliedBroker, () => {
-          unadoptedPortClaim = undefined;
-          return startTestGatewayServer(portClaim, {
-            bind: "loopback",
-            auth: { mode: "none" },
-            ...(holdSubagentRestoration ? { sidecarStartup: "defer" as const } : {}),
-          });
-        });
+        return {
+          admission,
+          server: await spawnBroker.runWithSpawnBroker(suppliedBroker, () => {
+            unadoptedPortClaim = undefined;
+            return startTestGatewayServer(portClaim, {
+              bind: "loopback",
+              auth: { mode: "none" },
+              ...(holdSubagentRestoration ? { sidecarStartup: "defer" as const } : {}),
+            });
+          }),
+        };
       }).then((started) => {
-        server = started;
+        server = started.server;
         return started;
       });
       if (agentId === "main" && outcome === "physical-corrupt") {
@@ -417,7 +350,8 @@ it.for([
         await expect(fetch(`http://127.0.0.1:${port}/readyz`)).rejects.toThrow();
         return;
       }
-      server = await startup;
+      const started = await startup;
+      server = started.server;
       void server.startupSettled.then(
         () => {
           startupSettled = true;
@@ -434,12 +368,11 @@ it.for([
       }
       expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
       if (outcome === "corrupt") {
-        await vi.waitFor(() =>
-          expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
-            code: "agent-database-inspection-failed",
-            repairHint: expect.stringContaining("doctor --fix"),
-          }),
-        );
+        await started.admission.waitForAgentPreparation(agentId, { env, signal });
+        expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
+          code: "agent-database-inspection-failed",
+          repairHint: expect.stringContaining("doctor --fix"),
+        });
         expect(() => openOpenClawAgentDatabase(scope)).toThrow(AgentDatabaseAdmissionError);
         expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(
           agentId === "main" ? 503 : 200,

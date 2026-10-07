@@ -72,6 +72,44 @@ export function resolveInitialDoctorHealthContributions(params: {
       run: runInitialConfigWriteHealth,
     }),
     createDoctorHealthContribution({
+      id: "doctor:state-schema",
+      label: "Shared state schema",
+      updateWork: { kind: "inspection", scope: "run" },
+      healthChecks: {
+        description: "Pending shared-state migrations require explicit Doctor repair.",
+        async detect(ctx) {
+          const { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } =
+            await import("../state/openclaw-state-db-readonly.js");
+          const { readStateSchemaMigrationVersion } =
+            await import("../state/openclaw-state-db-schema-version.js");
+          const { OPENCLAW_STATE_SCHEMA_VERSION } =
+            await import("../state/openclaw-state-db-contract.js");
+          const { formatCliCommand } = await import("../cli/command-format.js");
+          const repairCommand = formatCliCommand("openclaw doctor --fix", ctx.env);
+          return (
+            withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+              ({ db, path }) => {
+                const version = readStateSchemaMigrationVersion(db);
+                return version < OPENCLAW_STATE_SCHEMA_VERSION
+                  ? [
+                      {
+                        checkId: "core/doctor/state-schema",
+                        severity: "warning" as const,
+                        requirement: "state-schema-migration-pending",
+                        message: `Shared state schema migration pending (${version} → ${OPENCLAW_STATE_SCHEMA_VERSION}); run ${repairCommand}.`,
+                        path,
+                        fixHint: `Run \`${repairCommand}\` to migrate the shared state database.`,
+                      },
+                    ]
+                  : [];
+              },
+              { env: ctx.env },
+            ) ?? []
+          );
+        },
+      },
+    }),
+    createDoctorHealthContribution({
       id: "doctor:agent-database-admission",
       label: "Agent database admission",
       healthChecks: {
