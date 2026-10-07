@@ -14,13 +14,9 @@ import {
 } from "./launchd-service-files.js";
 import { stopLaunchAgent } from "./launchd-stop.js";
 import { assertNoSystemLaunchDaemonOwnership } from "./launchd-system.js";
-import {
-  matchesScheduledTaskDefinition,
-  readScheduledTaskDefinition,
-  restoreScheduledTaskDefinition,
-  setScheduledTaskXmlEnabled,
-} from "./schtasks-control.js";
+import { readScheduledTaskDefinition, restoreScheduledTaskDefinition } from "./schtasks-control.js";
 import { resolveTaskLauncherScriptPath, resolveTaskScriptPath } from "./schtasks-layout.js";
+import { matchesScheduledTaskDefinition, setScheduledTaskXmlEnabled } from "./schtasks-xml.js";
 import { auditScheduledTaskDefinition } from "./service-audit-schtasks.js";
 import type { ServiceDefinitionDrift } from "./service-audit-types.js";
 import {
@@ -56,6 +52,21 @@ const backupPath = (file: string, id: string) => `${file}.reconcile-${id}.bak`;
 const taskBytes = (xml: string) =>
   Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, "utf16le")]);
 const taskPolicy = (xml: string) => sha256Hex(setScheduledTaskXmlEnabled(xml, false));
+function matchesRecordedTaskPolicy(
+  params: LiveContext,
+  receipt: GatewayServiceDefinitionBackupReceipt,
+  xml: string,
+): boolean {
+  const recorded = receipt.task?.afterPolicySha256;
+  const reference = params.taskReference?.xml;
+  return (
+    recorded !== undefined &&
+    (taskPolicy(xml) === recorded ||
+      (reference !== undefined &&
+        taskPolicy(reference) === recorded &&
+        matchesScheduledTaskDefinition(xml, reference, true)))
+  );
+}
 const receiptPath = (receipt: GatewayServiceDefinitionBackupReceipt) =>
   `${receipt.files[0]!.sourcePath}.reconcile-${receipt.id}.receipt.bak`;
 
@@ -190,14 +201,19 @@ function mutationHooks(
     }
     if (receipt.task) {
       const xml = await readScheduledTaskDefinition(params.env);
-      const reference = params.taskReference?.xml;
+      const observed = taskPolicy(xml);
       // Keep the published receipt digest convention. Only this live, hash-bound
       // reference can reconcile Scheduler's representation of an owned Enabled toggle.
-      const previous =
-        taskPolicy(xml) === receipt.task.afterPolicySha256 ||
-        (reference !== undefined &&
-          taskPolicy(reference) === receipt.task.afterPolicySha256 &&
-          matchesScheduledTaskDefinition(xml, reference, true));
+      const previous = matchesRecordedTaskPolicy(params, receipt, xml);
+      if (previous && observed !== receipt.task.afterPolicySha256) {
+        assertCurrent();
+        receipt.task.afterPolicySha256 = observed;
+        if (params.taskReference) {
+          params.taskReference.xml = xml;
+        }
+        await checkpointReceipt(params, receipt);
+        return beforeWrite(settlePrepared);
+      }
       if (settlePrepared && receipt.task.preparedXml) {
         receipt.task.recoveredPolicy = previous ? "previous" : "prepared";
         if (previous) {
@@ -344,13 +360,16 @@ export async function captureGatewayServiceDefinitionBackup(
       const changed =
         prepared.receipt.files.some((file) => !isDeepStrictEqual(file.before, file.after)) ||
         (prepared.task !== null &&
-          prepared.receipt.task?.afterPolicySha256 !==
-            taskPolicy(prepared.task.subarray(2).toString("utf16le")));
-      if (!changed) {
-        return false;
+          !matchesRecordedTaskPolicy(
+            live,
+            prepared.receipt,
+            prepared.task.subarray(2).toString("utf16le"),
+          ));
+      if (changed) {
+        await restorePreparedGatewayServiceDefinitionBackup(live, prepared);
       }
-      await restorePreparedGatewayServiceDefinitionBackup(live, prepared);
-      return true;
+      Object.assign(receipt, prepared.receipt);
+      return changed;
     },
   };
 }
@@ -480,7 +499,7 @@ async function restorePreparedGatewayServiceDefinitionBackup(
         await reloadSystemdUserManager(params.env, undefined, hooks.assertCurrent);
         await hooks.beforeWrite();
       }
-      if (file === primary && taskXml && receipt.task!.afterPolicySha256 !== taskPolicy(taskXml)) {
+      if (file === primary && taskXml && !matchesRecordedTaskPolicy(params, receipt, taskXml)) {
         try {
           await restoreScheduledTaskDefinition({
             env: params.env,

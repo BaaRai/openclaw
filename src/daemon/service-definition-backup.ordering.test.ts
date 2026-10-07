@@ -1,5 +1,7 @@
 import "./service-definition-backup.mocks.test-support.js";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { DOMParser } from "linkedom";
 import { expect, it, vi } from "vitest";
@@ -52,7 +54,7 @@ function taskReference(xml: string): string {
   return command;
 }
 
-it("keeps Enabled equivalence bound to live XML without changing persisted receipt digests", async () => {
+it("checkpoints observed Enabled policy in the legacy receipt format for standalone rollback", async () => {
   const f = await fixture("win32");
   const original = f.originalTask.replace("\n    <Enabled>true</Enabled>", "");
   f.setTask(original);
@@ -64,10 +66,18 @@ it("keeps Enabled equivalence bound to live XML without changing persisted recei
   );
   f.setTask(disabled);
   await capture.hooks.beforeWrite();
-  expect(await capture.finish()).toEqual(recorded);
-  await expect(verifyGatewayServiceDefinitionBackup({ ...f, receipt: recorded })).rejects.toThrow(
-    "Scheduled Task changed",
+  const finished = await capture.finish();
+  await expect(
+    verifyGatewayServiceDefinitionBackup({ ...f, receipt: finished }),
+  ).resolves.toBeUndefined();
+  expect(finished.task?.afterPolicySha256).toBe(
+    createHash("sha256").update(disabled).digest("hex"),
   );
+  expect(finished.task?.afterPolicySha256).not.toBe(recorded.task?.afterPolicySha256);
+  expect(await readRetainedReceipt(capture.backupPaths)).toEqual(finished);
+  await expect(capture.compensate()).resolves.toBe(false);
+  expect(native.task.mock.calls.some(([args]) => args[0] === "/Create")).toBe(false);
+  expect(f.task()).toBe(disabled);
   const foreign = disabled.replace("<Count>0</Count>", "<Count>7</Count>");
   f.setTask(foreign);
   await expect(capture.hooks.beforeWrite()).rejects.toThrow("Scheduled Task changed");
@@ -607,6 +617,17 @@ it.each(
     expect(stop).toHaveBeenCalledTimes(running ? 1 : 0);
     expect(native.task.mock.calls.filter(([args]) => args[0] === "/Run")).toHaveLength(
       phase === "activation" ? 2 : running ? 1 : 0,
+    );
+    const retained = (await fs.readdir(path.dirname(f.sourcePath)))
+      .filter((file) => file.endsWith(".receipt.bak"))
+      .map((file) => path.join(path.dirname(f.sourcePath), file))
+      .filter((file) => !f.capture.backupPaths.includes(file));
+    expect(retained).toHaveLength(1);
+    await expect(
+      verifyGatewayServiceDefinitionBackup({ ...f, receipt: await readRetainedReceipt(retained) }),
+    ).resolves.toBeUndefined();
+    expect(native.task.mock.calls.filter(([args]) => args[0] === "/Create")).toHaveLength(
+      phase === "activation" ? 2 : 0,
     );
   },
 );

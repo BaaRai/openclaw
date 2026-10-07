@@ -3,11 +3,9 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { sha256Hex } from "../infra/crypto-digest.js";
 import {
-  matchesScheduledTaskDefinition,
   readScheduledTaskDefinition,
   restoreScheduledTaskDefinition,
   resumeScheduledTaskAutoStartAfterUpdate,
-  setScheduledTaskXmlEnabled,
   suspendScheduledTaskAutoStartForUpdate,
 } from "./schtasks-control.js";
 import { execSchtasks } from "./schtasks-exec.js";
@@ -23,6 +21,7 @@ import {
   waitForScheduledTaskRunningEvidence,
 } from "./schtasks-runtime.js";
 import { probeScheduledTaskExists, probeScheduledTaskState } from "./schtasks-state-probe.js";
+import { matchesScheduledTaskDefinition, setScheduledTaskXmlEnabled } from "./schtasks-xml.js";
 import {
   matchesServiceFilePublication,
   publishServiceFile,
