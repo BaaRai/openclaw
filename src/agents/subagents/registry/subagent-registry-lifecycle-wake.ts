@@ -18,8 +18,6 @@ import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   assertSubagentRegistryWriteSourceCurrent,
   mutateSubagentRuns,
-  SubagentRegistryMutationRejectedError,
-  SubagentRegistryWriteError,
 } from "./subagent-registry-persistence.js";
 import { settleRequesterSettleWakeBatch } from "./subagent-registry-requester-wake-mutation.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -66,7 +64,10 @@ function releaseRequesterSettleWakeBatch(
   }
 }
 
-/** Kill, suppression, and deletion retire a child's owed inputs and its cohort membership. */
+/**
+ * Kill, suppression, and deletion retire a child's owed inputs and its cohort membership.
+ * Whatever wake the current row still owes is retired; a wake already settled needs nothing.
+ */
 export async function retireSubagentObligations(
   context: SubagentLifecycleWakeContext,
   entry: SubagentRunRecord,
@@ -74,8 +75,7 @@ export async function retireSubagentObligations(
 ): Promise<void> {
   assertCurrent();
   retireSubagentControllerInputs(entry);
-  const wake = entry.requesterSettleWake;
-  if (!wake || entry.execution.status !== "terminal" || entry.pauseReason === "sessions_yield") {
+  if (!entry.requesterSettleWake) {
     return;
   }
   const workerContext = captureOpenClawStateWorkerContext();
@@ -83,28 +83,30 @@ export async function retireSubagentObligations(
     [entry.runId],
     (rows) => {
       const current = rows.get(entry.runId);
+      const wake = current?.requesterSettleWake;
       if (
-        !isSameSubagentRunOwner(current, entry) ||
         !current ||
+        !isSameSubagentRunOwner(current, entry) ||
+        !wake ||
         current.execution.status !== "terminal" ||
-        current.pauseReason === "sessions_yield" ||
-        current.requesterSettleWake?.rearmGeneration !== wake.rearmGeneration ||
-        !isDeepStrictEqual(current.requesterSettleWake?.batchRunIds, wake.batchRunIds)
+        current.pauseReason === "sessions_yield"
       ) {
-        throw new SubagentRegistryMutationRejectedError(
-          "Subagent completion changed during cancellation; retry.",
-        );
+        return { value: undefined };
       }
       const next = structuredClone(current);
       next.suppressCompletionDelivery = true;
       next.requesterSettleWake = undefined;
-      return { value: next, postimages: new Map([[next.runId, next]]) };
+      return { value: wake, postimages: new Map([[next.runId, next]]) };
     },
     {
       runs: context.options.runs,
       context: workerContext,
       assertCurrent,
-      onPublished: (_postimages, published) => {
+      onPublished: (postimages, wake) => {
+        const published = postimages.get(entry.runId);
+        if (!wake || !published) {
+          return;
+        }
         const requesterAgentId = resolveSubagentRequesterAgentId(
           context.options.getRuntimeConfig(),
           published,
@@ -121,16 +123,7 @@ export async function retireSubagentObligations(
         releaseRequesterSettleWakeBatch(context, [published], wake.rearmGeneration, workerContext);
       },
     },
-  ).catch((error: unknown) => {
-    if (error instanceof SubagentRegistryWriteError && error.outcome !== "not-committed") {
-      throw error;
-    }
-    const current = context.options.runs.get(entry.runId);
-    if (current && isSameSubagentRunOwner(current, entry)) {
-      scheduleRequesterSettleWake(context, current.runId, current, workerContext);
-    }
-    throw error;
-  });
+  );
 }
 
 /** One in-flight evaluation per owed continuation; members of one cohort share it. */

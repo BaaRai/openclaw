@@ -3,7 +3,7 @@
 import { useSubagentControlFixture } from "./subagent-control.test-support.js";
 import { rename } from "node:fs/promises";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { observeHostDataSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { captureGatewayOperatorRunAuthority } from "../../../gateway/operator-run-authority.js";
@@ -96,6 +96,12 @@ async function registerCompletion(
   });
   fixture.capture.mockResolvedValue("Synthetic completed result.");
   fixture.wake.mockResolvedValue(false);
+  if (options.holdForRequester) {
+    // The session controller reports the spawning requester turn as still running.
+    const { holdLiveRequesterTurns } =
+      await import("./subagent-requester-turn-liveness.test-support.js");
+    onTestFinished(holdLiveRequesterTurns("held-requester-turn").restore);
+  }
   await registerSubagentRun({
     runId,
     childSessionKey,
@@ -506,6 +512,9 @@ it.each(["current", "revoked", "source switched", "yielded"] as const)(
         return await waitResult.promise;
       });
     }
+    const { holdLiveRequesterTurns } =
+      await import("./subagent-requester-turn-liveness.test-support.js");
+    onTestFinished(holdLiveRequesterTurns("held-parent-turn").restore);
     await registerSubagentRun({
       runId,
       childSessionKey,
