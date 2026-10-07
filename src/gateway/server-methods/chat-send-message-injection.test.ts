@@ -39,15 +39,18 @@ import type { GatewayRequestContext } from "./types.js";
 vi.mock("../../auto-reply/reply/dispatch-from-config.audit.js", () => ({
   emitInboundMessageAuditTerminal: vi.fn(),
 }));
-vi.mock(import("../../sessions/session-controller.js"), async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    beginReplyMessageInjectionTarget: vi.fn<typeof actual.beginReplyMessageInjectionTarget>(),
-    finalizeReplyMessageInjectionAttempt:
-      vi.fn<typeof actual.finalizeReplyMessageInjectionAttempt>(),
-  };
-});
+vi.mock(
+  import("../../sessions/session-controller.message-injection.js"),
+  async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+      ...actual,
+      beginReplyMessageInjectionTarget: vi.fn<typeof actual.beginReplyMessageInjectionTarget>(),
+      finalizeReplyMessageInjectionAttempt:
+        vi.fn<typeof actual.finalizeReplyMessageInjectionAttempt>(),
+    };
+  },
+);
 vi.mock("../../auto-reply/reply/message-received-hooks.js", () => ({
   emitMessageReceivedHooks: vi.fn(),
 }));

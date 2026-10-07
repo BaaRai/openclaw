@@ -57,11 +57,11 @@ import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RawData, WebSocket } from "ws";
 import { installQueueRuntimeErrorSilencer } from "../../auto-reply/reply/queue.test-helpers.js";
-import * as sessionControllerModule from "../../sessions/session-controller.js";
 import {
   createReplyOperation,
   bindSessionControllerSourceTurnId,
 } from "../../sessions/session-controller.js";
+import * as sessionControllerModule from "../../sessions/session-controller.message-injection.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
