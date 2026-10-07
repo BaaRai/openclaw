@@ -28,6 +28,7 @@ import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
 import { createHostedGatewayTools } from "./openclaw-tools.gateway.js";
 import {
+  isToolAllowedByFactoryPolicy,
   isToolExplicitlyAllowedByFactoryPolicy,
   mergeFactoryPolicyList,
   resolveImageToolFactoryAvailable,
@@ -136,8 +137,16 @@ export async function createOpenClawToolsWithPreparation(
     : await createOpenClawDelegateToolsForRunAsync({ ...captured, sessionAgentId }, shared);
   shared.assertCurrent();
   captured.assertInvocationCurrent?.();
+  const webSearchEnabled =
+    captured.webSearchEnabled !== false &&
+    isToolAllowedByFactoryPolicy({
+      toolName: "web_search",
+      config: captured.config,
+      toolAllowlist: captured.pluginToolAllowlist,
+      toolDenylist: captured.pluginToolDenylist,
+    });
   const webSearchConfigured =
-    captured.webSearchEnabled === false || captured.config?.tools?.web?.search?.enabled === false
+    !webSearchEnabled || captured.config?.tools?.web?.search?.enabled === false
       ? undefined
       : await prepareWebSearchConfiguration({
           config: captured.config,
@@ -150,7 +159,7 @@ export async function createOpenClawToolsWithPreparation(
         });
   shared.assertCurrent();
   captured.assertInvocationCurrent?.();
-  return createOpenClawTools(captured, delegated, webSearchConfigured);
+  return createOpenClawTools({ ...captured, webSearchEnabled }, delegated, webSearchConfigured);
 }
 
 /** @deprecated Use createOpenClawToolsAsync for runtime construction. */
@@ -282,7 +291,14 @@ export function createOpenClawTools(
   let webSearchTool = createWebSearchTool({
     ...options,
     agentDir: webSearchAgentDir,
-    enabled: options?.webSearchEnabled,
+    enabled:
+      options?.webSearchEnabled !== false &&
+      isToolAllowedByFactoryPolicy({
+        toolName: "web_search",
+        config: availabilityConfig ?? resolvedConfig,
+        toolAllowlist: options?.pluginToolAllowlist,
+        toolDenylist: options?.pluginToolDenylist,
+      }),
     runtimeWebSearch: runtimeWebTools?.search,
     lateBindRuntimeConfig: true,
   });
