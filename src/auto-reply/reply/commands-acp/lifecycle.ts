@@ -26,6 +26,13 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { getGatewayLocalUserIngress } from "../../../gateway/local-user-ingress.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { getSessionBindingService } from "../../../infra/outbound/session-binding-service.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionControllerStop,
+  stopSession,
+} from "../../../sessions/session-controller.stop.js";
+import { stopSubagentsForRequester } from "../abort-operation.js";
+import { formatAbortReplyText } from "../abort.js";
 import { prepareChannelRunAdmission } from "../channel-run-admission.js";
 import { commandReply } from "../command-gates.js";
 import type { CommandHandlerResult, HandleCommandsParams } from "../commands-types.js";
@@ -319,6 +326,10 @@ async function withResolvedAcpSessionTarget(params: {
   });
 }
 
+/**
+ * Stops the target's controller turns with source `client-session`. When Stop finds no
+ * turn or waiting input, it sends ACP cancel to a backend that may still be running.
+ */
 export async function handleAcpCancelAction(
   params: HandleCommandsParams,
   restTokens: string[],
@@ -329,13 +340,45 @@ export async function handleAcpCancelAction(
     run: async ({ acpManager, sessionKey, agentId }) =>
       await withAcpCommandErrorBoundary({
         run: async () => {
-          await acpManager.cancelSession({
-            assertActive: params.command.assertOwnerCurrent,
+          const assertCurrent = params.command.assertOwnerCurrent;
+          const { storePath } = resolveSessionStorePathForAcp({
             cfg: params.cfg,
             sessionKey,
             agentId,
-            reason: "manual-cancel",
           });
+          const stop = stopSession({
+            source: "client-session",
+            capture: captureSessionControllerStop({
+              targets: [captureSessionTarget({ storeScope: storePath, sessionKey, agentId })],
+            }),
+            assertCurrent,
+            hookContext: {
+              sessionKey,
+              commandSource: params.command.surface,
+              senderId: params.command.senderId,
+            },
+            stopChildren: (applyParentStop) =>
+              stopSubagentsForRequester({
+                cfg: params.cfg,
+                requesterSessionKey: sessionKey,
+                requesterAgentId: agentId,
+                assertCurrent,
+                beforeKill: applyParentStop,
+              }),
+          });
+          const outcome = await stop.completed;
+          if (outcome.alreadyFinalizing && !outcome.aborted) {
+            return commandReply(formatAbortReplyText(outcome.childrenStopped, "finalizing"));
+          }
+          if (!outcome.aborted && outcome.queuedCancelled === 0) {
+            await acpManager.cancelSession({
+              assertActive: assertCurrent,
+              cfg: params.cfg,
+              sessionKey,
+              agentId,
+              reason: "manual-cancel",
+            });
+          }
           return commandReply(`✅ Cancel requested for ACP session ${sessionKey}.`);
         },
         fallbackMessage: "ACP cancel failed before completion.",
