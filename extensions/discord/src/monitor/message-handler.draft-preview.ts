@@ -306,6 +306,7 @@ export function createDiscordDraftPreviewController(params: {
       draftChunker.append(delta);
       draftChunker.drain({
         force: false,
+        mutablePreview: true,
         emit: (chunk, metadata) => {
           draftText += metadata?.sourceText ?? chunk;
           draftStream.update(draftText);

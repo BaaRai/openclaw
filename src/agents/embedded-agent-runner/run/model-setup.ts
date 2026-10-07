@@ -396,7 +396,6 @@ export async function resolveEmbeddedRunModelSetup(params: {
       (catalog?.entries.some(ownsSelectedNativeModel) === true ||
         catalog?.routeVariants.some(ownsSelectedNativeModel) === true));
   const modelConfigProvider = provider;
-  let resolvedModelProvider = provider;
   let modelResolution;
   if (nativeModelOwned) {
     modelResolution = {
@@ -429,13 +428,12 @@ export async function resolveEmbeddedRunModelSetup(params: {
       preparedModelRuntime: params.preparedModelRuntime,
       staticCatalogOwnsTransport: pluginHarnessOwnsTransport,
     });
-    resolvedModelProvider = tieredResolution.provider;
+    provider = tieredResolution.provider;
     modelResolution = tieredResolution.resolution;
     if (modelResolution.model) {
       modelId = modelResolution.logicalRef.model;
     }
   }
-  provider = resolvedModelProvider;
   if (!modelResolution.model) {
     if (nativeCatalogFailure) {
       throw nativeCatalogFailure.error;
