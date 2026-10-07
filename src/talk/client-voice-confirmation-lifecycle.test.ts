@@ -10,7 +10,12 @@ import {
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import {
   authorizeClientVoiceConfirmation,
@@ -134,6 +139,53 @@ describe("client voice confirmation lifecycle", () => {
     await completeRun("run-active");
     expect(resolveClientVoiceRunBinding("run-active")).toBeUndefined();
     expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
+  });
+
+  it("keeps shared-state close pending after a live consult loses read admission", async () => {
+    const database = openOpenClawStateDatabase();
+    const context = captureOpenClawStateWorkerContext();
+    const sessionKey = "agent:main:state-close";
+    const runId = "state-close-consult";
+    const voiceSessionId = createOrResumeClientVoiceSession({
+      agentId: "main",
+      sessionKey,
+      origin: "client",
+    });
+    const voiceClose = prepareClientVoiceSessionClose();
+    const root = tryBeginGatewayRootWorkAdmission()!;
+    await root.run(async () => registerRun("main", voiceSessionId, sessionKey, runId));
+    let voiceDrained = false;
+    let stateClosed = false;
+    const voiceDrain = voiceClose.drain().then(() => {
+      voiceDrained = true;
+    });
+    const stateClose = closeOpenClawStateDatabaseAsync().then(() => {
+      stateClosed = true;
+    });
+    try {
+      expect(() => context.admission.assertCurrent()).toThrow();
+      emitTrustedDiagnosticEvent({
+        type: "tool.execution.started",
+        runId,
+        toolCallId: "after-state-fence",
+        toolName: "message",
+        mutatingAction: true,
+      });
+      await nextEventLoopTurn();
+      expect(resolveClientVoiceRunBinding(runId)).toMatchObject({ voiceSessionId });
+      expect(voiceDrained, "failed entry cannot release the live run's persistence custody").toBe(
+        false,
+      );
+      expect(stateClosed).toBe(false);
+      expect(database.db.isOpen).toBe(true);
+      root.release();
+      await Promise.all([voiceDrain, stateClose]);
+      expect(database.db.isOpen).toBe(false);
+      expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
+    } finally {
+      root.release();
+      await Promise.all([voiceDrain, stateClose]);
+    }
   });
 
   it.each(["before launch", "after ACK", "runtime reset"] as const)(
@@ -305,3 +357,4 @@ describe("client voice confirmation lifecycle", () => {
     expect(snapshotClientVoiceConfirmationStateForTest().approvedGrants).toBe(0);
   });
 });
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";

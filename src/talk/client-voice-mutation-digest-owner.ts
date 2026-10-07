@@ -144,6 +144,20 @@ type MutationDigestAttempt<TContext> = {
   generation: number;
 };
 
+type MutationDigestOptions<TContext> = {
+  attempt: (intent: {
+    agentId: string;
+    voiceSessionId: string;
+    context: TContext;
+    signal: AbortSignal;
+  }) => Promise<boolean>;
+  warn: (message: string) => void;
+  captureAttempt?: (context: TContext) => MutationDigestSettlement;
+  matchesRetryContext?: (previous: TContext, next: TContext) => boolean;
+  deliveryState?: (context: TContext) => "unsent" | "confirmed" | "uncertain";
+  updateContext?: (previous: TContext, next: TContext) => TContext;
+};
+
 export class ClientVoiceMutationDigestOwner<TContext> {
   private readonly intents = new Map<string, MutationDigestIntent<TContext>>();
   private readonly pendingKeys = new Set<string>();
@@ -153,21 +167,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
   private generation = 0;
   private readonly policy = CLIENT_VOICE_MUTATION_DIGEST_POLICY;
 
-  constructor(
-    private readonly options: {
-      attempt: (intent: {
-        agentId: string;
-        voiceSessionId: string;
-        context: TContext;
-        signal: AbortSignal;
-      }) => Promise<boolean>;
-      warn: (message: string) => void;
-      captureAttempt?: (context: TContext) => MutationDigestSettlement;
-      matchesRetryContext?: (previous: TContext, next: TContext) => boolean;
-      deliveryState?: (context: TContext) => "unsent" | "confirmed" | "uncertain";
-      updateContext?: (previous: TContext, next: TContext) => TContext;
-    },
-  ) {}
+  constructor(private readonly options: MutationDigestOptions<TContext>) {}
 
   record(params: { agentId: string; voiceSessionId: string; context: TContext }): void {
     const key = this.key(params);
@@ -224,23 +224,26 @@ export class ClientVoiceMutationDigestOwner<TContext> {
   }
 
   retryAgent(agentId: string, context: TContext): void {
-    for (const [key, intent] of this.intents) {
-      if (
-        intent.agentId !== agentId ||
-        intent.retryBlocked ||
-        this.options.matchesRetryContext?.(intent.context, context) === false
-      ) {
-        continue;
+    try {
+      for (const [key, intent] of this.intents) {
+        if (
+          intent.agentId !== agentId ||
+          intent.retryBlocked ||
+          this.options.matchesRetryContext?.(intent.context, context) === false
+        ) {
+          continue;
+        }
+        intent.context = this.options.updateContext?.(intent.context, context) ?? context;
+        intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
+        if (this.activeAttempts.has(key)) {
+          this.retryAfterActiveKeys.add(key);
+        } else {
+          this.pendingKeys.add(key);
+        }
       }
-      intent.context = this.options.updateContext?.(intent.context, context) ?? context;
-      intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
-      if (this.activeAttempts.has(key)) {
-        this.retryAfterActiveKeys.add(key);
-      } else {
-        this.pendingKeys.add(key);
-      }
+    } finally {
+      this.pump();
     }
-    this.pump();
   }
 
   snapshot(): {
@@ -470,13 +473,13 @@ function sameMutationDigestSource(previous: MutationDigestContext, next: Mutatio
   );
 }
 
-export function createClientVoiceMutationDigestDeliveryOwner(
+export function createClientVoiceMutationDigestDeliveryOptions(
   hasLiveConsultRun: (record: ClientVoiceSessionRecord) => boolean,
   captureAttempt: (
     source?: ClientVoiceSessionSource["settlementContext"],
   ) => MutationDigestSettlement,
-) {
-  return new ClientVoiceMutationDigestOwner<MutationDigestContext>({
+): MutationDigestOptions<MutationDigestContext> {
+  return {
     captureAttempt: (context) => captureAttempt(context.source.settlementContext),
     matchesRetryContext: sameMutationDigestSource,
     deliveryState: ({ delivery }) =>
@@ -511,5 +514,5 @@ export function createClientVoiceMutationDigestDeliveryOwner(
       return true;
     },
     warn: (message) => console.warn(`[talk] deferred voice mutation digest failed: ${message}`),
-  });
+  };
 }

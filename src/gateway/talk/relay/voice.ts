@@ -76,42 +76,48 @@ export function enqueueRelayVoiceTranscript(
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
   const source = retainedSource ?? captureClientVoiceSessionSource(agentId);
   const settlement = captureClientVoiceSessionSettlement(source.settlementContext);
-  const admission = settlement.run(() =>
-    session.voiceTranscriptQueue.enqueue(
-      async () => {
-        let lastError: unknown;
-        for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
-          if (delayMs > 0) {
-            await sleep(delayMs);
-          }
-          try {
-            await appendRelayVoiceTranscript(
-              {
-                agentId,
-                sessionKey,
-                sessionTarget: { sessionKey: canonicalKey, storePath },
-                voiceSessionId: session.id,
-                entryId,
-                role,
-                text: normalizedText,
-                confirmation: observed?.confirmation ?? null,
-                ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
-              },
-              source,
-            );
-            return;
-          } catch (error) {
-            if (hasSqliteWorkerOutcomeUnknown(error)) {
-              throw error;
+  let admission: ReturnType<typeof session.voiceTranscriptQueue.enqueue<void>>;
+  try {
+    admission = settlement.run(() =>
+      session.voiceTranscriptQueue.enqueue(
+        async () => {
+          let lastError: unknown;
+          for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
+            if (delayMs > 0) {
+              await sleep(delayMs);
             }
-            lastError = error;
+            try {
+              await appendRelayVoiceTranscript(
+                {
+                  agentId,
+                  sessionKey,
+                  sessionTarget: { sessionKey: canonicalKey, storePath },
+                  voiceSessionId: session.id,
+                  entryId,
+                  role,
+                  text: normalizedText,
+                  confirmation: observed?.confirmation ?? null,
+                  ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
+                },
+                source,
+              );
+              return;
+            } catch (error) {
+              if (hasSqliteWorkerOutcomeUnknown(error)) {
+                throw error;
+              }
+              lastError = error;
+            }
           }
-        }
-        throw lastError;
-      },
-      { weight: normalizedText.length },
-    ),
-  );
+          throw lastError;
+        },
+        { weight: normalizedText.length },
+      ),
+    );
+  } catch (error) {
+    settlement.release();
+    throw error;
+  }
   if (!admission.accepted) {
     settlement.release();
     session.confirmationReadiness.fail(

@@ -10,6 +10,42 @@ async function flushMicrotasks(): Promise<void> {
 describe("client voice mutation digest owner", () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
   afterEach(() => vi.useRealTimers());
+  it("drains the accepted retry prefix when a later intent loses admission", async () => {
+    let retrying = false;
+    const refused = new Error("second intent admission closed");
+    const releases: ReturnType<typeof vi.fn>[] = [];
+    const attempt = vi.fn(async () => retrying);
+    const owner = new ClientVoiceMutationDigestOwner<number>({
+      attempt,
+      warn: vi.fn(),
+      updateContext: (previous) => previous,
+      captureAttempt(context) {
+        if (retrying && context === 2) {
+          throw refused;
+        }
+        const release = vi.fn();
+        releases.push(release);
+        return { run: (run) => run(), release };
+      },
+    });
+    try {
+      owner.record({ agentId: "a", voiceSessionId: "first", context: 1 });
+      owner.record({ agentId: "a", voiceSessionId: "second", context: 2 });
+      await flushMicrotasks();
+      expect(owner.snapshot()).toMatchObject({ active: 0, retained: 2 });
+      retrying = true;
+      expect(() => owner.retryAgent("a", 0)).toThrow(refused);
+      await flushMicrotasks();
+      expect(attempt).toHaveBeenCalledTimes(3);
+      expect(owner.snapshot()).toMatchObject({ active: 0, pending: 0, retained: 1 });
+      expect(releases).toHaveLength(3);
+      for (const release of releases) {
+        expect(release).toHaveBeenCalledOnce();
+      }
+    } finally {
+      owner.clear();
+    }
+  });
   it("bounds retained identities, dedupes keys, and limits concurrency", async () => {
     const attempts: Array<{ id: string; completion: ReturnType<typeof createDeferred<boolean>> }> =
       [];

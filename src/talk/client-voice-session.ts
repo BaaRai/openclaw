@@ -27,7 +27,8 @@ import {
 } from "./client-voice-confirmation.js";
 import {
   CLIENT_VOICE_MUTATION_DIGEST_POLICY,
-  createClientVoiceMutationDigestDeliveryOwner,
+  ClientVoiceMutationDigestOwner,
+  createClientVoiceMutationDigestDeliveryOptions,
 } from "./client-voice-mutation-digest-owner.js";
 import {
   assertClientVoiceSessionAdmission,
@@ -563,7 +564,7 @@ export function appendRelayVoiceTranscript(
   return appendVoiceTranscript({ ...params, origin: "relay" }, source);
 }
 
-const mutationDigestDeliveryOwner = createClientVoiceMutationDigestDeliveryOwner(
+const digestOptions = createClientVoiceMutationDigestDeliveryOptions(
   (record) =>
     record.consultRunIds.some((runId) => {
       const binding = voiceSessionByRunId.get(runId)?.binding;
@@ -575,6 +576,7 @@ const mutationDigestDeliveryOwner = createClientVoiceMutationDigestDeliveryOwner
     }),
   captureClientVoiceSessionSettlement,
 );
+const mutationDigestDeliveryOwner = new ClientVoiceMutationDigestOwner(digestOptions);
 
 async function closeClientVoiceSessionInternal(params: {
   source: ClientVoiceSessionSource;

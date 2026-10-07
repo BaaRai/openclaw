@@ -126,17 +126,12 @@ export function captureClientVoiceSessionSettlement(source?: OpenClawStateWorker
       if (!operation.active) {
         throw new Error("Voice session persistence lost its accepted owner");
       }
-      try {
-        context.admission.assertCurrent();
-        return scope.run(() =>
-          current.run(operation, () => runWithSqliteWorkerStateContext(context, run)),
-        );
-      } catch (error) {
-        operation.active = false;
-        settled.resolve();
-        throw error;
-      }
+      context.admission.assertCurrent();
+      return scope.run(() =>
+        current.run(operation, () => runWithSqliteWorkerStateContext(context, run)),
+      );
     },
+    // Refused entry does not settle accepted work; its lifetime owner releases it.
     release() {
       operation.active = false;
       settled.resolve();

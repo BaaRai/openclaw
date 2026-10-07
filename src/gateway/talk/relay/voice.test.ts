@@ -61,6 +61,20 @@ describe("realtime relay voice transcript persistence", () => {
       const append = createDeferred();
       voiceSessionMocks.appendRelayVoiceTranscript.mockReturnValue(append.promise);
       const { session } = createRelaySession();
+      const entryError = new Error("relay queue entry refused");
+      const enqueue = vi
+        .spyOn(session.voiceTranscriptQueue, "enqueue")
+        .mockImplementationOnce(() => {
+          throw entryError;
+        });
+      try {
+        expect(() => enqueueRelayVoiceTranscript(session, "user", "not accepted")).toThrow(
+          entryError,
+        );
+      } finally {
+        enqueue.mockRestore();
+      }
+      expect(session.voiceTranscriptSeq).toBe(0);
       expect(enqueueRelayVoiceTranscript(session, "user", "accepted")).toBe(true);
       const accepted = captureClientVoiceSessionSettlement();
       const close = accepted.run(() =>
