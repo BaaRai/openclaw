@@ -6,6 +6,9 @@ import { expect, it, vi } from "vitest";
 import { CommandProcessCleanupError } from "../process/exec-result.js";
 import * as pidAlive from "../shared/pid-alive.js";
 import { installLaunchAgent } from "./launchd-install.js";
+import * as scheduledControl from "./schtasks-control.js";
+import * as scheduledRuntime from "./schtasks-runtime.js";
+import * as scheduledProbe from "./schtasks-state-probe.js";
 import { restoreGatewayServiceDefinitionBackup } from "./service-definition-backup.js";
 import { fixture, native, readRetainedReceipt } from "./service-definition-backup.test-support.js";
 import { withGatewayServiceOperationLock } from "./service-operation-lock.js";
@@ -483,3 +486,82 @@ it("preserves typed pre-publication authority failure during central inspection"
   expect(await readServiceFileState(f.sourcePath)).toEqual(before);
   expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
 });
+
+it.each([
+  { running: false, phase: "publication" },
+  { running: true, phase: "publication" },
+  { running: true, phase: "activation" },
+])(
+  "preserves original Windows runtime liveness after $phase failure (running=$running)",
+  async ({ running, phase }) => {
+    const f = await fixture("win32");
+    native.taskState = running ? 4 : 3;
+    let enabled = true;
+    vi.spyOn(scheduledProbe, "probeScheduledTaskState").mockImplementation(() => ({
+      status: "found",
+      state: native.taskState,
+      enabled,
+    }));
+    const stop = vi
+      .spyOn(scheduledControl, "stopRegisteredScheduledTask")
+      .mockImplementation(async (params) => {
+        await params.beforeMutation?.();
+        native.taskState = 3;
+        params.onProcessStopped?.();
+        params.onEndMutation?.();
+        return false;
+      });
+    vi.spyOn(scheduledRuntime, "resolveFallbackRuntime").mockImplementation(async () => ({
+      status: native.taskState === 4 ? "running" : "stopped",
+    }));
+    vi.spyOn(scheduledRuntime, "waitForScheduledTaskRunningEvidence").mockImplementation(
+      async () => native.taskState === 4,
+    );
+    const execute = native.task.getMockImplementation()!;
+    native.task.mockImplementation(async (args: string[]) => {
+      if (args.includes("/DISABLE") || args.includes("/ENABLE")) {
+        enabled = args.includes("/ENABLE");
+        f.setTask(scheduledControl.setScheduledTaskXmlEnabled(f.task(), enabled));
+      }
+      return execute(args);
+    });
+    const rename = fs.rename.bind(fs);
+    let rejected = false;
+    vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (target === f.sourcePath) {
+        // Both candidate publication and restoration must follow process settlement.
+        expect(native.taskState).toBe(3);
+        if (phase === "publication" && !rejected) {
+          rejected = true;
+          throw Object.assign(new Error("Injected native publication sharing violation"), {
+            code: "EPERM",
+          });
+        }
+      }
+      return rename(source, target);
+    });
+    await expect(
+      reconcileGatewayServiceDefinition({
+        env: f.env,
+        root: "/old",
+        command: f.command,
+        expectedCommand: f.command,
+        install: async (hooks) => {
+          await f.install(hooks);
+          expect(native.taskState).toBe(4);
+          rejected = true;
+          throw new Error("Injected native activation failure");
+        },
+        warn: () => {},
+      }),
+    ).rejects.toThrow(`Injected native ${phase}`);
+    expect(rejected).toBe(true);
+    expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
+    expect(f.task()).toBe(f.originalTask);
+    expect(native.taskState).toBe(running ? 4 : 3);
+    expect(stop).toHaveBeenCalledTimes(running ? 1 : 0);
+    expect(native.task.mock.calls.filter(([args]) => args[0] === "/Run")).toHaveLength(
+      phase === "activation" ? 2 : running ? 1 : 0,
+    );
+  },
+);

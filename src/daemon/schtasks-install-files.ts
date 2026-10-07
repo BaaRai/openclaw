@@ -37,6 +37,7 @@ type TaskFile = { path: string; contents: Buffer };
 export type ScheduledTaskFileRecovery = {
   assertPublished: () => Promise<void>;
   restore: () => Promise<boolean>;
+  restoresRegistration?: true;
 };
 type TaskFileState = NonNullable<Awaited<ReturnType<typeof readServiceFileState>>>;
 type TaskFileSnapshot = TaskFile & {
@@ -168,15 +169,24 @@ export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scri
           throw new Error(`Could not remove replacement Scheduled Task ${taskName}.`);
         }
       } else {
-        if (changed) {
-          await restoreScheduledTaskDefinition({
-            env,
-            xml: original,
-            beforeWrite: () => assertReceipt(true),
-            assertCurrent: assertGatewayServiceUpdateCurrent,
-          });
+        if (files.restoresRegistration) {
+          // Central compensation already restored the admitted files and task XML.
+          const restored = await readXml();
+          if (withoutEnabled(restored) !== withoutEnabled(original)) {
+            throw new Error(`Scheduled Task ${taskName} original registration was not restored.`);
+          }
+          receipt = restored;
+        } else {
+          if (changed) {
+            await restoreScheduledTaskDefinition({
+              env,
+              xml: original,
+              beforeWrite: () => assertReceipt(true),
+              assertCurrent: assertGatewayServiceUpdateCurrent,
+            });
+          }
+          receipt = setScheduledTaskXmlEnabled(original, false);
         }
-        receipt = setScheduledTaskXmlEnabled(original, false);
         await assertReceipt();
         // Definition restoration preserves settlement's disabled state; policy is owned here.
         if (wasEnabled) {

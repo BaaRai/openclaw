@@ -32,7 +32,7 @@ export function runtimeTarget(triple) {
 function run(script, args) {
   // Git Bash supplies the shared stager's zip and POSIX file tools on Windows.
   if (process.platform === "win32") {
-    execFileSync("bash.exe", [script, ...args].map(value => value.replaceAll("\\", "/")), {
+    execFileSync("bash", [script, ...args].map(value => value.replaceAll("\\", "/")), {
       cwd: root, stdio: "inherit",
     });
   } else {

@@ -453,6 +453,24 @@ export async function installScheduledTask(
         await assertOriginal();
         return;
       }
+      if (args.definitionTransaction?.registerNativeRecovery) {
+        const hooks = args.definitionTransaction;
+        const registration = await backupScheduledTaskDefinition(
+          activationEnv,
+          resolveTaskScriptPath(resolveScheduledTaskRenderEnv(args.env, args.environment)),
+        );
+        restoreTask = registration;
+        hooks.registerNativeRecovery?.((restoreDefinition) =>
+          registration.restore(
+            {
+              assertPublished: hooks.beforeWrite,
+              restore: restoreDefinition,
+              restoresRegistration: true,
+            },
+            activationAttempted,
+          ),
+        );
+      }
       try {
         // Stop against the original command; IgnoreNew cannot activate a rewritten running task.
         const replaced = await stopRegisteredScheduledTask({

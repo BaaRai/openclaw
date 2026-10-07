@@ -41,6 +41,10 @@ export type GatewayServiceDefinitionBackupReceipt = z.infer<
 >;
 export type GatewayServiceDefinitionTransactionHooks = {
   preservePolicy?: readonly string[];
+  /** The native owner settles processes around the caller's definition compensation. */
+  registerNativeRecovery?: (
+    recover: (restoreDefinition: () => Promise<boolean>) => Promise<boolean>,
+  ) => void;
   assertCurrent: () => void;
   beforeWrite: () => Promise<void>;
   filePrepared: (sourcePath: string, temporaryPath: string | null) => Promise<void>;
