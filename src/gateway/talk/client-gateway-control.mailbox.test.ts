@@ -23,6 +23,7 @@ vi.mock("../../talk/agent-consult-runtime.js", async (importOriginal) => ({
   consultRealtimeVoiceAgent: mocks.consultRealtimeVoiceAgent,
 }));
 
+import { parseRealtimeVoiceAgentConsultArgs } from "../../talk/agent-consult-tool.js";
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
 import type { ConsultParams } from "./client-gateway-control.agent-consult.test-support.js";
 import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
@@ -67,7 +68,7 @@ function gate() {
   return { started, release: () => released.resolve() };
 }
 
-function createOwner(flushTranscript = vi.fn(async () => undefined)) {
+function createOwner(flushTranscript: () => Promise<void> = async () => undefined) {
   const runner = createTalkClientAgentConsultRunner({
     config,
     context: { logGateway: { warn: vi.fn() } } as never,
@@ -116,6 +117,7 @@ beforeEach(() => {
     }),
   );
   mocks.consultRealtimeVoiceAgent.mockImplementation(async (params: ConsultParams) => {
+    const { question } = parseRealtimeVoiceAgentConsultArgs(params.args);
     const runId = `talk-run-${++runSequence}`;
     startedRunIds.push(runId);
     const registration = params.onRunStarted?.({
@@ -127,10 +129,10 @@ beforeEach(() => {
       await params.agentRuntime.runEmbeddedAgent({
         ...coreParams,
         runId,
-        prompt: params.args.question,
+        prompt: question,
         abortSignal: registration?.abortSignal ?? params.abortSignal,
       });
-      return { text: `answer: ${params.args.question}` };
+      return { text: `answer: ${question}` };
     } finally {
       registration?.cleanup?.();
     }
@@ -157,10 +159,8 @@ describe("browser Talk consults through the session mailbox", () => {
     second.release();
     await vi.waitFor(() => expect(bridge.submitToolResult).toHaveBeenCalledTimes(2));
     expect(order).toEqual(["first", "second"]);
-    expect(bridge.submitToolResult.mock.calls.map(([callId]) => callId)).toEqual([
-      "call-1",
-      "call-2",
-    ]);
+    expect(bridge.submitToolResult).toHaveBeenNthCalledWith(1, "call-1", expect.anything());
+    expect(bridge.submitToolResult).toHaveBeenNthCalledWith(2, "call-2", expect.anything());
     await owner.close();
   });
 
@@ -190,7 +190,7 @@ describe("browser Talk consults through the session mailbox", () => {
   it("reserves its mailbox position when the tool call arrives", async () => {
     const consultGate = gate();
     const flush = createDeferred();
-    const { bridge, consult, owner } = createOwner(vi.fn(async () => await flush.promise));
+    const { bridge, consult, owner } = createOwner(async () => await flush.promise);
     const channelRan = vi.fn(() => order.push("channel"));
 
     consult("call-1", "reserved first");
@@ -218,7 +218,6 @@ describe("browser Talk consults through the session mailbox", () => {
       const waiting = withSessionTurn(channelTurn, async () => waitingRan());
       const cancelRun = createTalkRunCancel({
         context: {
-          ...controlContext(),
           getRuntimeConfig: () => config,
           chatRunState: createChatRunState(),
           removeChatRun: vi.fn(),
