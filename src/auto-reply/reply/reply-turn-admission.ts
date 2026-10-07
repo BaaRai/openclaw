@@ -1,4 +1,3 @@
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import { isMainRestartRecoveryCandidate } from "../../agents/main-session-recovery/main-session-recovery-state.js";
 import {
@@ -17,7 +16,6 @@ import { normalizeStoreSessionKey } from "../../config/sessions/store-entry.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions/types.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { GatewayContextResolver } from "../../gateway/server-methods/types.js";
-import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -45,7 +43,6 @@ import {
 import {
   beginSessionEffect,
   captureSessionTarget,
-  captureSessionEffectOwnerSettlement,
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerMailboxClaim } from "../../sessions/session-controller.mailbox.js";
@@ -221,12 +218,11 @@ export async function admitReplyTurn(
       );
     }
   };
-  const waitForRecovery = async (ownerRelease?: Promise<void>) => {
+  const waitForRecovery = async () => {
     const recoveryRuntime = resolveGatewayContext?.()?.recoveryRuntime;
     await waitForRestartRecoveryProgress({
       agentId: params.agentId,
       sessionKey: params.sessionKey,
-      ownerRelease,
       signal: params.upstreamAbortSignal,
     });
     assertRecoveryOwnerCurrent(recoveryRuntime, "waiting for");
@@ -451,19 +447,10 @@ export async function admitReplyTurn(
           if (isReplyRunSuccessorAdmissionBlocked(controllerKey)) {
             throw new ReplyRunSuccessorAdmissionBlockedError(params.sessionKey);
           }
-          const mayWaitForRecoveryOwner =
-            storePath && !params.resetTriggered && params.allowRestartTombstoneParentFork !== true;
-          // The named admission is the authoritative process-local busy fact even
-          // after startup recovery has cleared the durable aborted marker.
-          const recoveryOwnerRelease = mayWaitForRecoveryOwner
-            ? captureSessionEffectOwnerSettlement({
-                scope: storePath,
-                identities: [params.sessionKey, sessionId],
-                owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-              })
-            : undefined;
           const shouldClaimRecoveryOwner =
-            mayWaitForRecoveryOwner &&
+            storePath &&
+            !params.resetTriggered &&
+            params.allowRestartTombstoneParentFork !== true &&
             admittedSessionEntry &&
             ((admittedSessionEntry.status === "running" &&
               (admittedSessionEntry.abortedLastRun === true ||
@@ -474,21 +461,7 @@ export async function admitReplyTurn(
           const gatewayContext = resolveGatewayContext?.();
           const recoveryRuntime = gatewayContext?.recoveryRuntime;
           if (
-            recoveryOwnerRelease &&
-            (params.kind !== "visible" || admittedSessionEntry?.abortedLastRun === true)
-          ) {
-            admission?.release();
-            if (params.kind === "heartbeat") {
-              return { status: "skipped", reason: "active-run" };
-            }
-            await (params.kind === "visible"
-              ? waitForRecovery(recoveryOwnerRelease)
-              : racePromiseWithAbortSignal(recoveryOwnerRelease, params.upstreamAbortSignal));
-            continue;
-          }
-          if (
             shouldClaimRecoveryOwner &&
-            recoveryOwnerRelease === undefined &&
             admittedSessionEntry?.abortedLastRun === true &&
             !admittedSessionEntry.mainRestartRecovery?.tombstone &&
             params.kind !== "heartbeat" &&
@@ -533,7 +506,7 @@ export async function admitReplyTurn(
             // the exact session and its live owner instead of using this snapshot.
             continue;
           }
-          if (shouldClaimRecoveryOwner && recoveryOwnerRelease === undefined) {
+          if (shouldClaimRecoveryOwner) {
             // A claim can durably clear recovery state. Once it starts, a later
             // preparation change must fail this admission instead of replaying it.
             recoveryClaimStarted = true;

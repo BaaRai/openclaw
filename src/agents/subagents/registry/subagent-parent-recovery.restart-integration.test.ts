@@ -371,8 +371,6 @@ describe("subagent parent recovery — durable yielded continuation", () => {
     const result = await markStartupOrphanedMainSessionsForRecovery({
       cfg: getRuntimeConfig(),
       stateDir: fixture.stateDir,
-      activeSessionIds: [],
-      activeSessionKeys: [],
     });
     const shouldMark =
       newForeground ||

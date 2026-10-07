@@ -5,7 +5,6 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { InternalSessionEntry } from "../../config/sessions.js";
 import {
-  appendTranscriptMessage,
   loadSessionEntry as loadSessionEntryRaw,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
@@ -17,23 +16,13 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../process/gateway-work-admission.js";
-import {
-  captureSessionEffectOwnerSettlement,
-  interruptSessionControllerEffects,
-  runSessionMutation,
-} from "../../sessions/session-controller.lifecycle.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { getExistingSessionControllerMailbox } from "../../sessions/session-controller.mailbox.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
-import { waitForFast } from "../subagent-test-fixtures.test-helpers.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "./main-session-recovery-admission.js";
-import { createMainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
 import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
 import { mainSessionRecoveryLog } from "./main-session-restart-recovery-shared.js";
-import {
-  recoverRestartAbortedMainSessions as recoverRestartAbortedMainSessionsBase,
-  retryRestartAbortedMainSessionRecovery,
-  scheduleRestartAbortedMainSessionRecovery,
-} from "./main-session-restart-recovery.js";
+import { scheduleRestartAbortedMainSessionRecovery } from "./main-session-restart-recovery.js";
 
 vi.mock("../../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({ runId: "run-resumed" })),
@@ -51,12 +40,20 @@ function loadSessionEntry(scope: Parameters<typeof loadSessionEntryRaw>[0]) {
   return loadSessionEntryRaw(scope) as InternalSessionEntry | undefined;
 }
 
-const recoverRestartAbortedMainSessions = (
-  params: Omit<Parameters<typeof recoverRestartAbortedMainSessionsBase>[0], "gatewayRuntime">,
-) => recoverRestartAbortedMainSessionsBase({ ...params, gatewayRuntime });
-
-function gatewayParams() {
-  return vi.mocked(callGateway).mock.calls[0]?.[0].params;
+/** Reads the durable reservation at the moment the resend's mailbox input settles. */
+function observeReservationAtResendSettlement(params: {
+  storePath: string;
+  sessionKey: string;
+  runId: unknown;
+}) {
+  const input = getExistingSessionControllerMailbox(
+    params.sessionKey,
+    captureSessionTarget({ storeScope: params.storePath, sessionKey: params.sessionKey }),
+  )?.entries.find((entry) => entry.protocolRunId === params.runId);
+  expect(input, "the resend must be a mailbox input").toBeDefined();
+  return input!.settlement.promise.then(
+    () => loadSessionEntry(params)?.mainRestartRecovery?.reservation,
+  );
 }
 
 function makePendingFinalDelivery(): InternalSessionEntry["pendingFinalDelivery"] {
@@ -106,146 +103,6 @@ describe("startup recovery admission", () => {
     );
     return { sessionsDir, storePath, sessionKey };
   }
-
-  async function writeCompletedToolTranscript(sessionsDir: string) {
-    for (const message of [
-      { role: "user", content: "run the tool" },
-      { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "exec" }] },
-      { role: "toolResult", content: "done" },
-    ]) {
-      await appendTranscriptMessage(
-        {
-          sessionId: "main-session",
-          sessionKey: "agent:main:main",
-          storePath: path.join(sessionsDir, "sessions.json"),
-        },
-        { message, cwd: sessionsDir },
-      );
-    }
-  }
-
-  it("skips a recovery target replaced while its admission waits", async () => {
-    const { storePath, sessionKey } = await makeMainSessionFixture();
-    const mutationEntered = createDeferred();
-    const releaseMutation = createDeferred();
-    const mutation = runSessionMutation({
-
-      scope: storePath,
-      identities: [sessionKey, "main-session"],
-      run: async () => {
-        mutationEntered.resolve();
-        await releaseMutation.promise;
-        await replaceSessionEntry(
-          { storePath, sessionKey },
-          { sessionId: "replacement-session", updatedAt: Date.now(), status: "done" },
-        );
-      },
-    });
-    await mutationEntered.promise;
-    const recovery = retryRestartAbortedMainSessionRecovery({
-      expectedSessionId: "main-session",
-      storePath,
-      sessionKey,
-      gatewayRuntime,
-    });
-    try {
-      await waitForFast(() =>
-        expect(
-          captureSessionEffectOwnerSettlement({
-            scope: storePath,
-            identities: [sessionKey, "main-session"],
-            owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-          }),
-        ).toBeDefined(),
-      );
-      releaseMutation.resolve();
-      await mutation;
-      await expect(recovery).resolves.toEqual({ started: 0, settled: 0, failed: 0, skipped: 1 });
-      expect(callGateway).not.toHaveBeenCalled();
-      expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
-        sessionId: "replacement-session",
-        status: "done",
-      });
-    } finally {
-      releaseMutation.resolve();
-      await Promise.allSettled([mutation, recovery]);
-    }
-  });
-
-  it.each(["resume", "interrupt"] as const)(
-    "owns startup recovery while waiting for capacity and releases on %s",
-    async (action) => {
-      const { sessionsDir, storePath, sessionKey } = await makeMainSessionFixture();
-      await writeCompletedToolTranscript(sessionsDir);
-      const capacity = createMainSessionRecoveryCapacity({ limit: 1 });
-      const releaseCapacity = await capacity.acquire(() => true);
-      const capacityEntered = createDeferred();
-      const acquire = capacity.acquire.bind(capacity);
-      const acquireSpy = vi.spyOn(capacity, "acquire").mockImplementation((...args) => {
-        const waiting = acquire(...args);
-        capacityEntered.resolve();
-        return waiting;
-      });
-      let keepRunning = true;
-      const recovery = recoverRestartAbortedMainSessions({
-        stateDir: tmpDir,
-        recoveryCapacity: capacity,
-        shouldContinue: () => keepRunning,
-      });
-      try {
-        await Promise.race([capacityEntered.promise, recovery]);
-        expect(acquireSpy).toHaveBeenCalledOnce();
-        expect(
-          loadSessionEntry({ sessionKey, storePath })?.mainRestartRecovery?.reservation,
-        ).toBeDefined();
-        const ownerReleased = captureSessionEffectOwnerSettlement({
-          scope: storePath,
-          identities: [sessionKey, "main-session"],
-          owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-        });
-        expect(ownerReleased).toBeDefined();
-        expect(callGateway).not.toHaveBeenCalled();
-
-        if (action === "interrupt") {
-          await expect(
-            interruptSessionControllerEffects({
-              scope: storePath,
-              identities: [sessionKey, "main-session"],
-            }),
-          ).resolves.toBe(true);
-          await expect(recovery).resolves.toMatchObject({ started: 0, failed: 0, skipped: 1 });
-          expect(callGateway).not.toHaveBeenCalled();
-          expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
-            abortedLastRun: true,
-            mainRestartRecovery: { chargedAttempts: 0 },
-          });
-          expect(
-            loadSessionEntry({ sessionKey, storePath })?.mainRestartRecovery?.reservation,
-          ).toBeUndefined();
-        } else {
-          releaseCapacity?.();
-          await expect(recovery).resolves.toMatchObject({ started: 1, failed: 0 });
-          expect(callGateway).toHaveBeenCalledOnce();
-          expect(gatewayParams()).toMatchObject({ internalRuntimeHandoffId: expect.any(String) });
-          expect(loadSessionEntry({ sessionKey, storePath })?.abortedLastRun).toBe(false);
-        }
-        await ownerReleased;
-        expect(
-          captureSessionEffectOwnerSettlement({
-            scope: storePath,
-            identities: [sessionKey, "main-session"],
-            owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-          }),
-        ).toBeUndefined();
-      } finally {
-        acquireSpy.mockRestore();
-        keepRunning = false;
-        releaseCapacity?.();
-        dispatchSettlement.resolve();
-        await recovery;
-      }
-    },
-  );
 
   it("admits each scheduled recovery attempt as independent root work", async () => {
     const { storePath, sessionKey } = await makeMainSessionFixture({
@@ -355,6 +212,7 @@ describe("startup recovery admission", () => {
         targets.push({ agentId, sessionKey, storePath: fixture.storePath });
       }
       const { storePath } = targets[0]!;
+      let reservationAtSettlement: Promise<unknown> | undefined;
       if (multipleStores) {
         vi.mocked(callGateway).mockImplementation(async ({ method }) => {
           if (method === "agent") {
@@ -364,7 +222,12 @@ describe("startup recovery admission", () => {
         });
       } else {
         vi.mocked(callGateway)
-          .mockImplementationOnce(async () => {
+          .mockImplementationOnce(async (request) => {
+            reservationAtSettlement = observeReservationAtResendSettlement({
+              storePath,
+              sessionKey,
+              runId: (request.params as { idempotencyKey?: unknown }).idempotencyKey,
+            });
             await replaceSessionEntry(
               { sessionKey: "agent:main:fresh", storePath },
               {
@@ -408,6 +271,8 @@ describe("startup recovery admission", () => {
           vi.mocked(callGateway).mock.calls.filter(([call]) => call.method === "agent"),
         ).toHaveLength(2);
       } else {
+        // The failed attempt's rollback commits before its mailbox input settles.
+        await expect(reservationAtSettlement).resolves.toBeUndefined();
         const freshEntry = loadSessionEntry({ sessionKey: "agent:main:fresh", storePath });
         expect(freshEntry).toMatchObject({
           sessionId: "fresh-session",

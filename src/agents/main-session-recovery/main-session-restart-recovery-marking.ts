@@ -19,8 +19,10 @@ import {
   isAgentEventLifecycleGenerationCurrent,
 } from "../../infra/agent-events.js";
 import { hasLiveAgentRunContext, listAgentRunsForSession } from "../../infra/agent-run-registry.js";
-import { captureGatewaySessionControllerWork } from "../../sessions/session-controller.lifecycle.js";
-import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
+import {
+  captureGatewaySessionControllerWork,
+  isSessionControllerWorkActive,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   isMainRestartRecoveryAggregateTerminalOnly,
   isMainRestartRecoveryCandidate,
@@ -286,8 +288,6 @@ export async function markRestartAbortedMainSessions(params: {
 
 type OrphanMarkParams = {
   cfg?: OpenClawConfig;
-  activeSessionIds?: Iterable<string>;
-  activeSessionKeys?: Iterable<string>;
   updatedBeforeMs?: number;
   lifecycleGeneration: string;
 };
@@ -300,7 +300,6 @@ async function markOrphanedMainSessionStore(
     assertCommitAllowed?: () => void;
   },
 ): Promise<{ marked: number; skipped: number }> {
-  const hasCurrentProcessOwner = createCurrentProcessOwnerLookup(params);
   const updatedBeforeMs = asFiniteNumber(params.updatedBeforeMs);
 
   const orphanChecks: Array<() => boolean> = [];
@@ -338,7 +337,7 @@ async function markOrphanedMainSessionStore(
         listAgentRunsForSession({ sessionKey, sessionId: entry.sessionId }).some(({ runId }) =>
           hasLiveAgentRunContext(runId),
         ) ||
-        hasCurrentProcessOwner(entry, sessionKey);
+        isSessionControllerWorkActive(params.target.storePath, [sessionKey, entry.sessionId]);
       if (hasLiveOwner()) {
         return undefined;
       }
@@ -395,8 +394,6 @@ export async function markOrphanedMainSessionForRecovery(params: {
 export async function markStartupOrphanedMainSessionsForRecovery(params: {
   cfg?: OpenClawConfig;
   stateDir?: string;
-  activeSessionIds?: Iterable<string>;
-  activeSessionKeys?: Iterable<string>;
   startupCheckedStorePaths?: Set<string>;
   updatedBeforeMs?: number;
 }): Promise<{ marked: number; skipped: number; failedTargets?: RestartRecoveryStoreTarget[] }> {

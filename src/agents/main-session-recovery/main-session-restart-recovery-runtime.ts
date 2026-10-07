@@ -8,8 +8,6 @@ import {
 import { sleepWithAbort } from "../../infra/backoff.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
-import { runWithMainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
-import { createMainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
 import { getMainSessionRecoveryRetryCount } from "./main-session-recovery-state.js";
 import type { MainSessionRecoveryStoreTarget } from "./main-session-recovery-store.js";
 import { restartRecoveryStoreTargetKey } from "./main-session-restart-recovery-diagnostics.js";
@@ -29,7 +27,6 @@ import {
 } from "./main-session-restart-recovery-store.js";
 
 type RecoveryCounts = { started: number; settled: number; failed: number; skipped: number };
-const STARTUP_RECOVERY_MAX_ACTIVE_RUNS = 1;
 
 async function runRecoveryRetries(params: {
   initialDelayMs: number;
@@ -71,13 +68,11 @@ export async function recoverRestartAbortedMainSessions(params: {
   onExhaustedTarget?: (target: ExhaustedRestartRecoveryTarget) => void;
   stateDir?: string;
   handledSessionKeys?: Set<string>;
-  activeSessionIds?: Iterable<string>;
-  activeSessionKeys?: Iterable<string>;
   excludedStoreTargets?: ReadonlySet<string>;
   lifecycleGeneration?: string;
+  resendSettlementSignal?: AbortSignal;
   shouldContinue?: () => boolean;
   gatewayRuntime: GatewayRecoveryRuntime;
-  recoveryCapacity?: ReturnType<typeof createMainSessionRecoveryCapacity>;
 }): Promise<RecoveryCounts> {
   const result = { started: 0, settled: 0, failed: 0, skipped: 0 };
   const handledSessionKeys = params.handledSessionKeys ?? new Set<string>();
@@ -97,7 +92,6 @@ export async function recoverRestartAbortedMainSessions(params: {
       storePath: target.storePath,
       storeAgentId: target.agentId,
       handledSessionKeys,
-      recoveryCapacity: params.recoveryCapacity,
     });
     result.started += storeResult.started;
     result.settled += storeResult.settled;
@@ -153,27 +147,15 @@ async function recoverExpectedRestartRecovery(
     gatewayRuntime: GatewayRecoveryRuntime;
   },
 ): Promise<RecoveryCounts> {
-  const expected = params.expectedTarget;
-  const loadExpected = () =>
-    loadExpectedRestartRecoveryTarget({ expected, storePath: params.storePath });
-  if (!loadExpected()) {
-    return { started: 0, settled: 0, failed: 0, skipped: 0 };
-  }
-  return (
-    (await runWithMainSessionRecoveryAdmission({
-      ...params,
-      canonicalSessionKey: expected.canonicalSessionKey,
-      sessionId: expected.sessionId,
-      isCurrent: () => Boolean(loadExpected()),
-      run: (recoveryAdmission) =>
-        recoverStore({
-          ...params,
-          shouldContinue: recoveryAdmission.shouldContinue,
-          handledSessionKeys: new Set<string>(),
-          recoveryAdmission,
-        }),
-    })) ?? { started: 0, settled: 0, failed: 0, skipped: 1 }
-  );
+  const lifecycleGeneration = params.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
+  return await recoverStore({
+    ...params,
+    lifecycleGeneration,
+    shouldContinue: () =>
+      params.shouldContinue?.() !== false &&
+      isAgentEventLifecycleGenerationCurrent(lifecycleGeneration),
+    handledSessionKeys: new Set<string>(),
+  });
 }
 
 export function scheduleRestartAbortedMainSessionRecoveryAfterOwnerRelease(
@@ -254,9 +236,6 @@ export function scheduleRestartAbortedMainSessionRecovery(params: {
     params.shouldContinue?.() !== false &&
     isAgentEventLifecycleGenerationCurrent(lifecycleGeneration);
   const startupRecoveryCutoffMs = Date.now();
-  const recoveryCapacity = createMainSessionRecoveryCapacity({
-    limit: STARTUP_RECOVERY_MAX_ACTIVE_RUNS,
-  });
   const startupCheckedStorePaths = params.startupCheckedStorePaths ?? new Set<string>();
   const runRecoveryAttempt = async (
     exhaustedTargets: Map<string, ExhaustedRestartRecoveryTarget>,
@@ -288,7 +267,8 @@ export function scheduleRestartAbortedMainSessionRecovery(params: {
           lifecycleGeneration,
           shouldContinue,
           gatewayRuntime: params.gatewayRuntime,
-          recoveryCapacity,
+          // One startup resend at a time (#151581): the next waits for this input to settle.
+          resendSettlementSignal: abortController.signal,
         });
         result.failed += marking.failedTargets?.length ?? 0;
         return result;

@@ -8,6 +8,7 @@ import type {
 } from "../../config/sessions.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { transitionMainSessionRecovery } from "./main-session-recovery-state.js";
 import { markStartupOrphanedMainSessionsForRecovery } from "./main-session-restart-recovery-marking.js";
@@ -136,8 +137,6 @@ describe("main session recovery terminal-only residue", () => {
 
       await expect(
         recoverStore({
-          activeSessionIds: [],
-          activeSessionKeys: [],
           gatewayRuntime: unusedGatewayRuntime,
           handledSessionKeys: new Set(),
           storePath,
@@ -170,15 +169,22 @@ describe("main session recovery terminal-only residue", () => {
         }),
       );
 
-      await expect(
-        markStartupOrphanedMainSessionsForRecovery({
-          activeSessionIds: ["live-session"],
-          activeSessionKeys: [],
-          cfg: { session: { store: storePath } },
-          stateDir: tempDir,
-          startupCheckedStorePaths,
-        }),
-      ).resolves.toEqual({ marked: 0, skipped: 1 });
+      const liveWork = await beginSessionEffect({
+        scope: storePath,
+        identities: [liveSessionKey, "live-session"],
+        assertAllowed: () => {},
+      });
+      try {
+        await expect(
+          markStartupOrphanedMainSessionsForRecovery({
+            cfg: { session: { store: storePath } },
+            stateDir: tempDir,
+            startupCheckedStorePaths,
+          }),
+        ).resolves.toEqual({ marked: 0, skipped: 1 });
+      } finally {
+        liveWork.release();
+      }
       await expect(
         markStartupOrphanedMainSessionsForRecovery({
           cfg: { session: { store: storePath } },

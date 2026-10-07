@@ -1,6 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, type AgentWaitParams } from "../../../packages/gateway-protocol/src/index.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import type { MainSessionRecoveryOwnerLease } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { mergeSessionEntry, type SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -275,9 +274,6 @@ export function createAgentTurnService(
         agentDedupeKeys,
         preAcceptedReservedSessionKey,
         expectedSession,
-        ...(isRestartRecoveryResumeRun
-          ? { admissionOwner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER }
-          : {}),
         context,
         io,
         dedupeLifecycle,

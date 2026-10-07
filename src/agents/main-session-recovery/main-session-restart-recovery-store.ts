@@ -15,15 +15,13 @@ import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runti
 import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { findDeliveryIntentOwners } from "../../infra/outbound/delivery-queue-storage.js";
+import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   getOwedHarnessCompletionTask,
   readAdmittedHarnessCompletionInput,
 } from "../agent-harness-completion-recovery.js";
 import { resolveExecDefaults } from "../exec-defaults.js";
-import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
-import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
-import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
 import {
   getMainSessionRecoveryRetryCount,
   isMainRestartRecoveryAggregateTerminalOnly,
@@ -179,11 +177,8 @@ export async function recoverStore(params: {
   stateDir?: string;
   handledSessionKeys: Set<string>;
   expectedTarget?: ExpectedRestartRecoveryTarget;
-  recoveryAdmission?: MainSessionRecoveryAdmission;
-  activeSessionIds?: Iterable<string>;
-  activeSessionKeys?: Iterable<string>;
   lifecycleGeneration?: string;
-  recoveryCapacity?: MainSessionRecoveryCapacity;
+  resendSettlementSignal?: AbortSignal;
   shouldContinue?: () => boolean;
   gatewayRuntime: GatewayRecoveryRuntime;
 }): Promise<{ started: number; settled: number; failed: number; skipped: number }> {
@@ -196,7 +191,6 @@ export async function recoverStore(params: {
     result.skipped++;
     return true;
   };
-  const hasCurrentProcessOwner = createCurrentProcessOwnerLookup(params);
   let entries: Array<{ sessionKey: string; entry: SessionEntry }>;
   try {
     if (params.expectedTarget) {
@@ -253,7 +247,12 @@ export async function recoverStore(params: {
     const target = { agentId, sessionKey, storePath: params.storePath };
     const dispatchSessionKey =
       params.expectedTarget?.canonicalSessionKey ?? dispatchTarget.sessionKey;
-    if (hasCurrentProcessOwner(entry, sessionKey)) {
+    // A caller passing its predecessor input holds this session's selected
+    // claim; that claim is the resend's successor, not competing work.
+    if (
+      !params.controllerInput &&
+      isSessionControllerWorkActive(params.storePath, [sessionKey, entry.sessionId])
+    ) {
       result.skipped++;
       continue;
     }
@@ -546,12 +545,11 @@ export async function recoverStore(params: {
       entry,
       observation: recoveryView.observation,
       recoveryAttempt: recoveryView.nextAttempt,
-      recoveryAdmission: params.recoveryAdmission,
       controllerInput: params.controllerInput,
       gatewayRuntime: params.gatewayRuntime,
       ...resumeOptions,
       lifecycleGeneration: params.lifecycleGeneration,
-      recoveryCapacity: params.recoveryCapacity,
+      resendSettlementSignal: params.resendSettlementSignal,
       shouldContinue: params.shouldContinue,
     });
     result[resumeResult]++;

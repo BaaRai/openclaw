@@ -63,7 +63,6 @@ import {
 export {
   waitForSessionControllerSettlement,
   captureSessionControllerSettlement,
-  captureSessionEffectOwnerSettlement,
   isSessionControllerWorkActive,
   consumeSessionEffectHandoff,
   cancelSessionEffectHandoff,
@@ -421,7 +420,6 @@ export async function runSessionMutation<T>(
 export async function beginSessionEffect(
   params: TargetInput & {
     storeWriterIdentities?: Iterable<string | undefined>;
-    owner?: symbol;
     resolveGatewayContext?: GatewayContextResolver;
     operation?: ReplyOperation;
     sourceInput?: SessionControllerInput;
@@ -517,7 +515,6 @@ export async function beginSessionEffect(
   const effect: Effect = {
     ref,
     entry,
-    owner: params.owner,
     phase: "queued",
     generation: getAgentRunLifecycleGeneration(),
     cancel,

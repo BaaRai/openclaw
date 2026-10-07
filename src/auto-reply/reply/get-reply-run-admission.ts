@@ -3,7 +3,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { clearAutoFallbackPrimaryProbeSelection } from "../../agents/agent-scope.js";
 import { resolveSessionAuthSelection } from "../../agents/auth-profiles/session-override.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import { hasResolvedThinkingCatalogEntry } from "../../agents/thinking-runtime.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
@@ -26,10 +25,7 @@ import {
   waitForReplyRunEndBySessionId,
   waitForReplyOperationOwnerSettlement,
 } from "../../sessions/session-controller.js";
-import {
-  captureSessionEffectOwnerSettlement,
-  interruptSessionControllerEffects,
-} from "../../sessions/session-controller.lifecycle.js";
+import { interruptSessionControllerEffects } from "../../sessions/session-controller.lifecycle.js";
 import {
   updateSessionControllerSourcePolicy,
   bindSessionControllerSource,
@@ -507,32 +503,22 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     resolveActiveEmbeddedSessionId() ??
     resolveActiveReplyOperationSessionId() ??
     preparedSessionState.sessionId;
-  let recoveryOwnerActive = false;
   const resolveQueueBusyState = () => {
-    const replyOperationActiveSessionId = resolveActiveReplyOperationSessionId();
-    const recoveryOwnerRelease = storePath
-      ? captureSessionEffectOwnerSettlement({
-          scope: storePath,
-          identities: [sessionKey, preparedSessionState.sessionId],
-          owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-        })
-      : undefined;
-    recoveryOwnerActive = recoveryOwnerRelease !== undefined;
-    const activeSessionId = replyOperationActiveSessionId ?? preparedSessionState.sessionId;
-    if (!activeSessionId || (!replyOperationActiveSessionId && !recoveryOwnerActive)) {
+    const activeSessionId = resolveActiveReplyOperationSessionId();
+    if (!activeSessionId) {
       return { activeSessionId: undefined, isActive: false };
     }
-    if (!recoveryOwnerRelease && isOwnPreDispatchOperationSession(activeSessionId)) {
+    if (isOwnPreDispatchOperationSession(activeSessionId)) {
       return { activeSessionId, isActive: false };
     }
     const replyOperationActive = sourceInput
       ? sourceInput.mailbox.owner.active !== undefined
-      : replyOperationActiveSessionId != null && isSessionRunActive(replyOperationActiveSessionId);
+      : isSessionRunActive(activeSessionId);
     const activeOperation =
       sourceInput?.mailbox.owner.active ?? getSessionControllerOperation(queueKey);
     return {
       activeSessionId,
-      isActive: replyOperationActive || recoveryOwnerActive,
+      isActive: replyOperationActive,
       terminalProducerBlocked: activeOperation?.terminalProducerBlocked,
     };
   };
@@ -562,19 +548,17 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     !context.isHeartbeat &&
     !effectiveResetTriggered &&
     !visibleTurnPreemptsHeartbeat &&
-    !recoveryOwnerActive &&
     resolvedQueue.mode === "steer";
   const shouldFollowup =
     !effectiveResetTriggered &&
-    (recoveryOwnerActive ||
-      (!visibleTurnPreemptsHeartbeat &&
-        ((isRoomEvent && isActive) ||
-          resolvedQueue.mode === "steer" ||
-          resolvedQueue.mode === "followup" ||
-          resolvedQueue.mode === "collect")));
+    !visibleTurnPreemptsHeartbeat &&
+    ((isRoomEvent && isActive) ||
+      resolvedQueue.mode === "steer" ||
+      resolvedQueue.mode === "followup" ||
+      resolvedQueue.mode === "collect");
   const activeRunQueueAction = resolveActiveRunQueueAction({
     hasQueuedFollowups,
-    interrupt: activeRunQueueMode === "interrupt" && !isRoomEvent && !recoveryOwnerActive,
+    interrupt: activeRunQueueMode === "interrupt" && !isRoomEvent,
     isActive,
     isHeartbeat: context.isHeartbeat,
     shouldFollowup,

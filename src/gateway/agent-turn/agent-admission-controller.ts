@@ -36,7 +36,6 @@ export function createAgentAdmissionController(params: {
   agentDedupeKeys: string[];
   preAcceptedReservedSessionKey?: string;
   expectedSession?: ExpectedExistingSessionConstraint;
-  admissionOwner?: symbol;
   context: AgentTurnContext;
   io: AgentTurnIo;
   dedupeLifecycle: AgentDedupeLifecycle;
@@ -222,7 +221,6 @@ export function createAgentAdmissionController(params: {
       }) ??
       (await beginSessionEffect({
         target,
-        ...(params.admissionOwner ? { owner: params.admissionOwner } : {}),
         assertAllowed: () => {
           assertAllowed(false);
         },

@@ -5,19 +5,22 @@ import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.j
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
-import {
-  applySessionEntryReplacements,
-  loadExactSessionEntry,
-} from "../../config/sessions/session-accessor.js";
+import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { preparePhysicalSessionStorePath } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isTrustedMessageActionTurnIngress } from "../../gateway/message-action-turn-capability.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
-import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+  type SessionControllerInput,
+} from "../../sessions/session-controller.mailbox.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
@@ -26,10 +29,6 @@ import {
   SUBAGENT_RESTART_RECOVERY_INSTRUCTION,
 } from "../subagents/subagent-restart-recovery-prompt.js";
 import { TOOL_FAILURE_INSTRUCTION } from "../tool-outcome-instructions.js";
-import {
-  runWithMainSessionRecoveryAdmission,
-  type MainSessionRecoveryAdmission,
-} from "./main-session-recovery-admission.js";
 import {
   repairMainSessionRecoveryMutation,
   retryMainSessionRecoveryMutation,
@@ -45,9 +44,9 @@ import {
   commitMainSessionRecovery,
   type MainSessionRecoveryStoreTarget,
 } from "./main-session-recovery-store.js";
-import { dispatchRestartRecoveryWithinCapacity } from "./main-session-restart-dispatch-capacity.js";
 import { settleAcceptedRestartRecovery } from "./main-session-restart-dispatch-settlement.js";
 import {
+  dispatchRestartRecoveryUntilStarted,
   normalizeRestartRecoveryTerminalStatus,
   probeRestartRecoveryTerminalStatus,
 } from "./main-session-restart-dispatch-start.js";
@@ -172,40 +171,16 @@ type ResumeMainSessionParams = {
   pendingFinalDeliveryText?: string | null;
   forceRestartSafeTools?: boolean;
   forceCodeModeTools?: boolean;
-  recoveryAdmission?: MainSessionRecoveryAdmission;
   lifecycleGeneration?: string;
   shouldContinue?: () => boolean;
   gatewayRuntime: GatewayRecoveryRuntime;
-  recoveryCapacity?: Parameters<typeof dispatchRestartRecoveryWithinCapacity>[0]["capacity"];
+  /** Startup serializes resends: an adopted, started resend returns once its input settles or this aborts. */
+  resendSettlementSignal?: AbortSignal;
 };
 
+/** Resends one interrupted main-session turn as a mailbox input after winning its durable attempt. */
 export async function resumeMainSession(
   params: ResumeMainSessionParams,
-): Promise<MainSessionResumeResult> {
-  return (
-    (await runWithMainSessionRecoveryAdmission({
-      ...params,
-      sessionId: params.entry.sessionId,
-      admission: params.recoveryAdmission,
-      isCurrent: () =>
-        loadExactSessionEntry({
-          agentId: params.agentId,
-          sessionKey: params.sessionKey,
-          storePath: params.storePath,
-          readConsistency: "latest",
-        })?.entry.sessionId === params.entry.sessionId,
-      run: (recoveryAdmission) =>
-        resumeMainSessionWithinAdmission({
-          ...params,
-          recoveryAdmission,
-          shouldContinue: recoveryAdmission.shouldContinue,
-        }),
-    })) ?? "skipped"
-  );
-}
-
-async function resumeMainSessionWithinAdmission(
-  params: ResumeMainSessionParams & { recoveryAdmission: MainSessionRecoveryAdmission },
 ): Promise<MainSessionResumeResult> {
   if (params.shouldContinue?.() === false) {
     return "skipped";
@@ -267,6 +242,7 @@ async function resumeMainSessionWithinAdmission(
     shouldContinue: params.shouldContinue,
   };
   let reservation: MainSessionRecoveryReservation | undefined;
+  let ownedInput: SessionControllerInput | undefined;
   let dispatchStarted = false;
   let dispatchAccepted = false;
   let executionStarted = false;
@@ -350,6 +326,7 @@ async function resumeMainSessionWithinAdmission(
       return "skipped";
     }
     reservation = reserved.transition.reservation;
+    const inputReservationId = `main-session-recovery:${reservation.sessionId}:${reservation.cycleId}:${reservation.attempt}`;
     if (params.shouldContinue?.() === false || !taskRemainsOwed()) {
       await rollbackReservation("cancel_reservation");
       return "skipped";
@@ -430,7 +407,6 @@ async function resumeMainSessionWithinAdmission(
       ),
       sessionKey: dispatchSessionKey,
       expectedExistingSessionId: params.entry.sessionId,
-      internalRuntimeHandoffId: params.recoveryAdmission.handoffId,
       ...(isExecutionIdentityCollectionEnabled(params.cfg)
         ? { internalExecutionIdentityRetry: params.recoveryAttempt > 1 }
         : {}),
@@ -469,26 +445,35 @@ async function resumeMainSessionWithinAdmission(
     if (params.forceRestartSafeTools) {
       log.info(`dispatching restart-safe recovery for ${params.sessionKey}`);
     }
+    // The resend is one ordinary mailbox input. Its reservation id derives from
+    // the durable attempt, so a foreground claim can order the same input first.
+    const controllerInput =
+      params.controllerInput ??
+      (ownedInput = reserveSessionControllerSource(dispatchSessionKey, {
+        reservationId: inputReservationId,
+        protocolRunId: recoveryRunId,
+        sourceSessionId: params.entry.sessionId,
+        policy: { mode: "followup" },
+        target: captureSessionTarget({
+          storeScope: params.storePath,
+          sessionKey: dispatchSessionKey,
+          aliases: [params.sessionKey],
+          agentId: params.agentId,
+          incarnation: params.entry.sessionId,
+        }),
+      }));
     dispatchStarted = true;
     let dispatchSettled = false;
     let stopTyping: (() => void) | undefined;
-    const dispatchOutcome = await dispatchRestartRecoveryWithinCapacity({
+    const dispatchOutcome = await dispatchRestartRecoveryUntilStarted({
       agentParams,
-      capacity: params.recoveryCapacity,
-      controllerInput: params.controllerInput,
-      beginDispatch: params.recoveryAdmission.beginDispatch,
+      controllerInput,
       gatewayRuntime: params.gatewayRuntime,
       onSettled: () => {
         dispatchSettled = true;
         stopTyping?.();
       },
-      shouldContinue: () => params.shouldContinue?.() !== false,
     });
-    if (!dispatchOutcome) {
-      dispatchStarted = false;
-      await rollbackReservation("cancel_reservation");
-      return "skipped";
-    }
     ({ dispatchAccepted, executionStarted, preStartAbortAttempted, preStartAbortConfirmed } =
       dispatchOutcome.observation);
     if (dispatchOutcome.kind === "failed") {
@@ -575,6 +560,16 @@ async function resumeMainSessionWithinAdmission(
         sanitizedPendingText ? " (with pending payload)" : ""
       }`,
     );
+    if (
+      resumeResult === "started" &&
+      params.resendSettlementSignal &&
+      controllerInput.custody.rpcAdopted
+    ) {
+      await racePromiseWithAbortSignal(
+        controllerInput.settlement.promise,
+        params.resendSettlementSignal,
+      ).catch(() => {});
+    }
     return resumeResult;
   } catch (error) {
     const explicitlyRejected = error instanceof GatewayClientRequestError && !dispatchAccepted;
@@ -646,5 +641,11 @@ async function resumeMainSessionWithinAdmission(
       `failed to resume interrupted main session ${params.sessionKey}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
     );
     return "failed";
+  } finally {
+    // Durable rollback or settlement above commits first: the next selected
+    // input must not observe this attempt's reservation as still active.
+    if (ownedInput && !ownedInput.custody.rpcAdopted) {
+      retireSessionControllerInput(ownedInput);
+    }
   }
 }

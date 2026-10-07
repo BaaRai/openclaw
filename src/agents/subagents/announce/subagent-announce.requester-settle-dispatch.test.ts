@@ -1,11 +1,5 @@
 import "./subagent-announce.requester-settle-dispatch-mocks.test-support.js";
-import path from "node:path";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-import {
-  loadSessionEntry,
-  replaceSessionEntry,
-} from "../../../config/sessions/session-accessor.js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createInternalAgentTurnFacade } from "../../../gateway/agent-turn/internal-facade.js";
 import { registerChatAbortController } from "../../../gateway/chat-abort.js";
 import { createGatewayMethodRegistry } from "../../../gateway/methods/registry.js";
@@ -21,7 +15,6 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import {
-  beginSessionEffect,
   captureSessionTarget,
   getCurrentSessionControllerClaim,
 } from "../../../sessions/session-controller.lifecycle.js";
@@ -30,14 +23,10 @@ import { markReplyOperationExecutionStarted } from "../../../sessions/session-co
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
-import { runWithAgentCommandRecoveryOwner } from "../../agent-command-recovery-owner.js";
-import type { AgentCommandOpts } from "../../command/types.js";
 import { prepareEmbeddedAttemptTimeout } from "../../embedded-agent-runner/run/attempt-timeout-prepare.js";
 import { createEmbeddedRunLaneController } from "../../embedded-agent-runner/run/lane-controller.js";
 import type { RunEmbeddedAgentParams } from "../../embedded-agent-runner/run/params.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../main-session-recovery/main-session-recovery-admission.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { consumeSubagentPauseNotice } from "../registry/subagent-delivery-state.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
@@ -57,15 +46,6 @@ import {
   useRequesterSettleDispatchFixture,
 } from "./subagent-announce.requester-settle-dispatch.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
-
-const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-  afterEach(async () => {
-    for (const dir of tempDirs.dirs) {
-      await closeOpenClawAgentDatabasesAsync(dir);
-    }
-    cleanup();
-  }),
-);
 
 const REQUESTER_TARGET = captureSessionTarget({
   storeScope: "/synthetic/requester-settle-dispatch/sessions.db",
@@ -448,124 +428,6 @@ describe("requester settle dispatch deadline", () => {
       }
     },
   );
-
-  it("retains the durable settle batch through restart recovery and delivers one direct final", async () => {
-    const storePath = path.join(tempDirs.make("openclaw-settle-recovery-"), "sessions.json");
-    const target = { sessionKey: REQUESTER_KEY, storePath };
-    const lifecycleGeneration = getAgentEventLifecycleGeneration();
-    await replaceSessionEntry(target, {
-      sessionId: "requester-session",
-      updatedAt: 100,
-      status: "running",
-      abortedLastRun: false,
-      restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
-      mainRestartRecovery: { cycleId: "cycle-1", revision: 3, chargedAttempts: 1 },
-    });
-    const recovery = await beginSessionEffect({
-      scope: storePath,
-      identities: [REQUESTER_KEY, "requester-session"],
-      owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-      assertAllowed: () => {},
-    });
-    vi.useFakeTimers();
-    const context = createContext();
-    const child = settledChild();
-    registryRead.listSubagentRunsForRequester.mockReturnValue([child]);
-    const accepted = createDeferredCore();
-    const finals: string[] = [];
-    const cfg = { agents: { defaults: { subagents: { announceTimeoutMs: 20 } } } };
-    startTurn.mockImplementation(async ({ preflight, io }) => {
-      const request = preflight.request;
-      io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }], {
-        runId: request.idempotencyKey,
-      });
-      accepted.resolve();
-      const text = await runWithAgentCommandRecoveryOwner({
-        lifecycleGeneration,
-        mode: "claim",
-        opts: {
-          runId: request.idempotencyKey,
-          inputProvenance: request.inputProvenance,
-        } as AgentCommandOpts,
-        prepare: async () => ({
-          ...target,
-          sessionAgentId: "main",
-          sessionId: "requester-session",
-          isNewSession: false,
-          sessionEntry: loadSessionEntry(target),
-        }),
-        run: async () => {
-          io.emitExecutionStarted?.();
-          finals.push("consolidated child result");
-          return finals[0];
-        },
-      });
-      io.emitFinal([true, { status: "ok", result: { payloads: [{ text }] } }]);
-    });
-    setSubagentAnnounceDeliveryDepsForTest({
-      getRuntimeConfig: () => cfg,
-      loadRequesterSessionEntry: () => ({
-        cfg,
-        canonicalKey: REQUESTER_KEY,
-        agentId: "main",
-        entry: loadSessionEntry(target),
-      }),
-      getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
-    });
-    deliver.mockImplementation(sendSubagentAnnounceDirectly);
-    const completeBatch = vi.fn<
-      Parameters<typeof maybeWakeRequesterAfterAllChildrenSettled>[0]["completeBatch"]
-    >((_batch, _generation, _delivery, onCommitted) => {
-      child.requesterSettleWake = undefined;
-      onCommitted?.();
-    });
-    const wakeParams = {
-      isSourceCurrent: () => true,
-      requesterSessionKey: REQUESTER_KEY,
-      settledEntry: child,
-      transitionBatch: publishWakeTransition,
-      completeBatch,
-    };
-    const wake = withPluginRuntimeGatewayRequestScope(
-      { context, client: createSyntheticPluginRuntimeClient(), isWebchatConnect: () => false },
-      () => maybeWakeRequesterAfterAllChildrenSettled(wakeParams),
-    );
-    try {
-      await accepted.promise;
-      await vi.advanceTimersByTimeAsync(300_000);
-      expect(finals).toEqual([]);
-      expect(completeBatch).not.toHaveBeenCalled();
-      expect(child.requesterSettleWake).toMatchObject({ status: "dispatching", attemptCount: 1 });
-      expect(child.requesterSettleWake?.lastError).toBeUndefined();
-      await expect(maybeWakeRequesterAfterAllChildrenSettled(wakeParams)).resolves.toBe(false);
-      expect(startTurn).toHaveBeenCalledOnce();
-      await replaceSessionEntry(target, {
-        sessionId: "requester-session",
-        updatedAt: 300,
-        status: "done",
-      });
-      recovery.release();
-      await expect(wake).resolves.toBe(true);
-      expect(finals).toEqual(["consolidated child result"]);
-      expect(completeBatch).toHaveBeenCalledOnce();
-      expect(completeBatch).toHaveBeenCalledWith(
-        [child],
-        1,
-        expect.objectContaining({
-          delivered: true,
-          path: "direct",
-          requesterVisibleFinalDelivered: true,
-        }),
-        expect.any(Function),
-      );
-      await expect(maybeWakeRequesterAfterAllChildrenSettled(wakeParams)).resolves.toBe(false);
-      expect(startTurn).toHaveBeenCalledOnce();
-      expect(deliver).toHaveBeenCalledOnce();
-    } finally {
-      recovery.release();
-      await wake;
-    }
-  });
 
   it.each(["final", "runtime timeout", "stop"] as const)(
     "keeps an executing completion under requester lifecycle ownership: %s",

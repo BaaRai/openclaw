@@ -17,7 +17,6 @@ export type SessionEffectRef = {
 export type Effect = {
   ref: SessionEffectRef;
   entry: SessionControllerEntry;
-  owner?: symbol;
   phase: "queued" | "validating" | "writer" | "acquired" | "released";
   generation: string;
   interrupt?: SessionEffectInterrupt;

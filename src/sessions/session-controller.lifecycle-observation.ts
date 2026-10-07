@@ -80,16 +80,6 @@ export function captureSessionControllerSettlement(params: TargetInput): Promise
     ...operations.map((operation) => operation.ownerSettlement),
   ]).then(() => undefined);
 }
-export function captureSessionEffectOwnerSettlement(
-  params: TargetInput & { owner: symbol },
-): Promise<void> | undefined {
-  const effects = [...selectedEffects([targetFrom(params)])].filter(
-    (effect) => effect.owner === params.owner,
-  );
-  return effects.length
-    ? Promise.all(effects.map((effect) => effect.ref.released)).then(() => undefined)
-    : undefined;
-}
 export function isSessionControllerWorkActive(
   scope: string,
   identities: Iterable<string | undefined>,

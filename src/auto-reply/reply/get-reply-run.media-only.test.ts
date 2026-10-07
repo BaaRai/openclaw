@@ -5,7 +5,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import { createCronTool } from "../../agents/tools/cron-tool.js";
 import {
   getGatewayToolCallerIdentity,
@@ -1601,48 +1600,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
   });
-  it.each(["interrupt", "steer"] as const)(
-    "queues in %s mode behind admitted recovery after heartbeat preemption",
-    async (mode) => {
-      const queueSettings = await import("./queue/settings-runtime.js");
-      const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
-      const storePath = "/tmp/recovery-admission-sessions.json";
-      const recoveryAdmission = await beginSessionEffect({
-        scope: storePath,
-        identities: ["session-key", "session-recovery-starting"],
-        owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-        assertAllowed: () => {},
-      });
-      vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode });
-      vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(
-        "session-embedded-heartbeat",
-      );
-      vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
-        "drained",
-      );
-
-      try {
-        await expect(
-          runPrepared({
-            isNewSession: false,
-            sessionId: "session-recovery-starting",
-            storePath,
-          }),
-        ).resolves.toEqual({ text: "ok" });
-
-        const call = requireRunReplyAgentCall();
-        expect(call.isActive).toBe(true);
-        expect(call.shouldSteer).toBe(false);
-        expect(call.shouldFollowup).toBe(true);
-      } finally {
-        recoveryAdmission.release();
-        vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(undefined);
-        vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
-          "not-heartbeat",
-        );
-      }
-    },
-  );
   it("interrupts an embedded-only heartbeat before running a visible Telegram turn", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");

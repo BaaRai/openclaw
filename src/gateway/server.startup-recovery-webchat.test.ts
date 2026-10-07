@@ -4,7 +4,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../agents/main-session-recovery/main-session-recovery-admission.js";
 import { recoverRestartAbortedMainSessions } from "../agents/main-session-recovery/main-session-restart-recovery.js";
 import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../agents/subagents/announce/subagent-announce.requester-settle-wake.js";
@@ -29,10 +28,6 @@ import { resolvePhysicalSessionStorePath } from "../config/sessions/session-stor
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
-import {
-  beginSessionEffect,
-  captureSessionEffectOwnerSettlement,
-} from "../sessions/session-controller.lifecycle.js";
 import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -42,7 +37,7 @@ import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
 it(
-  "queues WebChat behind recovery and keeps child context out of a reset parent",
+  "runs startup resends one at a time as mailbox inputs ahead of WebChat and keeps child context out of a reset parent",
   { timeout: 90_000 },
   async () => {
     const token = "startup-recovery-webchat-token";
@@ -65,6 +60,9 @@ it(
     const canceledMessage = "Cancel this queued browser turn.";
     const survivorMessage = "Run this browser turn after recovery.";
     const afterResetMessage = "Resume only the work created after this reset.";
+    const secondSessionKey = "agent:main:second";
+    const secondSessionId = "startup-recovery-second-session";
+    const secondRecoveryMessage = "Finish the second interrupted job.";
     const originalChildMarker = "recovery-child-before-reset";
     const currentChildMarker = "recovery-child-after-reset";
     const batchChildMarker = "saved-batch-child";
@@ -97,6 +95,7 @@ it(
     };
     const recoveryGate = createDeferred();
     const targetRequests: string[] = [];
+    const secondRequests: string[] = [];
     const batchRequests: string[] = [];
     let holdRecovery = false;
     let providerRequestCount = 0;
@@ -123,6 +122,9 @@ it(
         ) {
           targetRequests.push(body);
         }
+        if (!isTitleRequest && body.includes(secondRecoveryMessage)) {
+          secondRequests.push(body);
+        }
         if (!isTitleRequest && body.includes(afterResetMessage)) {
           afterResetRequest.resolve(body);
         }
@@ -140,7 +142,7 @@ it(
     });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
     let recovery: ReturnType<typeof recoverRestartAbortedMainSessions> | undefined;
-    let replacementOwner: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
+    const startupRecoveryStop = new AbortController();
     let gatewayContext: GatewayRequestContext | undefined;
 
     try {
@@ -157,6 +159,26 @@ it(
             role: "user",
             content: recoveryMessage,
             idempotencyKey: "startup-recovery-source:user",
+          },
+        },
+      );
+      await replaceSessionEntry(
+        { storePath, sessionKey: secondSessionKey },
+        { sessionId: secondSessionId, updatedAt: Date.now() + 60_000, status: "done" },
+      );
+      await appendTranscriptMessage(
+        {
+          agentId: "main",
+          sessionId: secondSessionId,
+          sessionKey: secondSessionKey,
+          storePath,
+        },
+        {
+          cwd: state.workspaceDir,
+          message: {
+            role: "user",
+            content: secondRecoveryMessage,
+            idempotencyKey: "startup-recovery-second-source:user",
           },
         },
       );
@@ -234,6 +256,15 @@ it(
           abortedLastRun: true,
         },
       );
+      await replaceSessionEntry(
+        { storePath, sessionKey: secondSessionKey },
+        {
+          sessionId: secondSessionId,
+          updatedAt: Date.now() - 10_000,
+          status: "running",
+          abortedLastRun: true,
+        },
+      );
       clearSessionStoreCacheForTest();
       const addRecoveryChild = async (
         marker: string,
@@ -281,22 +312,22 @@ it(
         throw new Error("Gateway recovery runtime is unavailable");
       }
       holdRecovery = true;
+      // The startup scheduler passes its stop signal so resends run one at a time.
       recovery = recoverRestartAbortedMainSessions({
         cfg,
         stateDir: state.stateDir,
         gatewayRuntime: recoveryRuntime,
+        resendSettlementSignal: startupRecoveryStop.signal,
       });
       await vi.waitFor(() => expect(targetRequests).toHaveLength(1), { timeout: 30_000 });
       expect(readRecoveryPrompt(targetRequests[0] ?? "").includes(originalChildMarker)).toBe(true);
-      const initialOwner = captureSessionEffectOwnerSettlement({
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-      });
-      expect(initialOwner).toBeInstanceOf(Promise);
-      if (!initialOwner) {
-        throw new Error("startup recovery did not own the main session");
-      }
+      const resendRunId = loadSessionEntryReadOnly({
+        storePath,
+        sessionKey,
+      })?.restartRecoveryDeliveryRunId;
+      const resendSource = getRpcSource(expectDefined(resendRunId, "resend run id"));
+      // The resend is the session's selected mailbox input, not a side owner.
+      expect(resendSource?.input.claim).toBeDefined();
 
       const canceledRunId = "webchat-canceled-during-recovery";
       const survivorRunId = "webchat-survives-recovery";
@@ -322,22 +353,18 @@ it(
       await vi.waitFor(() => {
         expect(getRpcSource(canceledRunId)).toBe(canceledSource);
         expect(getRpcSource(survivorRunId)).toBeDefined();
-        expect(targetRequests).toHaveLength(1);
       });
-      replacementOwner = await beginSessionEffect({
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
-        assertAllowed: () => {},
-      });
-
-      recoveryGate.resolve();
-      await expect(recovery).resolves.toMatchObject({ started: 1, failed: 0 });
-      await initialOwner;
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      const survivorSource = getRpcSource(survivorRunId)!;
+      expect(survivorSource.input.mailbox).toBe(resendSource?.input.mailbox);
+      expect(survivorSource.input.sequence).toBeGreaterThan(resendSource!.input.sequence);
+      expect(survivorSource.input.claim).toBeUndefined();
       expect(targetRequests).toHaveLength(1);
+      // The second interrupted session waits for the first resend's input to settle.
+      expect(secondRequests).toHaveLength(0);
+      expect(
+        loadSessionEntryReadOnly({ storePath, sessionKey: secondSessionKey })?.mainRestartRecovery
+          ?.reservation,
+      ).toBeUndefined();
       await expect(
         client.request("chat.abort", { sessionKey, runId: canceledRunId }),
       ).resolves.toMatchObject({ aborted: true, runIds: [canceledRunId] });
@@ -346,7 +373,11 @@ it(
         expect(getRpcSource(survivorRunId)).toBeDefined();
       });
 
-      replacementOwner.release();
+      recoveryGate.resolve();
+      await expect(recovery).resolves.toMatchObject({ started: 2, failed: 0 });
+      await expect(
+        client.request("agent.wait", { runId: resendRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
       await vi.waitFor(() => expect(targetRequests).toHaveLength(2), { timeout: 30_000 });
       expect(targetRequests[1]).toContain(survivorMessage);
       expect(targetRequests[1]).not.toContain(canceledMessage);
@@ -354,6 +385,13 @@ it(
         client.request("agent.wait", { runId: survivorRunId, timeoutMs: 30_000 }),
       ).resolves.toMatchObject({ status: "ok" });
       await vi.waitFor(() => expect(getRpcSource(survivorRunId)).toBeUndefined());
+      // Startup returned only after the last resend's input settled.
+      expect(loadSessionEntryReadOnly({ storePath, sessionKey: secondSessionKey })).toMatchObject({
+        abortedLastRun: false,
+        status: "done",
+      });
+      // Each resend and the surviving WebChat turn executed exactly once.
+      expect(secondRequests).toHaveLength(1);
       expect(targetRequests).toHaveLength(2);
 
       const beforeReset = loadSessionEntryReadOnly({ storePath, sessionKey });
@@ -528,7 +566,7 @@ it(
       expect(staleBatchPrompt).not.toContain("parent recovery required");
     } finally {
       recoveryGate.resolve();
-      replacementOwner?.release();
+      startupRecoveryStop.abort();
       if (recovery) {
         await Promise.allSettled([recovery]);
       }

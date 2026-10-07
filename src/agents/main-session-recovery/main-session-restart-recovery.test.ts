@@ -2582,7 +2582,7 @@ describe("main-session-restart-recovery", () => {
     expect(gatewayParams()).not.toHaveProperty("forceRestartSafeTools");
   });
 
-  it("skips restart-aborted sessions that a current process owns", async () => {
+  it("skips restart-aborted sessions with live controller work in the same store", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeStore(sessionsDir, {
       "agent:main:active-key": {
@@ -2611,11 +2611,25 @@ describe("main-session-restart-recovery", () => {
       { role: "toolResult", content: "done" },
     ]);
 
-    const result = await recoverRestartAbortedMainSessions({
-      stateDir: tmpDir,
-      activeSessionKeys: ["agent:main:active-key"],
-      activeSessionIds: ["active-key-session", "active-id-session"],
-    });
+    const storePath = path.join(sessionsDir, "sessions.json");
+    const liveWork = await Promise.all([
+      beginSessionEffect({
+        scope: storePath,
+        identities: ["agent:main:active-key"],
+        assertAllowed: () => {},
+      }),
+      beginSessionEffect({
+        scope: storePath,
+        identities: ["agent:main:active-id", "active-id-session"],
+        assertAllowed: () => {},
+      }),
+    ]);
+    let result: Awaited<ReturnType<typeof recoverRestartAbortedMainSessions>>;
+    try {
+      result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+    } finally {
+      liveWork.forEach((work) => work.release());
+    }
 
     expect(result).toEqual({ started: 1, settled: 0, failed: 0, skipped: 2 });
     expect(callGateway).toHaveBeenCalledOnce();
@@ -2625,7 +2639,7 @@ describe("main-session-restart-recovery", () => {
     expect(store["agent:main:recoverable"]?.abortedLastRun).toBe(false);
   });
 
-  it("recovers duplicate-key restart-aborted rows when the active run owns a different session id", async () => {
+  it("recovers a restart-aborted row while the same key runs in another store", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeStore(sessionsDir, {
       "agent:main:main": {
@@ -2638,11 +2652,17 @@ describe("main-session-restart-recovery", () => {
       { role: "toolResult", content: "done" },
     ]);
 
-    const result = await recoverRestartAbortedMainSessions({
-      stateDir: tmpDir,
-      activeSessionKeys: ["agent:main:main"],
-      activeSessionIds: ["new-current-session"],
+    const otherStoreWork = await beginSessionEffect({
+      scope: path.join(tmpDir, "other-store", "sessions.json"),
+      identities: ["agent:main:main", "new-current-session"],
+      assertAllowed: () => {},
     });
+    let result: Awaited<ReturnType<typeof recoverRestartAbortedMainSessions>>;
+    try {
+      result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+    } finally {
+      otherStoreWork.release();
+    }
 
     expect(result).toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
     expect(callGateway).toHaveBeenCalledOnce();
@@ -2718,12 +2738,28 @@ describe("main-session-restart-recovery", () => {
       { role: "toolResult", content: "done" },
     ]);
 
-    const marked = await markStartupOrphanedMainSessionsForRecovery({
-      stateDir: tmpDir,
-      activeSessionKeys: ["agent:main:active-key"],
-      activeSessionIds: ["active-key-session", "active-id-session"],
-      updatedBeforeMs: cutoff,
-    });
+    const storePath = path.join(sessionsDir, "sessions.json");
+    const liveWork = await Promise.all([
+      beginSessionEffect({
+        scope: storePath,
+        identities: ["agent:main:active-key"],
+        assertAllowed: () => {},
+      }),
+      beginSessionEffect({
+        scope: storePath,
+        identities: ["agent:main:active-id", "active-id-session"],
+        assertAllowed: () => {},
+      }),
+    ]);
+    let marked: Awaited<ReturnType<typeof markStartupOrphanedMainSessionsForRecovery>>;
+    try {
+      marked = await markStartupOrphanedMainSessionsForRecovery({
+        stateDir: tmpDir,
+        updatedBeforeMs: cutoff,
+      });
+    } finally {
+      liveWork.forEach((work) => work.release());
+    }
 
     expect(marked).toEqual({ marked: 1, skipped: 2 });
     let store = readStore(path.join(sessionsDir, "sessions.json"));
@@ -3634,7 +3670,6 @@ describe("main-session-restart-recovery", () => {
     expect(sendRecoveryNotice).not.toHaveBeenCalled();
     expect(gatewayParams()).toMatchObject({
       expectedExistingSessionId: "main-session",
-      internalRuntimeHandoffId: expect.any(String),
       sessionKey: "agent:main:main",
       sourceReplyDeliveryMode: "message_tool_only",
       deliver: false,

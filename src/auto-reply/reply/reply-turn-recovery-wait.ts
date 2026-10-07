@@ -6,7 +6,6 @@ import { createDeferredCore } from "../../shared/deferred.js";
 export async function waitForRestartRecoveryProgress(params: {
   agentId?: string;
   sessionKey: string;
-  ownerRelease?: Promise<void>;
   signal?: AbortSignal;
 }): Promise<void> {
   const changed = createDeferredCore();
@@ -24,10 +23,7 @@ export async function waitForRestartRecoveryProgress(params: {
   const timer = setTimeout(() => changed.resolve(), DEFAULT_RECOVERY_DELAY_MS);
   timer.unref?.();
   try {
-    await racePromiseWithAbortSignal(
-      params.ownerRelease ? Promise.race([changed.promise, params.ownerRelease]) : changed.promise,
-      params.signal,
-    );
+    await racePromiseWithAbortSignal(changed.promise, params.signal);
   } finally {
     unsubscribe();
     clearTimeout(timer);
