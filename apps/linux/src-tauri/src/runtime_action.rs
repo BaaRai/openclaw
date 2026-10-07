@@ -2,6 +2,7 @@
 use crate::cli::{output_tail, OpenClawCli};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -58,6 +59,12 @@ struct ExpectedPin {
 /// The exact observation displayed before the user confirms; never replace it after confirmation.
 #[derive(Clone, Debug)]
 pub(crate) struct Observation(Value);
+
+#[derive(Debug)]
+pub(crate) enum Activation {
+    Applied,
+    Unchanged(String),
+}
 
 impl Observation {
     fn text(&self, pointer: &str) -> Option<&str> {
@@ -125,6 +132,10 @@ impl Observation {
     }
 
     fn admit(&self, fresh: bool) -> Result<(), String> {
+        self.admit_for(fresh, false)
+    }
+
+    fn admit_for(&self, fresh: bool, elevated_inspection: bool) -> Result<(), String> {
         let pin = self.expected_pin()?;
         if self.paused() {
             return Err(PAUSED.into());
@@ -146,7 +157,8 @@ impl Observation {
         } else if self.command().is_none()
             || pin.definition.is_none()
             || self.flag("/service/loaded") != Some(true)
-            || self.text("/service/runtime/status") != Some("running")
+            || (self.text("/service/runtime/status") != Some("running")
+                && !(elevated_inspection && self.protected_running_task()))
             || self.text("/service/targetRole") != Some("target")
         {
             return Err(
@@ -158,15 +170,54 @@ impl Observation {
     }
 
     fn unchanged_from(&self, expected: &Self, fresh: bool) -> Result<(), String> {
-        self.admit(fresh)?;
+        self.unchanged_for(expected, fresh, false)
+    }
+
+    fn unchanged_for(
+        &self,
+        expected: &Self,
+        fresh: bool,
+        elevated_inspection: bool,
+    ) -> Result<(), String> {
+        self.admit_for(fresh, elevated_inspection)?;
         if self.expected_pin()? != expected.expected_pin()?
             || self.0.pointer("/service/revision") != expected.0.pointer("/service/revision")
             || self.0.pointer("/config/daemon/path") != expected.0.pointer("/config/daemon/path")
             || self.0.pointer("/gateway/port") != expected.0.pointer("/gateway/port")
+            || self.0.pointer("/cli/entrypoint") != expected.0.pointer("/cli/entrypoint")
+            || self.0.pointer("/cli/runtime/execPath")
+                != expected.0.pointer("/cli/runtime/execPath")
         {
             return Err(CHANGED.into());
         }
         Ok(())
+    }
+
+    // This admits an elevation request only. The CLI must prove the running
+    // process under its native lock before it can replace the definition.
+    fn protected_running_task(&self) -> bool {
+        cfg!(windows)
+            && self.text("/service/label") == Some("Scheduled Task")
+            && self.text("/service/runtime/status") == Some("unknown")
+            && self.text("/service/runtime/state") == Some("Running")
+    }
+
+    pub(crate) fn requires_elevation(&self) -> Result<bool, String> {
+        #[cfg(windows)]
+        {
+            if self.protected_running_task() {
+                return Ok(true);
+            }
+            if self.text("/service/label") == Some("Scheduled Task")
+                && self.text("/service/runtime/status") == Some("running")
+            {
+                if let Some(pid) = self.number("/service/runtime/pid") {
+                    let pid = u32::try_from(pid).map_err(|_| "Invalid Gateway process ID.")?;
+                    return crate::windows_elevation::needs_process_elevation(pid);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn healthy_for(&self, runtime: &BundledRuntime) -> bool {
@@ -177,6 +228,13 @@ impl Observation {
             return false;
         };
         self.is_current(runtime)
+            && self.text("/service/runtimeIntent/status") == Some("known")
+            && self
+                .text("/service/runtimeIntent/revision")
+                .is_some_and(|value| !value.is_empty())
+            && self
+                .text("/service/runtimeIntent/definition")
+                .is_some_and(|value| !value.is_empty())
             && self.text("/service/runtimeIntent/pin/runtime") == Some("bun")
             && self
                 .text("/service/runtimeIntent/pin/path")
@@ -265,7 +323,25 @@ pub(crate) fn activate(
     runtime: &BundledRuntime,
     confirmed: &Observation,
     is_current: &dyn Fn() -> bool,
-) -> Result<(), String> {
+) -> Result<Activation, String> {
+    #[cfg(windows)]
+    {
+        let elevated = confirmed.requires_elevation()?;
+        if elevated || confirmed.is_current(runtime) {
+            check_current(is_current)?;
+            validate_runtime(runtime)?;
+            confirmed.admit_for(false, elevated)?;
+            inspect(cli)?.unchanged_for(confirmed, false, elevated)?;
+            check_current(is_current)?;
+            if confirmed.is_current(runtime) {
+                return Ok(Activation::Unchanged(
+                    "The Gateway already selects this app's bundled Bun. No change was made."
+                        .into(),
+                ));
+            }
+            return activate_elevated(runtime, confirmed, is_current);
+        }
+    }
     perform(
         cli,
         runtime,
@@ -273,7 +349,115 @@ pub(crate) fn activate(
         false,
         is_current,
         Duration::from_secs(600),
-    )
+    )?;
+    Ok(Activation::Applied)
+}
+
+#[cfg(windows)]
+fn elevated_install_command(
+    runtime: &BundledRuntime,
+    confirmed: &Observation,
+) -> Result<Command, String> {
+    if confirmed.text("/cli/runtime/kind") != Some("node")
+        || confirmed.flag("/cli/runtime/supported") != Some(true)
+    {
+        return Err(UPGRADE.into());
+    }
+    let executable = Path::new(confirmed.text("/cli/runtime/execPath").ok_or(UPGRADE)?);
+    let entrypoint = Path::new(confirmed.text("/cli/entrypoint").ok_or(UPGRADE)?);
+    if !executable.is_absolute()
+        || !entrypoint.is_absolute()
+        || !executable.is_file()
+        || !entrypoint.is_file()
+        || !entrypoint
+            .extension()
+            .is_some_and(|ext| ext == "js" || ext == "mjs")
+    {
+        return Err(UPGRADE.into());
+    }
+    // The canonical status identifies the CLI actually used for the prompt.
+    // ShellExecute cannot carry private PATH/state environment overrides.
+    let mut command = Command::new(executable);
+    command.arg(entrypoint);
+    let profile = confirmed
+        .text("/service/command/environment/OPENCLAW_PROFILE")
+        .filter(|value| !value.is_empty())
+        .map(OsString::from)
+        .or_else(|| std::env::var_os("OPENCLAW_PROFILE").filter(|value| !value.is_empty()));
+    if let Some(profile) = profile {
+        command.arg("--profile").arg(profile);
+    }
+    command.args(install_arguments(runtime, confirmed)?);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn activate_elevated(
+    runtime: &BundledRuntime,
+    confirmed: &Observation,
+    is_current: &dyn Fn() -> bool,
+) -> Result<Activation, String> {
+    use crate::windows_elevation::{self, ElevationError, Request};
+    let mut command = elevated_install_command(runtime, confirmed)?;
+    let manual = windows_elevation::format_manual_command(&command)?;
+    let fallback = format!(
+        "Run this exact command in PowerShell with administrator approval for this Windows account:\n{manual}"
+    );
+    if !windows_elevation::can_elevate()? {
+        return Ok(Activation::Unchanged(format!(
+            "This Windows account cannot approve an administrator request. This action did not change the Gateway.\n\n{fallback}"
+        )));
+    }
+    let mut request = Request::create(
+        &runtime.bun,
+        &serde_json::to_value(confirmed.expected_pin()?).map_err(|error| error.to_string())?,
+    )?;
+    command
+        .arg("--desktop-runtime-receipt")
+        .arg(request.argument_json());
+    check_current(is_current)?;
+    let code = match windows_elevation::run(&command) {
+        Ok(code) => code,
+        Err(ElevationError::Cancelled) => {
+            eprintln!("Runtime elevation cancelled (Win32 ERROR_CANCELLED, 1223).");
+            return Ok(Activation::Unchanged(format!(
+                "Windows administrator approval was cancelled. This action did not change the Gateway.\n\n{fallback}"
+            )));
+        }
+        Err(ElevationError::NonAdministrator) => {
+            return Ok(Activation::Unchanged(format!(
+                "This Windows account cannot approve an administrator request. This action did not change the Gateway.\n\n{fallback}"
+            )));
+        }
+        Err(ElevationError::Failed(error)) => {
+            return Err(format!("Windows could not complete the CLI handoff: {error}\nInspect Gateway status before retrying.\n\n{fallback}"));
+        }
+    };
+    // Keep the request handles alive until the owner has exited. Never kill or
+    // retry an elevated writer because the app's selection changed meanwhile.
+    let receipt = request.read_completed().map_err(|error| {
+        format!("The elevated CLI exited with code {code}, but {error}\nInspect Gateway status before retrying.\n\n{fallback}")
+    })?;
+    check_current(is_current)?;
+    if code != 0
+        || receipt.pointer("/install/action").and_then(Value::as_str) != Some("install")
+        || receipt.pointer("/install/ok").and_then(Value::as_bool) != Some(true)
+    {
+        let error = receipt
+            .pointer("/install/error")
+            .and_then(Value::as_str)
+            .unwrap_or("The elevated CLI refused or could not complete runtime installation.");
+        return Err(format!("{error}\n\n{fallback}"));
+    }
+    let observation = Observation(receipt.get("observation").cloned().unwrap_or(Value::Null));
+    if !observation.healthy_for(runtime)
+        || observation.0.pointer("/config/daemon/path")
+            != confirmed.0.pointer("/config/daemon/path")
+        || observation.0.pointer("/gateway/port") != confirmed.0.pointer("/gateway/port")
+    {
+        return Err(format!("The CLI completed, but the Gateway was not verified healthy on the bundled runtime. Inspect Gateway status before retrying.\n\n{fallback}"));
+    }
+    Ok(Activation::Applied)
 }
 
 fn perform(
@@ -322,33 +506,13 @@ fn install(
     confirmed: &Observation,
 ) -> Result<(), String> {
     let mut command = cli
-        .command([
-            "gateway",
-            "install",
-            "--force",
-            "--json",
-            "--runtime",
-            "bun",
-            "--runtime-path",
-        ])
+        .command(install_arguments(runtime, confirmed)?)
         .map_err(|error| error.to_string())?;
     command
-        .arg(&runtime.bun)
-        .arg("--expected-runtime-pin")
-        .arg(serde_json::to_string(&confirmed.expected_pin()?).map_err(|error| error.to_string())?)
         .env_remove("OPENCLAW_SQLITE_LIBRARY")
         .env_remove("LD_LIBRARY_PATH");
     if let Some(sqlite) = &runtime.sqlite {
         command.env("OPENCLAW_SQLITE_LIBRARY", sqlite);
-    }
-    if let Some(port) = confirmed.0.pointer("/gateway/port").and_then(Value::as_u64) {
-        command.args(["--port", &port.to_string()]);
-    }
-    if confirmed.command().is_some_and(|args| {
-        args.iter()
-            .any(|arg| arg.as_str() == Some("--allow-unconfigured"))
-    }) {
-        command.arg("--allow-unconfigured");
     }
     let output = checked_output(command, "Gateway runtime installation")?;
     let result: Value = serde_json::from_slice(&output.stdout)
@@ -357,6 +521,41 @@ fn install(
         return Err("Gateway runtime installation did not succeed.".into());
     }
     Ok(())
+}
+
+fn install_arguments(
+    runtime: &BundledRuntime,
+    confirmed: &Observation,
+) -> Result<Vec<OsString>, String> {
+    let mut arguments: Vec<OsString> = [
+        "gateway",
+        "install",
+        "--force",
+        "--json",
+        "--runtime",
+        "bun",
+        "--runtime-path",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    arguments.push(runtime.bun.as_os_str().to_owned());
+    arguments.push("--expected-runtime-pin".into());
+    arguments.push(
+        serde_json::to_string(&confirmed.expected_pin()?)
+            .map_err(|error| error.to_string())?
+            .into(),
+    );
+    if let Some(port) = confirmed.number("/gateway/port") {
+        arguments.extend(["--port".into(), port.to_string().into()]);
+    }
+    if confirmed.command().is_some_and(|args| {
+        args.iter()
+            .any(|arg| arg.as_str() == Some("--allow-unconfigured"))
+    }) {
+        arguments.push("--allow-unconfigured".into());
+    }
+    Ok(arguments)
 }
 
 fn capture(cli: &OpenClawCli, probe: bool) -> Result<Observation, String> {
@@ -571,6 +770,81 @@ mod tests;
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    fn protected_task() -> Observation {
+        Observation(serde_json::json!({
+            "service": {
+                "label": "Scheduled Task", "loaded": true, "targetRole": "target",
+                "command": {"programArguments": [r"C:\runtime\node.exe", r"C:\cli\entry.js", "gateway"]},
+                "runtime": {"status": "unknown", "state": "Running"},
+                "runtimeIntent": {"status": "known", "revision": "captured-pin", "definition": "captured-task"},
+                "revision": "service-revision", "definitionMutation": "writable", "launcherOverridden": false
+            },
+            "gateway": {"port": 18789},
+            "config": {"daemon": {"path": r"C:\Users\fixture\.openclaw\openclaw.json"}}
+        }))
+    }
+
+    #[test]
+    fn windows_unknown_process_only_admits_guarded_elevated_inspection() {
+        let observed = protected_task();
+        assert!(observed.admit(false).is_err());
+        assert!(observed.admit_for(false, true).is_ok());
+        for (pointer, changed) in [
+            ("/service/runtime/state", Value::String("Queued".into())),
+            (
+                "/service/targetRole",
+                Value::String("diagnostic-only".into()),
+            ),
+            ("/service/runtimeIntent/definition", Value::Null),
+            ("/service/launcherOverridden", Value::Bool(true)),
+            (
+                "/service/definitionMutation",
+                Value::String("sealed".into()),
+            ),
+        ] {
+            let mut state = observed.0.clone();
+            *state.pointer_mut(pointer).unwrap() = changed;
+            assert!(
+                Observation(state).admit_for(false, true).is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_elevation_never_replaces_the_confirmed_pin_or_definition() {
+        let confirmed = protected_task();
+        for pointer in [
+            "/service/runtimeIntent/revision",
+            "/service/runtimeIntent/definition",
+            "/service/revision",
+            "/config/daemon/path",
+        ] {
+            let mut state = confirmed.0.clone();
+            *state.pointer_mut(pointer).unwrap() = "changed".into();
+            assert!(
+                Observation(state)
+                    .unchanged_for(&confirmed, false, true)
+                    .is_err(),
+                "{pointer}"
+            );
+        }
+        let runtime = BundledRuntime {
+            bun: PathBuf::from(r"C:\runtime\bun.exe"),
+            sqlite: None,
+        };
+        let arguments = install_arguments(&runtime, &confirmed).unwrap();
+        let pin_index = arguments
+            .iter()
+            .position(|value| value == "--expected-runtime-pin")
+            .unwrap()
+            + 1;
+        assert_eq!(
+            serde_json::from_str::<Value>(arguments[pin_index].to_str().unwrap()).unwrap(),
+            serde_json::json!({"revision":"captured-pin", "definition":"captured-task"})
+        );
+    }
 
     #[test]
     fn windows_runtime_paths_and_recovery_preserve_literal_arguments() {

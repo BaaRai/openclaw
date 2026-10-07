@@ -308,7 +308,23 @@ tooling. Existing Gateways keep their runtime across startup, reconnects, and ap
 updates. Choose **Use bundled runtime…** and confirm the displayed current runtime
 to change one. The CLI checks the captured runtime pin and service definition
 under its native service lock. Paused, changed, or unverifiable services refuse
-without automatic migration or rollback.
+without automatic migration. The app does not implement a separate rollback;
+the canonical service owner retains its backup and recovery behavior.
+
+An existing S4U task can require administrator rights even when it belongs to the
+same Windows account. If the ordinary desktop token cannot inspect or stop that
+Gateway, the confirmation explains the administrator request. The app requests
+UAC once for the existing CLI; the desktop app stays unelevated. That CLI checks
+the captured pin again, performs the complete stop, replace, and start operation,
+verifies Gateway health, and exits. There is no resident elevated helper, stored
+credential, or automatic migration on startup or update.
+
+Cancelling UAC leaves the Gateway unchanged. An account without an administrator
+token does not receive a credential prompt. Both outcomes show the exact
+PowerShell command to run manually with administrator approval for the same
+Windows account. If the pin or definition changes while approval is pending,
+the CLI refuses the stale action and preserves the newer selection. Choosing an
+already-selected bundled runtime does not reinstall it.
 
 The app decodes verified `bun.exe` bytes into an immutable directory under its
 account state directory, normally

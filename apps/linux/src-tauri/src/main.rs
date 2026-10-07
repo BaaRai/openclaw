@@ -41,6 +41,8 @@ mod window_chrome;
 mod window_chrome_linux;
 #[cfg(target_os = "macos")]
 mod window_chrome_macos;
+#[cfg(windows)]
+mod windows_elevation;
 
 use cli::{CliError, OpenClawCli};
 use gateway::{GatewayAction, GatewaySnapshot, ReadyGateway};
@@ -990,12 +992,23 @@ impl DesktopState {
             return Err("Select the local Gateway before changing its runtime.".into());
         }
         let runtime = bundled_runtime::seed(app)?;
-        runtime_action::activate(&action.cli, &runtime, &action.observation, &|| {
-            self.runtime_operation_is_current(app, selection)
-        })?;
+        let outcome =
+            runtime_action::activate(&action.cli, &runtime, &action.observation, &|| {
+                self.runtime_operation_is_current(app, selection)
+            })?;
+        if let runtime_action::Activation::Unchanged(message) = outcome {
+            tray::show_runtime_notice(app, &message);
+            return gateway::status(&action.cli);
+        }
         let snapshot = gateway::status(&action.cli)?;
         let ready = gateway::dashboard(&action.cli, snapshot)?;
-        self.finish_local_connection(app, action.cli, ready)
+        let snapshot = self.finish_local_connection(app, action.cli, ready)?;
+        #[cfg(windows)]
+        tray::show_runtime_notice(
+            app,
+            "The Gateway is healthy on this app's bundled Bun runtime.",
+        );
+        Ok(snapshot)
     }
 
     fn finish_local_connection(

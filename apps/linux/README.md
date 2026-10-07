@@ -187,7 +187,15 @@ publish these proof binaries.
 Fresh Windows setup offers Stable and Beta and installs a private Node-based CLI;
 the Gateway alone adopts bundled Bun. Startup, reconnects, and app updates only
 observe existing Windows services. Runtime changes use the same confirmed action
-and canonical `--expected-runtime-pin` guard as Linux. See the
+and canonical `--expected-runtime-pin` guard as Linux. Protected Scheduled Tasks
+use one `ShellExecuteExW("runas")` request for the CLI after confirmation; the app
+stays unelevated. The canonical CLI owns the complete transition, backup/recovery,
+and readiness check. A short-lived result file under the account's
+`.openclaw/desktop-runtime-actions` binds the result to that request; it grants no
+service authority. The app retains file/directory handles through CLI exit and
+then removes the request. Cancellation and non-admin accounts leave the service
+alone and show the exact manual command. No privileged listener or resident
+helper is installed. See the
 [Windows platform guide](https://docs.openclaw.ai/platforms/windows#tauri-companion-runtime-preparation)
 for file locking, immutable retention, SmartScreen, and uninstall behavior.
 
@@ -539,10 +547,9 @@ the resource and checks its architecture and symbol versions against the
 AppImage's existing compatibility floor.
 
 macOS Tauri keeps its existing runtime behavior; its native macOS sibling owns
-the Mac's bundled runtime. Windows retains its existing runtime behavior and
-unavailable CLI auto-install in test builds. No Windows Bun payload ships until
-a signed fork build exists;
-the unsigned dry-run is not eligible. See
+the Mac's bundled runtime. Windows production runtime admission stays unavailable
+until a signed fork build exists. The unsigned debug proof supports explicit
+Stable/Beta setup and runtime adoption; it is not eligible for publication. See
 [Bun compatibility](https://docs.openclaw.ai/install/bun-compatibility) for runtime
 admission and the shared pin's repin gates.
 

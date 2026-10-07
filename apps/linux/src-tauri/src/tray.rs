@@ -448,8 +448,18 @@ fn handle_menu(
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) fn show_runtime_error(app: &AppHandle, error: &str) {
+    show_runtime_message(app, error, MessageDialogKind::Error);
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn show_runtime_notice(app: &AppHandle, notice: &str) {
+    show_runtime_message(app, notice, MessageDialogKind::Info);
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn show_runtime_message(app: &AppHandle, message: &str, kind: MessageDialogKind) {
     let current_app = app.clone();
-    let error = error.to_owned();
+    let message = message.to_owned();
     let _ = app.run_on_main_thread(move || {
         if current_app.state::<DesktopState>().is_quitting() {
             return;
@@ -457,9 +467,9 @@ pub(crate) fn show_runtime_error(app: &AppHandle, error: &str) {
         show_window(&current_app);
         current_app
             .dialog()
-            .message(error)
+            .message(message)
             .title("Use bundled runtime")
-            .kind(MessageDialogKind::Error)
+            .kind(kind)
             .show(|_| {});
     });
 }
@@ -488,8 +498,16 @@ fn confirm_runtime_action(app: &AppHandle) {
                 return;
             }
         };
+        let elevation = match action.observation.requires_elevation() {
+            Ok(true) => "\n\nWindows administrator approval is required to verify and change this service. Only the OpenClaw CLI will run as administrator. Cancelling approval leaves this action without any service changes.",
+            Ok(false) => "",
+            Err(error) => {
+                show_runtime_error(&current_app, &error);
+                return;
+            }
+        };
         let message = format!(
-            "Current runtime: {}\n\nUse this app's bundled Bun runtime for the Gateway? This reinstalls and restarts the service. Future app updates will ask you to choose this action again.",
+            "Current runtime: {}\n\nUse this app's bundled Bun runtime for the Gateway? This reinstalls and restarts the service. Future app updates will ask you to choose this action again.{elevation}",
             action.observation.current_runtime(),
         );
         let dialog_app = current_app.clone();

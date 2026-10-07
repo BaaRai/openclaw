@@ -36,6 +36,28 @@ describe("runDaemonInstall", () => {
   setupInstallTests();
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+  it("rejects an invalid desktop receipt before inspecting or mutating service state", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    await runDaemonInstall({
+      json: true,
+      force: true,
+      runtime: "bun",
+      runtimePath: "C:\\runtime\\bun.exe",
+      expectedRuntimePin: JSON.stringify({ revision: "captured", definition: "task" }),
+      desktopRuntimeReceipt: "not-json",
+    });
+    expect(actionState.failed).toEqual([
+      {
+        message: "Desktop runtime result could not be admitted. No service changes were attempted.",
+        hints: undefined,
+      },
+    ]);
+    expect(service.readCommand).not.toHaveBeenCalled();
+    expect(readConfigFileSnapshotMock).not.toHaveBeenCalled();
+    expect(replaceConfigFileMock).not.toHaveBeenCalled();
+    expect(service.install).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])(
     "attests pre-write service holds only from native refusal facts (%s)",
     async (typed) => {

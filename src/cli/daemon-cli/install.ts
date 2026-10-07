@@ -64,6 +64,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { createLazyPromise } from "../../shared/lazy-promise.js";
 import { formatCliCommand } from "../command-format.js";
 import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
+import { prepareDesktopRuntimeReceipt, type DesktopRuntimeReceipt } from "./install-receipt.js";
 import { resolveRestoreServiceCli } from "./install-restore-cli.js";
 import { buildDaemonServiceSnapshot, installDaemonServiceAndEmit } from "./response.js";
 import { createDaemonInstallActionContext, resolveDaemonInstallBlockMessage } from "./shared.js";
@@ -178,9 +179,29 @@ export function mergeInstallInvocationEnv(params: {
 
 /** Install or refresh the managed Gateway service. */
 export async function runDaemonInstall(opts: DaemonInstallOptions) {
+  let receipt: DesktopRuntimeReceipt;
+  try {
+    receipt = prepareDesktopRuntimeReceipt(opts);
+  } catch {
+    createDaemonInstallActionContext(opts.json).fail(
+      "Desktop runtime result could not be admitted. No service changes were attempted.",
+    );
+    return;
+  }
+  try {
+    await runDaemonInstallWithReceipt(opts, receipt);
+  } finally {
+    receipt?.close();
+  }
+}
+
+async function runDaemonInstallWithReceipt(
+  opts: DaemonInstallOptions,
+  receipt: DesktopRuntimeReceipt,
+) {
   let definitionBackup: GatewayServiceDefinitionBackupReceipt | undefined;
   const { json, stdout, warnings, warn, emit, emitMessage, fail } =
-    createDaemonInstallActionContext(opts.json, () => definitionBackup);
+    createDaemonInstallActionContext(opts.json, () => definitionBackup, receipt?.emit);
   const installBlock = resolveDaemonInstallBlockMessage("gateway");
   if (installBlock) {
     fail(installBlock);
@@ -217,6 +238,10 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     env: process.env,
     existingServiceEnv,
   });
+  if (receipt && installEnv[OPENCLAW_WRAPPER_ENV_KEY]?.trim()) {
+    fail("Desktop runtime selection is unavailable for a wrapper-managed service.");
+    return;
+  }
   let pinSnapshot;
   try {
     pinSnapshot = readDaemonRuntimePinForInstall(
@@ -555,6 +580,7 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     service,
     successMessage,
     onVerified: async () => {
+      await receipt?.observe(cfg, port);
       if (!json) {
         defaultRuntime.log(successMessage);
       }
