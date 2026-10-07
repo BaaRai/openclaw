@@ -10,7 +10,8 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readDefaultProactiveJobReceiptInDatabase } from "../cron/proactive-job-receipt.js";
-import { CRON_JOB_SCRATCH_MAX_BYTES } from "../cron/scratch-contract.js";
+import type { DefaultProactiveJobReceipt } from "../cron/proactive-job-receipt.types.js";
+import { CRON_JOB_SCRATCH_MAX_BYTES, type CronJobScratchState } from "../cron/scratch-contract.js";
 import { readScratchStateFromDatabase } from "../cron/scratch-read.kernel.js";
 import { hashCronScratchSource, readCronJobScratchState } from "../cron/scratch-store.js";
 import { writeCronJobScratchInDatabase } from "../cron/scratch-write.kernel.js";
@@ -49,7 +50,7 @@ type HeartbeatSource = {
   sha256: string;
 };
 
-async function readHeartbeatSource(
+export async function readHeartbeatSource(
   cfg: OpenClawConfig,
   agentId: string,
   options?: { recoverClaims?: boolean; env?: NodeJS.ProcessEnv },
@@ -116,6 +117,31 @@ async function readHeartbeatSource(
     content,
     sha256: hashCronScratchSource(content),
   };
+}
+
+export function completedHeartbeatSourceWarning(agentId: string): string {
+  return `Agent "${agentId}" has completed cutover; its newly present HEARTBEAT.md was retained without changing the operator-owned automation.`;
+}
+
+export function shouldInspectHeartbeatScratchSource(
+  hasMonitor: boolean,
+  receipt: DefaultProactiveJobReceipt | undefined,
+): boolean {
+  return hasMonitor || receipt?.phase === "complete";
+}
+
+export function heartbeatScratchMigrationConflict(
+  agentId: string,
+  content: string,
+  state: CronJobScratchState,
+): string | undefined {
+  if (state.currentRevision > 0 && !state.scratch) {
+    return `Agent "${agentId}" scratch was explicitly unset; it was left unchanged.`;
+  }
+  if (state.scratch && state.scratch.content !== content && !state.scratch.sourceSha256) {
+    return `Agent "${agentId}" already has different cron scratch; it was left unchanged.`;
+  }
+  return undefined;
 }
 
 function archivePathForSource(agentId: string, sha256: string, env: NodeJS.ProcessEnv): string {
@@ -473,7 +499,7 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
       ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
       { env },
     );
-    if (!monitor && receipt?.phase !== "complete") {
+    if (!shouldInspectHeartbeatScratchSource(Boolean(monitor), receipt)) {
       continue;
     }
     let source: HeartbeatSource | undefined;
@@ -488,9 +514,7 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
     }
     if (receipt?.phase === "complete") {
       retainedSources.add(source.entryKey);
-      warnings.push(
-        `Agent "${agentId}" has completed cutover; its newly present HEARTBEAT.md was retained without changing the operator-owned automation.`,
-      );
+      warnings.push(completedHeartbeatSourceWarning(agentId));
       continue;
     }
     // Group by the directory entry being removed (canonical parent directory +
@@ -521,13 +545,9 @@ export async function maybeMigrateHeartbeatFilesToScratch(params: {
       const state = readCronJobScratchState(storePath, monitor.id, { env });
       const current = state.scratch;
       plannedRevisionByJobId.set(monitor.id, state.currentRevision);
-      if (state.currentRevision > 0 && !current) {
-        warnings.push(`Agent "${agentId}" scratch was explicitly unset; it was left unchanged.`);
-        keepSource = true;
-      } else if (current && current.content !== source.content && !current.sourceSha256) {
-        warnings.push(
-          `Agent "${agentId}" already has different cron scratch; it was left unchanged.`,
-        );
+      const conflict = heartbeatScratchMigrationConflict(agentId, source.content, state);
+      if (conflict) {
+        warnings.push(conflict);
         keepSource = true;
       } else {
         importAgents.push([agentId, monitor]);

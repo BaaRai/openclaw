@@ -6,6 +6,7 @@ import {
   listReferencedLegacyOAuthSidecarPaths,
 } from "../../commands/doctor-auth-legacy-paths.js";
 import { projectHeartbeatConfigForUpdateAdmission } from "../../commands/doctor-automatic-heartbeat-repair.js";
+import { assertHeartbeatScratchMigrationUnambiguous } from "../../commands/doctor-heartbeat-scratch-preflight.js";
 import { planLegacyConfigForUpdateChannel } from "../../commands/doctor/legacy-config-repair.js";
 import { findRetiredConfigUpgradeRequirement } from "../../commands/doctor/shared/retired-config-formats.js";
 import { cloneEnvWithPlatformSemantics } from "../../config/env-vars.js";
@@ -276,6 +277,24 @@ async function inspectUpdateAdmission(
             refuse("state-format", "retired-state-format", error.message);
             schemasAccepted = false;
           }
+        }
+      }
+      if (databaseContext && schemasAccepted) {
+        try {
+          const snapshot = databaseContext.configSnapshot;
+          await assertHeartbeatScratchMigrationUnambiguous(
+            snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig ?? snapshot.config,
+            databaseContext.env,
+          );
+        } catch (error) {
+          // A valid refusal keeps shipped drivers from falling back to their older admission.
+          refuse(
+            "heartbeat-migration",
+            "heartbeat-migration",
+            String(error),
+            "Reconcile the reported heartbeat source and automation scratch, preserving both originals, then retry the update.",
+          );
+          schemasAccepted = false;
         }
       }
       if (databaseContext && schemasAccepted) {

@@ -27,6 +27,7 @@ import {
   collectHeartbeatScratchMigrationFindings,
   maybeMigrateHeartbeatFilesToScratch,
 } from "./doctor-heartbeat-scratch-migration.js";
+import { assertHeartbeatScratchMigrationUnambiguous } from "./doctor-heartbeat-scratch-preflight.js";
 import { maybeMigrateHeartbeatTasksToCron } from "./doctor-heartbeat-task-migration.js";
 
 const tempDirs: string[] = [];
@@ -212,13 +213,14 @@ describe("HEARTBEAT.md cron scratch migration", () => {
   });
 
   it.each([
-    { completedId: "main", deleted: false },
-    { completedId: "ollama", deleted: false },
-    { completedId: "main", deleted: true },
-    { completedId: "ollama", deleted: true },
+    { completedId: "main", deleted: false, separateWorkspace: false },
+    { completedId: "ollama", deleted: false, separateWorkspace: false },
+    { completedId: "main", deleted: true, separateWorkspace: false },
+    { completedId: "ollama", deleted: true, separateWorkspace: false },
+    { completedId: "main", deleted: false, separateWorkspace: true },
   ])(
-    "retains shared source for completed $completedId (job deleted: $deleted)",
-    async ({ completedId, deleted }) => {
+    "retains source for completed $completedId (job deleted: $deleted, separate workspace: $separateWorkspace)",
+    async ({ completedId, deleted, separateWorkspace }) => {
       const fixture = await createFixture();
       const cfg = await retireHeartbeatWithDoctor({
         agents: {
@@ -248,13 +250,36 @@ describe("HEARTBEAT.md cron scratch migration", () => {
       const completedReceipt = receipt(completedId);
       expect(completedReceipt).toMatchObject({ jobId: completedJob.id, phase: "complete" });
       const pendingId = completedId === "main" ? "ollama" : "main";
-      cfg.agents!.entries![pendingId] = {
-        workspace: fixture.workspace,
-        heartbeat: { every: "30m" },
-      };
-      const originalConfig = structuredClone(cfg);
+      const pendingWorkspace = separateWorkspace
+        ? path.join(fixture.root, "pending-workspace")
+        : fixture.workspace;
+      await fs.mkdir(pendingWorkspace, { recursive: true });
+      cfg.agents!.entries![pendingId] = { workspace: pendingWorkspace };
       const content = "# Operator-restored checklist\r\n\r\nKeep these exact bytes.  \r\n";
       await fs.writeFile(fixture.heartbeatPath, content);
+
+      await expect(
+        maybeMigrateHeartbeatFilesToScratch({ cfg, shouldRepair: true }),
+      ).resolves.toEqual({
+        changes: [],
+        warnings: [],
+      });
+      await expect(
+        assertHeartbeatScratchMigrationUnambiguous(cfg, process.env),
+      ).resolves.toBeUndefined();
+      cfg.agents!.entries![pendingId] = {
+        workspace: pendingWorkspace,
+        heartbeat: { every: "30m" },
+      };
+      if (separateWorkspace) {
+        await fs.writeFile(path.join(pendingWorkspace, "HEARTBEAT.md"), content);
+      }
+      const originalConfig = structuredClone(cfg);
+      await expect(assertHeartbeatScratchMigrationUnambiguous(cfg, process.env)).rejects.toThrow(
+        `Agent "${completedId}" has completed cutover`,
+      );
+      expect((await loadCronJobsStore(storePath)).jobs).toEqual(completedJobs);
+      expect(receipt(pendingId)).toBeUndefined();
 
       await expect(retireHeartbeatWithDoctor(cfg)).rejects.toThrow(
         `Agent "${completedId}" has completed cutover`,

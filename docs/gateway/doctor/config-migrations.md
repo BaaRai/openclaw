@@ -47,6 +47,11 @@ deletions. See [Heartbeat migration](/gateway/heartbeat) and the
 Candidate update admission validates the projected configuration without changing
 the live config, databases, or backups. The installed updater can then run
 Doctor's backed-up data migration before the legacy settings are removed.
+Package updates using candidate admission also inspect the original heartbeat
+files and automation scratch. Known conflicts refuse the update before the running
+Gateway stops, including when an older updater omits workspace files from its
+private rehearsal. Reconcile the reported source and scratch while preserving
+both originals, then retry the update.
 Unrelated invalid fields, unsupported legacy shapes, and heartbeat repairs in
 read-only, future-written, or included configuration still require operator
 repair before admission.

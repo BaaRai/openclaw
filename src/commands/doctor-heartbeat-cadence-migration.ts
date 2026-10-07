@@ -41,6 +41,12 @@ import {
   validateLegacyHeartbeatConfig,
 } from "./doctor-heartbeat-legacy.js";
 import {
+  isGeneratedHeartbeatMonitor,
+  planDoctorHeartbeatMonitors,
+  resolveDoctorHeartbeatReceiptJob,
+  selectDoctorHeartbeatMonitor,
+} from "./doctor-heartbeat-monitors.js";
+import {
   resolveHeartbeatPhaseMs,
   resolveHeartbeatSchedulerSeed,
 } from "./doctor-heartbeat-schedule.js";
@@ -49,10 +55,6 @@ import { isHeartbeatTaskCronJob } from "./doctor-heartbeat-task-identity.js";
 import { resolveHeartbeatVisibility } from "./doctor-heartbeat-visibility.js";
 
 const CHECK_ID = "core/doctor/heartbeat-cadence-migration";
-
-function isGeneratedMonitor(job: DoctorCronJob): boolean {
-  return job.payload.kind === "heartbeat" && job.declarationKey === `heartbeat:${job.agentId}`;
-}
 
 function isPendingLegacyHeartbeatRetry(job: DoctorCronJob): job is CronJob & {
   payload: Extract<CronJob["payload"], { kind: "systemEvent" }>;
@@ -175,7 +177,7 @@ function convertMonitor(
     ...(heartbeat?.accountId ? { accountId: heartbeat.accountId } : {}),
     ...(heartbeat?.directPolicy ? { directPolicy: heartbeat.directPolicy } : {}),
   };
-  if (!previous || isGeneratedMonitor(previous)) {
+  if (!previous || isGeneratedHeartbeatMonitor(previous)) {
     delete job.declarationKey;
   }
   if (!previous) {
@@ -187,7 +189,7 @@ function convertMonitor(
       anchorMs: resolveHeartbeatPhaseMs({ schedulerSeed, agentId, intervalMs: everyMs }),
     };
     job.state.nextRunAtMs = computeJobNextRunAtMs(job, nowMs);
-  } else if (isGeneratedMonitor(previous)) {
+  } else if (isGeneratedHeartbeatMonitor(previous)) {
     // Config was the generated monitor's desired state, not merely its create default.
     // Preserve independent disable state and unchanged anchors/slots at ownership transfer.
     job.enabled = previous.enabled && intervalMs !== null;
@@ -226,47 +228,16 @@ export async function ensureHeartbeatMonitorJobs(
 ): Promise<Map<string, CronJob>> {
   validateLegacyHeartbeatConfig(cfg);
   const loaded = readDoctorHeartbeatJobs(storePath, env);
-  const configuredAgentIds = new Set(listAgentIds(cfg));
-  const enrolledAgentIds = new Set([
-    ...resolveHeartbeatAgents(cfg)
-      .filter((agent) => agent.heartbeat !== undefined)
-      .map((agent) => agent.agentId),
-    ...legacyFileAgentIds,
-  ]);
-  const agentIds = new Set(enrolledAgentIds);
-  for (const job of loaded) {
-    if (job.payload.kind === "heartbeat" || isHeartbeatTaskCronJob(job)) {
-      if (!job.agentId) {
-        throw new Error(
-          `Legacy monitor ${job.id} has no agent owner; assign its owner before Doctor cutover.`,
-        );
-      }
-      if (!configuredAgentIds.has(job.agentId)) {
-        throw new Error(
-          `Legacy automation ${job.id} belongs to unconfigured agent ${job.agentId}; restore its owner before cutover.`,
-        );
-      }
-      if (
-        job.payload.kind === "heartbeat" &&
-        job.declarationKey?.startsWith("heartbeat:") &&
-        !isGeneratedMonitor(job)
-      ) {
-        throw new Error(
-          `Legacy monitor ${job.id} has conflicting declaration ${job.declarationKey} and agent ${job.agentId}. Restore its original owner/declaration from backup before rerunning Doctor; legacy config and rows were retained.`,
-        );
-      }
-      agentIds.add(job.agentId);
-    }
-  }
-  for (const agentId of listAgentIds(cfg)) {
-    const receipt = withExistingOpenClawStateDatabaseReadOnly(
-      ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
-      { env },
-    );
-    if (receipt) {
-      agentIds.add(agentId);
-    }
-  }
+  const { agentIds, enrolledAgentIds } = planDoctorHeartbeatMonitors(
+    cfg,
+    loaded,
+    (agentId) =>
+      withExistingOpenClawStateDatabaseReadOnly(
+        ({ db }) => readDefaultProactiveJobReceiptInDatabase(db, storePath, agentId),
+        { env },
+      ),
+    legacyFileAgentIds,
+  );
   if (agentIds.size === 0 && !loaded.some(isPendingLegacyHeartbeatRetry)) {
     return new Map();
   }
@@ -276,22 +247,17 @@ export async function ensureHeartbeatMonitorJobs(
     const legacyJobs = loaded.filter(
       (job) => job.payload.kind === "heartbeat" && job.agentId === agentId,
     );
-    const matches = legacyJobs.filter(isGeneratedMonitor);
-    if (matches.length > 1) {
-      throw new Error(
-        `Multiple legacy monitors for ${agentId}; resolve the duplicate ownership before cutover.`,
-      );
-    }
-    const job = convertMonitor(cfg, agentId, matches[0], nowMs, schedulerSeed, env);
-    if (!matches[0] && !enrolledAgentIds.has(agentId)) {
+    const previousMonitor = selectDoctorHeartbeatMonitor(legacyJobs, agentId);
+    const job = convertMonitor(cfg, agentId, previousMonitor, nowMs, schedulerSeed, env);
+    if (!previousMonitor && !enrolledAgentIds.has(agentId)) {
       job.enabled = false;
       delete job.state.nextRunAtMs;
     }
     // Row-only jobs retain their own schedule and identity; only the generated
     // monitor receives the default receipt and imported agent scratch.
-    const conversions = [{ agentId, previous: matches[0], job, defaultMonitor: true }];
+    const conversions = [{ agentId, previous: previousMonitor, job, defaultMonitor: true }];
     for (const previous of legacyJobs) {
-      if (!isGeneratedMonitor(previous)) {
+      if (!isGeneratedHeartbeatMonitor(previous)) {
         conversions.push({
           agentId,
           previous,
@@ -338,31 +304,14 @@ export async function ensureHeartbeatMonitorJobs(
           ? readDefaultProactiveJobReceiptInDatabase(db, storePath, item.agentId)
           : undefined;
         if (receipt) {
-          if (item.previous && item.previous.id !== receipt.jobId) {
-            throw new Error(
-              `Agent ${item.agentId} has a legacy monitor outside its cutover receipt; resolve the conflicting job before stripping legacy configuration.`,
-            );
-          }
-          const current = currentJobs.find((job) => job.id === receipt.jobId);
-          if (!current && receipt.phase !== "complete") {
-            throw new Error(
-              `Agent ${item.agentId} has an incomplete cutover whose job ${receipt.jobId} was deleted. Restore the job from backup or resolve its remaining legacy data before rerunning Doctor; it will not be recreated.`,
-            );
-          }
-          if (
-            current &&
-            receipt.phase !== "complete" &&
-            (current.agentId !== item.agentId || current.payload.kind !== "agentTurn")
-          ) {
-            throw new Error(
-              `Automation ${current.id} changed owner or payload during an incomplete cutover; legacy inputs were retained.`,
-            );
-          }
+          const current = resolveDoctorHeartbeatReceiptJob(
+            currentJobs,
+            item.agentId,
+            receipt,
+            item.previous,
+          );
           if (current) {
-            if (current.payload.kind === "heartbeat") {
-              throw new Error(`Automation ${current.id} retained a legacy payload after cutover.`);
-            }
-            result.set(item.agentId, { ...current, payload: current.payload });
+            result.set(item.agentId, current);
           }
           continue;
         }
@@ -372,7 +321,9 @@ export async function ensureHeartbeatMonitorJobs(
         if (
           (item.previous && (!current || !isDeepStrictEqual(current, item.previous))) ||
           (!item.previous &&
-            currentJobs.some((job) => isGeneratedMonitor(job) && job.agentId === item.agentId))
+            currentJobs.some(
+              (job) => isGeneratedHeartbeatMonitor(job) && job.agentId === item.agentId,
+            ))
         ) {
           throw new Error(
             `Agent ${item.agentId} automation changed during Doctor planning; no cutover committed. Rerun Doctor.`,
