@@ -67,6 +67,8 @@ explicit maintainer approval on October 3, 2026:
   the `typingPolicy: "heartbeat"` value.
 - The `isHeartbeat` input on `ContextEngine.ingest`, `ingestBatch`, `afterTurn`,
   and `commitTurn`.
+- The `"heartbeat"` member of `EmbeddedRunTrigger`. Scheduled runs use `"cron"`;
+  immediate session follow-ups use `"event"`.
 
 This is a breaking plugin-SDK change. Plugins importing removed names must be
 updated before upgrading the host; deprecated aliases are not retained.
