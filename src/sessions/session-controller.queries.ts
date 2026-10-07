@@ -4,6 +4,7 @@ import { ReplyRunAlreadyActiveError, type ReplyOperation } from "./session-contr
 import {
   activeSessionOperations,
   findSessionControllerEntries,
+  getAttachedBackend,
   isReplyRunEvidenceStale,
   getSessionControllerOperation,
   hasReplyOperationExecutionStarted,
@@ -113,4 +114,20 @@ export function resolveActiveReplyOperationForSessionId(
     throw new ReplyRunAlreadyActiveError(sessionId);
   }
   return resolution.kind === "one" ? resolution.operation : undefined;
+}
+
+/** Resolves the one slot-owning operation executing a backend or protocol run ID; ambiguity fails closed. */
+export function findSessionControllerOperationByRunId(runId: string): ReplyOperation | undefined {
+  const id = normalizeOptionalString(runId);
+  if (!id) {
+    return undefined;
+  }
+  const matches = [...activeSessionOperations()].filter((operation) => {
+    const claim = getSessionControllerEntryForOperation(operation).mailbox?.claim;
+    return (
+      getAttachedBackend(operation)?.runId === id ||
+      (claim?.operation === operation && claim.inputs.some((input) => input.protocolRunId === id))
+    );
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }

@@ -2,7 +2,10 @@
 import { createDeferredCore } from "../shared/deferred.js";
 import { logSessionControllerPhase } from "./session-controller.diagnostics.js";
 import { retireSessionControllerInput } from "./session-controller.mailbox-source.js";
-import { reserveSessionControllerSource } from "./session-controller.mailbox.js";
+import {
+  reserveOrJoinSessionControllerSource,
+  type reserveSessionControllerSource,
+} from "./session-controller.mailbox.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
@@ -37,6 +40,8 @@ function retainsPreExecutionClaimCustody(claim: SessionControllerMailboxClaim): 
 
 export type SessionControllerClaimPredecessor = {
   input: SessionControllerInput;
+  /** False when another owner reserved this input; only its creator may retire it. */
+  created: boolean;
   /** Resolves true only after the retained claim owns the mailbox again. */
   restored: Promise<boolean>;
 };
@@ -112,7 +117,7 @@ function waitForSessionControllerClaimRestoration(
   return restoration.promise;
 }
 
-/** Orders one newly reserved predecessor before a selected source without retiring either claim. */
+/** Orders one new or joined predecessor before a selected source without retiring either claim. */
 export function reserveSessionControllerClaimPredecessor(
   claim: SessionControllerMailboxClaim,
   params: Parameters<typeof reserveSessionControllerSource>[1],
@@ -128,15 +133,18 @@ export function reserveSessionControllerClaimPredecessor(
     throw new Error("Only a current pre-execution claim can hand off to a predecessor");
   }
 
-  const predecessor = reserveSessionControllerSource(mailbox.key, params);
-  const predecessorIndex = mailbox.entries.indexOf(predecessor);
+  const { input: predecessor, created } = reserveOrJoinSessionControllerSource(mailbox.key, params);
+  // A joined input may already wait for its own turn admission; it never injects or runs yet.
   if (
     predecessor.mailbox !== mailbox ||
-    predecessorIndex < 0 ||
+    !mailbox.entries.includes(predecessor) ||
     predecessor.claim ||
-    predecessor.phase !== "preparing"
+    predecessor.injection ||
+    (predecessor.phase !== "preparing" && (created || predecessor.phase !== "waiting"))
   ) {
-    retireSessionControllerInput(predecessor);
+    if (created) {
+      retireSessionControllerInput(predecessor);
+    }
     throw new Error("Predecessor reservation does not belong to the selected controller claim");
   }
 
@@ -145,10 +153,11 @@ export function reserveSessionControllerClaimPredecessor(
   logSessionControllerPhase({
     phase: "recovery-predecessor",
     status: "reserved",
+    ...(created ? {} : { reason: "joined" }),
     sessionKey: mailbox.key,
     sourceId: predecessor.protocolRunId ?? predecessor.instance.id,
   });
   const restored = waitForSessionControllerClaimRestoration(claim, predecessor);
   mailbox.wake();
-  return { input: predecessor, restored };
+  return { input: predecessor, created, restored };
 }

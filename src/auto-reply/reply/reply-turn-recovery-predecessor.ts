@@ -22,6 +22,8 @@ export async function retryRestartRecoveryBeforeSelectedClaim(params: {
   expectedRecoveryRunId?: string;
   expectedRecoverySourceRunId?: string;
   gatewayRuntime: GatewayRecoveryRuntime;
+  /** Durable resend identity; a live input with this ID is joined, never dispatched again. */
+  reservationId?: string;
   sessionId: string;
   sessionKey: string;
   storePath: string;
@@ -29,6 +31,7 @@ export async function retryRestartRecoveryBeforeSelectedClaim(params: {
 }): Promise<RestartRecoveryResult | undefined> {
   const handoff = params.claim
     ? reserveSessionControllerClaimPredecessor(params.claim, {
+        reservationId: params.reservationId,
         policy: { mode: "followup" },
         target: captureSessionTarget({
           storeScope: params.storePath,
@@ -43,6 +46,11 @@ export async function retryRestartRecoveryBeforeSelectedClaim(params: {
         },
       })
     : undefined;
+  if (handoff && !handoff.created) {
+    // Another dispatcher owns this resend; wait for it without a second dispatch or retirement.
+    await handoff.restored;
+    return undefined;
+  }
   const input = handoff?.input;
   let recovery: RestartRecoveryResult;
   try {

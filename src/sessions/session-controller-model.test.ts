@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { QuestionAnswerUnconfirmedError } from "../agents/harness/gateway-question-dispatch.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
+import { retryRestartRecoveryBeforeSelectedClaim } from "../auto-reply/reply/reply-turn-recovery-predecessor.js";
+import type { GatewayRecoveryRuntime } from "../gateway/server-instance-runtime.types.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { applyQueueDropPolicy } from "../utils/queue-helpers.js";
 import {
@@ -31,6 +33,9 @@ import {
   releaseSessionControllerClaim,
   reserveSessionControllerSource,
   retireSessionControllerInput,
+  tryClaimSessionControllerTask,
+  type SessionControllerInput,
+  type SessionControllerMailboxClaim,
 } from "./session-controller.mailbox.js";
 import { beginReplyMessageInjectionTarget } from "./session-controller.message-injection.js";
 
@@ -212,6 +217,47 @@ async function replay(events: readonly PilotEvent[], label: string) {
   }
 }
 
+const noRecoveryDispatch = () => Promise.reject(new Error("a joined resend must not dispatch"));
+const joinOnlyRecoveryRuntime: GatewayRecoveryRuntime = {
+  dispatchSessionMethod: noRecoveryDispatch,
+  dispatchAgent: noRecoveryDispatch,
+  waitForAgent: noRecoveryDispatch,
+  sendRecoveryNotice: noRecoveryDispatch,
+};
+
+/** A foreground claim selected first, then a startup resend reserved behind it and joined. */
+function startForegroundBeforeResend(
+  key: string,
+  reservationId: string,
+  beforeJoin: (resend: SessionControllerInput) => void = () => {},
+) {
+  const foregroundAbort = new AbortController();
+  const foreground = reserveSessionControllerSource(key, {
+    policy: { mode: "followup" },
+    adapter: { signal: foregroundAbort.signal },
+  });
+  const foregroundClaim = tryClaimSessionControllerTask(foreground);
+  if (!foregroundClaim) {
+    throw new Error("expected the foreground source to own the mailbox");
+  }
+  const resend = reserveSessionControllerSource(key, {
+    reservationId,
+    protocolRunId: "startup-recovery-run",
+    policy: { mode: "followup" },
+  });
+  beforeJoin(resend);
+  const joined = retryRestartRecoveryBeforeSelectedClaim({
+    cfg: {},
+    claim: foregroundClaim,
+    gatewayRuntime: joinOnlyRecoveryRuntime,
+    reservationId,
+    sessionId: "recovery-session",
+    sessionKey: key,
+    storePath: "/tmp/openclaw-recovery-model/sessions.json",
+  });
+  return { foregroundAbort, foreground, foregroundClaim, resend, joined };
+}
+
 describe("session controller executable pilot", () => {
   it("gives each owed completion and settle identity exactly one FIFO parent turn", async () => {
     const key = "agent:main:completion-mailbox-model";
@@ -301,6 +347,55 @@ describe("session controller executable pilot", () => {
         retireSessionControllerInput(source);
       }
     }
+  });
+
+  it("lets a foreground claim join the startup resend that won the durable claim", async () => {
+    const key = "agent:main:recovery-join-model";
+    const turns: string[] = [];
+    let resendTurn: Promise<SessionControllerMailboxClaim> | undefined;
+    // The startup RPC already waits behind the foreground claim when the foreground joins.
+    const { foreground, foregroundClaim, joined } = startForegroundBeforeResend(
+      key,
+      "main-session-recovery:recovery-session:cycle:1",
+      (resend) => {
+        resendTurn = claimSessionControllerTask(resend, () => {
+          turns.push("resend");
+        });
+      },
+    );
+    try {
+      const resendClaim = await resendTurn!;
+      expect(foreground.mailbox.claim).toBe(resendClaim);
+      releaseSessionControllerClaim(resendClaim);
+      await expect(joined).resolves.toBeUndefined();
+      expect(foreground.mailbox.claim).toBe(foregroundClaim);
+      expect(turns).toEqual(["resend"]);
+    } finally {
+      releaseSessionControllerClaim(foregroundClaim);
+      await foregroundClaim.settlement.promise;
+    }
+  });
+
+  it("never lets a joining foreground retire the resend it did not create (R5)", async () => {
+    const key = "agent:main:recovery-join-retire-model";
+    const { foregroundAbort, foregroundClaim, resend, joined } = startForegroundBeforeResend(
+      key,
+      "main-session-recovery:recovery-session:cycle:2",
+    );
+    foregroundAbort.abort(new Error("foreground stopped while its predecessor waits"));
+    await expect(joined).resolves.toBeUndefined();
+    expect(resend.retirementRequested).toBeUndefined();
+    expect(resend.mailbox.entries).toContain(resend);
+
+    const turns: string[] = [];
+    const resendClaim = await claimSessionControllerTask(resend, () => {
+      turns.push("resend");
+    });
+    releaseSessionControllerClaim(resendClaim);
+    await resend.settlement.promise;
+    expect(turns).toEqual(["resend"]);
+    releaseSessionControllerClaim(foregroundClaim);
+    await foregroundClaim.settlement.promise;
   });
 
   it("replays 2048 state-aware sequences with delayed receipts (48 generated steps each)", async () => {

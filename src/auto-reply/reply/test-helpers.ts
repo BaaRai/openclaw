@@ -117,6 +117,7 @@ export function createMockReplyOperation(
     attachBackend: vi.fn(),
     detachBackend: vi.fn(),
     freezeAbort: freezeAbortMock,
+    yield: vi.fn(() => true),
     complete: vi.fn(complete),
     completeThen: vi.fn((afterClear) => {
       complete();

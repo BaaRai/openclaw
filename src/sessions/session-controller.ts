@@ -18,6 +18,11 @@ export {
   finalizeReplyMessageInjectionAttempt,
   resolveReplyBackendQueueMessageMismatch,
 } from "./session-controller.message-injection.js";
+export {
+  beginSessionControllerSteer,
+  submitSessionControllerSteer,
+  type SessionControllerSteerResult,
+} from "./session-controller.steer.js";
 export { createReplyOperation } from "./session-controller.operation.js";
 export {
   abortActiveReplyRuns,
@@ -28,6 +33,7 @@ export {
   supersedeReplyRunByRunId,
 } from "./session-controller.stop-runtime.js";
 export {
+  findSessionControllerOperationByRunId,
   isReplyRunEvidenceStaleBySessionId,
   listActiveReplyRunSessionKeys,
   resolveActiveReplyOperationForSessionId,

@@ -7,9 +7,16 @@ export type ReplyOperationActivePhase =
   | "memory_flushing"
   | "running";
 
-export type ReplyOperationPhase = ReplyOperationActivePhase | "completed" | "failed" | "aborted";
+export type ReplyOperationPhase =
+  | ReplyOperationActivePhase
+  | "completed"
+  | "yielded"
+  | "failed"
+  | "aborted";
 export type ReplyOperationResult =
   | { kind: "completed" }
+  /** The backend ended its own turn to await a continuation; no further input is injectable. */
+  | { kind: "yielded" }
   | {
       kind: "failed";
       code:

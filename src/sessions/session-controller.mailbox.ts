@@ -363,22 +363,34 @@ function disposeSessionControllerMailbox(mailbox: SessionControllerMailbox): voi
   pruneSessionControllerEntry(mailbox.owner);
 }
 
+type SessionControllerSourceReservation = {
+  sourceTurnId?: string;
+  protocolRunId?: string;
+  sourceSessionId?: string;
+  reservationId?: string;
+  /** Restart recovery may retire an unclaimed reservation bound to an older target. */
+  replaceInactiveTarget?: boolean;
+  continuationCaller?: SessionControllerInput["continuationCaller"];
+  policy: QueueSettings;
+  adapter?: SessionControllerSourceAdapter;
+  target?: SessionTarget;
+  /** Runs when the mailbox claims a newly created input; it owns and must release that claim. */
+  start?: (claim: SessionControllerMailboxClaim) => void;
+};
+
 /** Reserves identity/custody before attachment or prompt preparation, without owning a turn. */
 export function reserveSessionControllerSource(
   key: string,
-  params: {
-    sourceTurnId?: string;
-    protocolRunId?: string;
-    sourceSessionId?: string;
-    reservationId?: string;
-    /** Restart recovery may retire an unclaimed reservation bound to an older target. */
-    replaceInactiveTarget?: boolean;
-    continuationCaller?: SessionControllerInput["continuationCaller"];
-    policy: QueueSettings;
-    adapter?: SessionControllerSourceAdapter;
-    target?: SessionTarget;
-  },
+  params: SessionControllerSourceReservation,
 ): SessionControllerInput {
+  return reserveOrJoinSessionControllerSource(key, params).input;
+}
+
+/** Reserves an input or joins the live one with the same reservationId; only the creator may retire it. */
+export function reserveOrJoinSessionControllerSource(
+  key: string,
+  params: SessionControllerSourceReservation,
+): { input: SessionControllerInput; created: boolean } {
   const target =
     params.target ??
     (params.adapter?.scope
@@ -408,7 +420,7 @@ export function reserveSessionControllerSource(
         throw new Error("Reserved source identity belongs to a different delivery");
       }
       if (!targetChanged) {
-        return existing;
+        return { input: existing, created: false };
       }
       retireSessionControllerInput(existing);
     }
@@ -465,7 +477,11 @@ export function reserveSessionControllerSource(
   } else {
     signal.addEventListener("abort", abort, { once: true });
   }
-  return input;
+  if (params.start) {
+    // Retirement before the claim settles custody; the rejected claim request has no other observer.
+    void claimSessionControllerTask(input, params.start).catch(() => {});
+  }
+  return { input, created: true };
 }
 
 /** Transfers one unclaimed in-process reservation into its Gateway turn owner. */

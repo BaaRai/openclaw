@@ -564,6 +564,13 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       detachUpstreamAbort();
       watchdog.beginFinalization();
     },
+    yield() {
+      if (state.result || state.cleared) {
+        return false;
+      }
+      setResult({ kind: "yielded" });
+      return true;
+    },
     ownerSettlement: ownerSettlement.promise,
     complete() {
       producerCompletion.resolve();

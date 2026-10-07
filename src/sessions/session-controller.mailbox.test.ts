@@ -10,6 +10,7 @@ import { deferSessionControllerClaimBeforeExecution } from "./session-controller
 import { reserveSessionControllerClaimPredecessor } from "./session-controller.mailbox-predecessor.js";
 import {
   reserveSessionControllerSource,
+  reserveOrJoinSessionControllerSource,
   bindSessionControllerSource,
   claimSessionControllerInput,
   releaseSessionControllerClaim,
@@ -155,6 +156,35 @@ describe("controller mailbox scheduling", () => {
       }
     },
   );
+  it("runs reserved start callbacks on claim in FIFO order, never again for a joined reservation", async () => {
+    const active = createReplyOperation({
+      sessionKey: key,
+      sessionId: "start-callback-active",
+      resetTriggered: false,
+    });
+    active.setPhase("running");
+    const started: string[] = [];
+    const reserve = (id: string, reservationId?: string) =>
+      reserveOrJoinSessionControllerSource(key, {
+        reservationId,
+        policy: { mode: "followup" },
+        start: (claim) => {
+          started.push(id);
+          void Promise.resolve().then(() => releaseSessionControllerClaim(claim));
+        },
+      });
+    const first = reserve("first", "owed:first");
+    const second = reserve("second");
+    expect(reserve("joined", "owed:first")).toEqual({ input: first.input, created: false });
+    expect(started).toEqual([]);
+
+    active.complete();
+    await first.input.settlement.promise;
+    await second.input.settlement.promise;
+
+    expect(first.created && second.created).toBe(true);
+    expect(started).toEqual(["first", "second"]);
+  });
   it("retires a queued injection before releasing its receipt when live authority rejects", async () => {
     const active = createReplyOperation({
       sessionKey: key,

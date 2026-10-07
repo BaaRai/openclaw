@@ -388,6 +388,8 @@ export type ReplyOperation = {
   detachBackend(handle: ReplyBackendHandle): void;
   /** Reject later aborts after the backend has committed its terminal outcome. */
   freezeAbort(): void;
+  /** Records the backend's own yield and closes injection admission; false once a result exists. */
+  yield(): boolean;
   /** Settles after the lifecycle owner's final delivery/persistence barrier. */
   readonly ownerSettlement: Promise<void>;
   complete(): void;

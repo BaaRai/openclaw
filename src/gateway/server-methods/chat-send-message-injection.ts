@@ -24,13 +24,12 @@ import type { InboundDocumentContext } from "../../media-understanding/file-cont
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import {
-  beginReplyMessageInjectionTarget,
+  beginSessionControllerSteer,
   finalizeReplyMessageInjectionAttempt,
   type ReplyBackendQueueMessageOptions,
   type ReplyMessageInjectionAttempt,
   type ReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
-import { beginSessionControllerSourceInjection } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
@@ -179,92 +178,49 @@ export function createChatSendMessageInjectionStarter(params: {
       cfg,
       commandAuthorized: ctx.CommandAuthorized === true,
     });
-    const injection = beginSessionControllerSourceInjection(params.sourceRef.input);
-    if (!(await injection.admit())) {
-      return undefined;
-    }
-    let attempt: ReplyMessageInjectionAttempt;
-    try {
-      assertCurrent?.();
-      params.abortSignal.throwIfAborted();
-      attempt = beginReplyMessageInjectionTarget(
-        params.target,
-        p.replyToId
-          ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
-          : text,
-        {
-          // Reply-target injection already includes this prefix in its text.
-          currentInboundContext: p.replyToId
-            ? undefined
-            : {
-                text: buildInboundUserContextPrefix(ctx, resolveEnvelopeFormatOptions(cfg), entry),
-              },
-          assertCurrent,
-          inboundAudio: hasInboundAudio(ctx),
-          steeringMode: "all",
-          isInboundUserMessage: true,
-          ...(isProgressCardRefreshInputProvenance(ctx.InputProvenance)
-            ? { allowPendingUserInputAnswer: false as const, debounceMs: 0 }
-            : {}),
-          toolAuthorityOverlay: resolveInboundReplyToolAuthorityOverlay({
-            ctx,
-            sessionEntry: {
-              spawnedBy: entry?.spawnedBy,
-              permissionMode: params.admittedSessionSettings?.permissionMode,
-              toolOverrides: params.admittedSessionSettings?.toolOverrides,
+    return await beginSessionControllerSteer({
+      input: params.sourceRef.input,
+      target: params.target,
+      text: p.replyToId
+        ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
+        : text,
+      options: {
+        // Reply-target injection already includes this prefix in its text.
+        currentInboundContext: p.replyToId
+          ? undefined
+          : {
+              text: buildInboundUserContextPrefix(ctx, resolveEnvelopeFormatOptions(cfg), entry),
             },
-            senderIsOwner: authorization.senderIsOwner,
-            operatorAuthority: params.operatorAuthority,
-            disableTools: false,
-          }),
-          ...(injectionImages?.length ? { images: injectionImages } : {}),
-          ...(params.imageOrder?.length ? { imageOrder: params.imageOrder } : {}),
-          ...(replyOptionMedia?.length ? { media: replyOptionMedia } : {}),
-          waitForTranscriptCommit: true,
-          abortSignal: params.abortSignal,
-          ...(!isProgressCardRefreshInputProvenance(ctx.InputProvenance) && debounceMs !== undefined
-            ? { debounceMs }
-            : {}),
-          taskSuggestionDeliveryMode: supportsTaskSuggestions ? "gateway" : undefined,
-          userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
-        },
-      );
-    } catch (error) {
-      injection.finish(false);
-      throw error;
-    }
-    // Failed acknowledgement does not settle accepted native work.
-    const acceptance = attempt.acceptance.then((accepted) => {
-      injection.accepted(accepted);
-      return accepted;
+        assertCurrent,
+        inboundAudio: hasInboundAudio(ctx),
+        steeringMode: "all",
+        isInboundUserMessage: true,
+        ...(isProgressCardRefreshInputProvenance(ctx.InputProvenance)
+          ? { allowPendingUserInputAnswer: false as const, debounceMs: 0 }
+          : {}),
+        toolAuthorityOverlay: resolveInboundReplyToolAuthorityOverlay({
+          ctx,
+          sessionEntry: {
+            spawnedBy: entry?.spawnedBy,
+            permissionMode: params.admittedSessionSettings?.permissionMode,
+            toolOverrides: params.admittedSessionSettings?.toolOverrides,
+          },
+          senderIsOwner: authorization.senderIsOwner,
+          operatorAuthority: params.operatorAuthority,
+          disableTools: false,
+        }),
+        ...(injectionImages?.length ? { images: injectionImages } : {}),
+        ...(params.imageOrder?.length ? { imageOrder: params.imageOrder } : {}),
+        ...(replyOptionMedia?.length ? { media: replyOptionMedia } : {}),
+        waitForTranscriptCommit: true,
+        abortSignal: params.abortSignal,
+        ...(!isProgressCardRefreshInputProvenance(ctx.InputProvenance) && debounceMs !== undefined
+          ? { debounceMs }
+          : {}),
+        taskSuggestionDeliveryMode: supportsTaskSuggestions ? "gateway" : undefined,
+        userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
+      },
     });
-    void acceptance.catch(() => {});
-    const outcome = attempt.outcome.then(
-      async (nativeOutcome) => {
-        // Native ownership and an indeterminate commit are never replayable.
-        let accepted: boolean;
-        try {
-          accepted = await acceptance;
-        } catch (error) {
-          // The native outcome has now settled; an unknown ACK never permits replay.
-          injection.finish(true);
-          throw error;
-        }
-        injection.finish(
-          accepted ||
-            nativeOutcome.status === "accepted" ||
-            nativeOutcome.status === "indeterminate",
-        );
-        return nativeOutcome;
-      },
-      (error: unknown) => {
-        // An exceptional result after handoff cannot prove that input was rejected.
-        injection.finish(true);
-        throw error;
-      },
-    );
-    void outcome.catch(() => {});
-    return { ...attempt, acceptance, outcome };
   };
 }
 
