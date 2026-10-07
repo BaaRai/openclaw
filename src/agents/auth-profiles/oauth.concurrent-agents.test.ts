@@ -6,7 +6,10 @@ import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity
 import { resetFileLockStateForTest } from "../../plugin-sdk/file-lock.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
 import { captureEnv } from "../../test-utils/env.js";
 import { AUTH_STORE_VERSION, MINIMAX_CLI_PROFILE_ID } from "./constants.js";
 import "./oauth-external-auth-passthrough.test-support.js";
@@ -498,6 +501,8 @@ describe("resolveApiKeyForProfile cross-agent refresh coordination (#26322)", ()
       });
     }
 
+    // Drain retained workers before resetting native fixture state and repairing the peer.
+    await closeOpenClawAgentDatabasesAsync(tempRoot);
     closeOpenClawAgentDatabasesForTest(tempRoot);
     await fs.rm(resolveAuthProfileDatabasePath(unreadableAgentDir), { force: true });
     writePersistedAuthProfileStoreRaw(originalStore, unreadableAgentDir);
