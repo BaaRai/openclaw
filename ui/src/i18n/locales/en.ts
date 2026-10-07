@@ -3510,7 +3510,7 @@ export const en: TranslationMap & {
         runningCommand: "Running command",
         waitingForReconnect: "Waiting for reconnect",
         editing: "Editing",
-        needsReview: "Delivery uncertain",
+        needsReview: "Paused",
       },
       imageCount: "Image ({count})",
     },

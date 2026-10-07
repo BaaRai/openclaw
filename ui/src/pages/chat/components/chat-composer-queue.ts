@@ -290,6 +290,7 @@ function renderChatQueueItem(
   const failed =
     item.sendState === "failed" || item.sendState === "unconfirmed" || item.sendState === "held";
   const inlineRecovery = isQueuedSendInlineState(item);
+  const paused = item.sendState === "unconfirmed" || item.sendState === "held";
   const reconnecting =
     !item.serverQueued && !failed && (props.offline || item.sendState === "waiting-reconnect");
   const stateLabel = sendStateLabel(item, !item.serverQueued && props.offline === true);
@@ -326,7 +327,7 @@ function renderChatQueueItem(
   // Row tone, badges, and actions carry failure, review, reconnect, and steer.
   const leadingIcon = queueWaitingIcon;
   const itemClass = `chat-queue__item${hasAuthorAvatar ? "" : " chat-queue__item--no-avatar"}${previewUrl ? " chat-queue__item--with-images" : ""}${steered ? " chat-queue__item--steered" : ""}${
-    failed ? " chat-queue__item--failed" : ""
+    item.sendState === "failed" ? " chat-queue__item--failed" : ""
   }${reconnecting ? " chat-queue__item--reconnect" : ""}${
     editing ? " chat-queue__item--editing" : ""
   }`;
@@ -525,7 +526,7 @@ function renderChatQueueItem(
                   : nothing
               }
               ${
-                stateLabel && (!failed || !item.sendError)
+                stateLabel && (!failed || !item.sendError || paused)
                   ? html`<span
                       class=${
                         failed
@@ -534,7 +535,7 @@ function renderChatQueueItem(
                             ? "chat-queue__badge chat-queue__badge--reconnect"
                             : "chat-queue__state"
                       }
-                      title=${ifDefined(reconnecting ? item.sendError : undefined)}
+                      title=${ifDefined(reconnecting || paused ? item.sendError : undefined)}
                       >${stateLabel}</span
                     >`
                   : nothing
@@ -679,10 +680,9 @@ function renderChatQueueItem(
           : nothing
       }
       ${
-        // Reconnect rows auto-retry, so the raw transport error is noise there;
-        // it stays inspectable via the badge tooltip. Failed/unconfirmed rows
-        // keep the visible error because the user must act on them.
-        item.sendError && !reconnecting
+        // Recovery details stay in the status tooltip; only a definite failure
+        // needs a separate explanation in the queue.
+        item.sendError && !reconnecting && !paused
           ? html`<span class="chat-queue__error">
               ${
                 failed && stateLabel

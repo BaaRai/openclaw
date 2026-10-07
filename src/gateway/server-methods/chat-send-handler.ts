@@ -344,6 +344,7 @@ async function handleChatSendWithOptions(
             });
       const staged = await userTurnRecorder.stageApproved?.({
         runId: clientRunId,
+        committedReplay: "consumed",
         authority: sessionMutationAuthorization?.admittedInputAuthority
           ? withSessionPendingInputAuthorityGuard(
               sessionMutationAuthorization.admittedInputAuthority,
@@ -365,6 +366,7 @@ async function handleChatSendWithOptions(
         assertAdmittedCurrent,
       });
       if (userTurnRecorder.isPendingInputConsumed?.()) {
+        assertAdmittedCurrent();
         admission.cleanupAdmittedRun();
         clearAgentRunContext(clientRunId, lifecycleGeneration);
         respond(true, { runId: clientRunId, status: "ok" }, undefined, {
