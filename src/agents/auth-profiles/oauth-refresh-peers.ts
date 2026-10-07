@@ -51,6 +51,12 @@ export function mergeOAuthRefreshPeerClaims(
   );
 }
 
+type OAuthRefreshPeerTransition = {
+  profileId: string;
+  fence: OAuthCredential;
+  claims: readonly OAuthRefreshPeerClaim[];
+};
+
 export class OAuthRefreshPeerFenceError extends Error {
   readonly claims: OAuthRefreshPeerClaim[];
 
@@ -255,11 +261,9 @@ export async function fenceOAuthRefreshPeers(params: {
 }
 
 /** Restore pre-I/O peer claims; a retained fence becomes terminal on restore failure. */
-export async function rollbackOAuthRefreshPeerClaims(params: {
-  profileId: string;
-  fence: OAuthCredential;
-  claims: readonly OAuthRefreshPeerClaim[];
-}): Promise<void> {
+export async function rollbackOAuthRefreshPeerClaims(
+  params: OAuthRefreshPeerTransition,
+): Promise<void> {
   const unresolved: Error[] = [];
   for (const claim of params.claims.toReversed()) {
     if (!claim.original) {
@@ -314,13 +318,12 @@ export async function rollbackOAuthRefreshPeerClaims(params: {
  * inherit the authoritative shared credential. Otherwise leave a terminal
  * marker so merged resolution cannot expose another account.
  */
-export async function settleOAuthRefreshPeerClaims(params: {
-  profileId: string;
-  fence: OAuthCredential;
-  claims: readonly OAuthRefreshPeerClaim[];
-  authoritativeSharedCredential?: OAuthCredential;
-  replacement: OAuthCredential;
-}): Promise<void> {
+export async function settleOAuthRefreshPeerClaims(
+  params: OAuthRefreshPeerTransition & {
+    authoritativeSharedCredential?: OAuthCredential;
+    replacement: OAuthCredential;
+  },
+): Promise<void> {
   let firstError: Error | undefined;
   for (const claim of params.claims) {
     try {
@@ -357,11 +360,9 @@ export async function settleOAuthRefreshPeerClaims(params: {
 }
 
 /** Convert every exact peer fence into a terminal no-replay marker. */
-export async function failOAuthRefreshPeerClaims(params: {
-  profileId: string;
-  fence: OAuthCredential;
-  claims: readonly OAuthRefreshPeerClaim[];
-}): Promise<void> {
+export async function failOAuthRefreshPeerClaims(
+  params: OAuthRefreshPeerTransition,
+): Promise<void> {
   const failed = createFailedOAuthRefreshFence(params.fence);
   let firstError: Error | undefined;
   for (const claim of params.claims) {
