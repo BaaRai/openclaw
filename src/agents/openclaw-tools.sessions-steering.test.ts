@@ -67,13 +67,20 @@ afterEach(() => {
 });
 
 it.each([
-  { supportsTranscriptCommitWait: false },
-  { supportsTranscriptCommitWait: true },
-  { supportsTranscriptCommitWait: true, mode: "steer" as const, alternateStore: true },
-  { supportsTranscriptCommitWait: true, mode: "steer" as const, hiddenRun: true },
+  {},
+  { mode: "steer" as const, alternateStore: true },
+  { mode: "steer" as const, hiddenRun: true },
 ])(
-  "sessions_send persists steered provenance with transcript wait support $supportsTranscriptCommitWait and mode $mode, alternate store $alternateStore, hidden run $hiddenRun",
-  async ({ supportsTranscriptCommitWait, mode, alternateStore, hiddenRun }) => {
+  "sessions_send persists steered provenance with mode $mode, alternate store $alternateStore, hidden run $hiddenRun",
+  async ({
+    mode,
+    alternateStore,
+    hiddenRun,
+  }: {
+    mode?: "steer";
+    alternateStore?: boolean;
+    hiddenRun?: boolean;
+  }) => {
     const runId = "hidden-sessions-send-steering-run";
     const runScopedCallerKey =
       mode === "steer"
@@ -136,7 +143,7 @@ it.each([
           queueMessage,
           isStreaming: () => true,
           isCompacting: () => false,
-          supportsTranscriptCommitWait,
+          supportsTranscriptCommitWait: true,
           sourceReplyDeliveryMode: mode === "steer" ? "automatic" : "message_tool_only",
           abort: () => {},
         },
@@ -206,9 +213,7 @@ it.each([
         delivery: { status: "skipped" },
       });
       expect(queueMessage).toHaveBeenCalledOnce();
-      expect(queueMessage.mock.calls[0]?.[1]?.waitForTranscriptCommit).toBe(
-        mode === "steer" ? false : supportsTranscriptCommitWait ? true : undefined,
-      );
+      expect(queueMessage.mock.calls[0]?.[1]?.waitForTranscriptCommit).toBe(mode !== "steer");
       expect(queueMessage.mock.calls[0]?.[1]?.isInboundUserMessage).toBeUndefined();
       const entries = SessionManager.open(scope, dir).getEntries();
       expect(

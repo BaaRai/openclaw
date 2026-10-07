@@ -30,11 +30,11 @@ import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import * as controllerSteer from "../sessions/session-controller.steer.js";
 import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-tool-call.state.js";
-import * as embeddedRuns from "./embedded-agent-runner/runs.js";
 import type { EmbeddedAgentQueueMessageOptions } from "./embedded-agent-runner/runs.js";
 import {
   registerTestEmbeddedRun as setActiveEmbeddedRun,
@@ -170,7 +170,7 @@ function activeRun(
   sessionKey: string,
   options: {
     sessionId?: string;
-    streaming?: boolean;
+    stopped?: boolean;
     sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
     rejects?: boolean;
   } = {},
@@ -184,7 +184,8 @@ function activeRun(
     options.sessionId ?? "caller-active-session",
     {
       queueMessage,
-      isStreaming: () => options.streaming ?? true,
+      isStreaming: () => true,
+      isStopped: () => options.stopped === true,
       isCompacting: () => false,
       supportsTranscriptCommitWait: true,
       sourceReplyDeliveryMode: options.sourceReplyDeliveryMode ?? "message_tool_only",
@@ -748,15 +749,15 @@ describe("sessions tools", () => {
     {
       name: "non-Cron run-looking key",
       key: "agent:leasing-ops:slack:channel:c-room:run:run-fast",
-      streaming: false,
-      reason: "not_streaming",
+      stopped: true,
+      reason: "injection_unavailable",
     },
   ])(
     "rejects $name without durable-session fallback",
-    async ({ key, rejects, deliveryMode, streaming, reason }) => {
+    async ({ key, rejects, deliveryMode, stopped, reason }) => {
       const queueMessage = activeRun(key, {
         rejects,
-        streaming,
+        stopped,
         sourceReplyDeliveryMode: deliveryMode,
       });
       mockGatewayResponses({
@@ -792,6 +793,7 @@ describe("sessions tools", () => {
         expect(queuedText).toContain("[Inter-session message]");
         expect(queuedText).toContain("[TASK-COMPLETE] occupancy ready");
         expect(queueMessage).toHaveBeenCalledWith(queuedText, {
+          onQueueAccepted: expect.any(Function),
           steeringMode: "all",
           debounceMs: 0,
           deliveryTimeoutMs: 30_000,
@@ -814,13 +816,15 @@ describe("sessions tools", () => {
     },
     { name: "starts the same child after no_active_run", rejection: "no_active_run" as const },
     { name: "starts the same child after stale_run", rejection: "stale_run" as const },
-    { name: "starts the same child after not_streaming", rejection: "not_streaming" as const },
-    { name: "falls back after runtime rejection", rejection: "runtime_rejected" as const },
-    { name: "starts the same child during compaction", rejection: "compacting" as const },
     {
-      name: "rejects explicit steer in compaction",
+      name: "starts the same child after injection_unavailable",
+      rejection: "injection_unavailable" as const,
+    },
+    { name: "falls back after runtime rejection", rejection: "runtime_rejected" as const },
+    {
+      name: "rejects an explicit steer the target cannot take",
       mode: "steer" as const,
-      rejection: "compacting" as const,
+      rejection: "injection_unavailable" as const,
     },
     { name: "starts an explicit followup", mode: "followup" as const },
     { name: "starts a waited turn", timeoutSeconds: 1 },
@@ -845,16 +849,11 @@ describe("sessions tools", () => {
         }
       });
     }
-    const queue = vi.spyOn(embeddedRuns, "queueEmbeddedAgentMessageWithOutcomeAsync");
+    const queue = vi.spyOn(controllerSteer, "steerSessionControllerOperation");
     const prepare = vi.spyOn(sessionsSendFollowup, "prepareSessionsSendFollowup");
     try {
       if (rejection) {
-        queue.mockResolvedValueOnce({
-          queued: false,
-          sessionId,
-          reason: rejection,
-          gatewayHealth: "live",
-        });
+        queue.mockResolvedValueOnce({ status: "rejected", reason: rejection });
       }
       mockGatewayResponses({
         agent: { runId: "child-followup", status: "accepted" },
@@ -884,12 +883,17 @@ describe("sessions tools", () => {
       const attempts = steered || rejection ? 1 : 0;
       expect(queue).toHaveBeenCalledTimes(attempts);
       if (attempts) {
-        expect(queue).toHaveBeenCalledWith(sessionId, expect.stringContaining("deps are ready"), {
-          steeringMode: "all",
-          debounceMs: 0,
-          deliveryTimeoutMs: 30_000,
-          waitForTranscriptCommit: false,
-          userTurnTranscriptRecorder: expect.any(Object),
+        expect(queue).toHaveBeenCalledWith({
+          operation: expect.objectContaining({ sessionId }),
+          text: expect.stringContaining("deps are ready"),
+          abortOnUnconfirmedTranscript: false,
+          options: {
+            steeringMode: "all",
+            debounceMs: 0,
+            deliveryTimeoutMs: 30_000,
+            waitForTranscriptCommit: false,
+            userTurnTranscriptRecorder: expect.any(Object),
+          },
         });
       }
       if (steered) {
@@ -977,7 +981,7 @@ describe("sessions tools", () => {
     };
     await upsertSessionEntryCore(parentScope, { sessionId: "durable-parent", updatedAt: 1 });
     await upsertSessionEntryCore(runScope, { sessionId: "caller-active-session", updatedAt: 1 });
-    const queueMessage = activeRun(runScopedCallerKey, { streaming: false });
+    const queueMessage = activeRun(runScopedCallerKey, { stopped: true });
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string; params?: unknown };
       calls.push(request);
@@ -1052,7 +1056,7 @@ describe("sessions tools", () => {
     );
     const queueMessage = activeRun(runScopedTargetKey, {
       sessionId: targetSessionId,
-      streaming: false,
+      stopped: true,
     });
     const calls: GatewayCall[] = [];
     callGatewayMock.mockImplementation(async (opts: unknown) => {

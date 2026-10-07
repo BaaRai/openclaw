@@ -99,8 +99,7 @@ describe("sessions_send direct queue source authority", () => {
           isCompacting: () => false,
           abort: () => {},
           sourceReplyDeliveryMode: "message_tool_only",
-          // Exercise the delivery owner's retry without transcript-commit waiting.
-          supportsTranscriptCommitWait: false,
+          supportsTranscriptCommitWait: true,
           ...(source === "unscoped"
             ? { messageInjection: { isAvailable: () => true, queueMessage } }
             : {
@@ -155,8 +154,9 @@ describe("sessions_send direct queue source authority", () => {
           const result = await pending;
           if (source === "revoked") {
             expect(result.details).toMatchObject({ status: "error" });
+            // The controller surfaces the revoked owner's own refusal.
             expect(JSON.stringify(result)).toContain(
-              "Message injection authority is no longer current",
+              "agent tool caller authority is no longer active",
             );
             expect(queued).not.toHaveBeenCalled();
           } else {

@@ -16,7 +16,15 @@ import {
   annotateInterSessionPromptText,
   type InputProvenance,
 } from "../../sessions/input-provenance.js";
-import { resolveActiveSessionRunId } from "../../sessions/session-controller.queries.js";
+import type { ReplyMessageInjectionOptions } from "../../sessions/session-controller.contracts.js";
+import {
+  resolveActiveReplyOperationForSessionId,
+  resolveActiveSessionRunId,
+} from "../../sessions/session-controller.queries.js";
+import {
+  steerSessionControllerOperation,
+  type SessionControllerSteerResult,
+} from "../../sessions/session-controller.steer.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -25,12 +33,6 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { listAgentIds } from "../agent-scope.js";
-import {
-  type EmbeddedAgentQueueMessageOptions,
-  formatEmbeddedAgentQueueFailureSummary,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
-} from "../embedded-agent-runner/runs.js";
 import { jsonResult } from "./common.js";
 import {
   captureGatewayToolCallerAssertion,
@@ -138,6 +140,11 @@ type SessionsSendStart =
     }
   | { ok: false; result: ReturnType<typeof jsonResult> };
 
+/** Rejections that leave a Cron run-scoped target to its durable parent session. */
+const FALLBACK_STEER_REJECTIONS = new Set<
+  Extract<SessionControllerSteerResult, { status: "rejected" }>["reason"]
+>(["no_active_run", "not_running", "stale_run", "injection_unavailable"]);
+
 /** Decide steering before preparing custody for a new turn. */
 export async function trySessionsSendActiveRunDelivery(
   params: SessionsSendDeliveryParams,
@@ -171,65 +178,58 @@ export async function trySessionsSendActiveRunDelivery(
     if (activeRunSessionId && messageText) {
       const queue = async (
         assertCurrent: () => void,
-        lifecycle: Pick<
-          EmbeddedAgentQueueMessageOptions,
-          "onQueueAccepted" | "onQueueSettled"
-        > = {},
+        lifecycle: Pick<ReplyMessageInjectionOptions, "onQueueAccepted" | "onQueueSettled"> = {},
       ) => {
-        const queueOptions: EmbeddedAgentQueueMessageOptions = {
-          steeringMode: "all",
-          debounceMs: 0,
-          deliveryTimeoutMs: params.deliveryTimeoutMs,
-          ...lifecycle,
-          // Waiting for a busy run's transcript would withdraw accepted guidance at the deadline.
-          ...(params.mode === "steer" || ownChild
-            ? { waitForTranscriptCommit: false }
-            : { waitForTranscriptCommit: true, sourceReplyDeliveryMode }),
-          // The receiving runtime owns transcript writes to this exact incarnation.
-          userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
-            assertOriginalInputCommit: assertCurrent,
-            input: {
-              text: messageText,
-              provenance: inputProvenance,
-              ...(inputProvenance.sourceRole === "subagent" ? { display: false as const } : {}),
-              idempotencyKey: buildRunUserTurnIdempotencyKey(params.runId),
-            },
-            target: {
-              sessionId: activeRunSessionId,
-              expectedSessionId: activeRunSessionId,
-              sessionKey: params.sessionStoreTarget.canonicalKey,
-              sessionEntry: undefined,
-              agentId: params.sessionStoreTarget.agentId,
-              storePath: params.sessionStoreTarget.storePath,
-              config: params.cfg,
-            },
-          }),
-        };
-        const dispatchQueue = (options: EmbeddedAgentQueueMessageOptions) =>
-          selection.operatorAuthority || assertCaller
-            ? queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
-                activeRunSessionId,
-                messageText,
-                options,
-                () => {
-                  assertCurrent();
-                  if (!selection.operatorAuthority) {
-                    assertCaller?.("agent");
-                  }
-                  return true;
-                },
-              )
-            : queueEmbeddedAgentMessageWithOutcomeAsync(activeRunSessionId, messageText, options);
+        const guarded = Boolean(selection.operatorAuthority || assertCaller);
         assertCurrent();
-        let outcome = await dispatchQueue(queueOptions);
-        if (!outcome.queued && outcome.reason === "transcript_commit_wait_unsupported") {
-          const bestEffortQueueOptions = { ...queueOptions };
-          delete bestEffortQueueOptions.waitForTranscriptCommit;
-          outcome = await dispatchQueue(bestEffortQueueOptions);
-        }
-        return outcome;
+        return await steerSessionControllerOperation({
+          operation: resolveActiveReplyOperationForSessionId(activeRunSessionId),
+          text: messageText,
+          // A status-only inter-session input cannot abort the receiving turn.
+          abortOnUnconfirmedTranscript: false,
+          options: {
+            steeringMode: "all",
+            debounceMs: 0,
+            deliveryTimeoutMs: params.deliveryTimeoutMs,
+            ...lifecycle,
+            // Source-bound authority admits only guarded (V2) injection.
+            ...(guarded
+              ? {
+                  assertCurrent: () => {
+                    assertCurrent();
+                    if (!selection.operatorAuthority) {
+                      assertCaller?.("agent");
+                    }
+                  },
+                }
+              : {}),
+            // Waiting for a busy run's transcript would withdraw accepted guidance at the deadline.
+            ...(params.mode === "steer" || ownChild
+              ? { waitForTranscriptCommit: false }
+              : { waitForTranscriptCommit: true, sourceReplyDeliveryMode }),
+            // The receiving runtime owns transcript writes to this exact incarnation.
+            userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
+              assertOriginalInputCommit: assertCurrent,
+              input: {
+                text: messageText,
+                provenance: inputProvenance,
+                ...(inputProvenance.sourceRole === "subagent" ? { display: false as const } : {}),
+                idempotencyKey: buildRunUserTurnIdempotencyKey(params.runId),
+              },
+              target: {
+                sessionId: activeRunSessionId,
+                expectedSessionId: activeRunSessionId,
+                sessionKey: params.sessionStoreTarget.canonicalKey,
+                sessionEntry: undefined,
+                agentId: params.sessionStoreTarget.agentId,
+                storePath: params.sessionStoreTarget.storePath,
+                config: params.cfg,
+              },
+            }),
+          },
+        });
       };
-      const queueOutcome = selection.operatorAuthority
+      const steer = selection.operatorAuthority
         ? await queueSessionsSendSteeringWithCustody(
             {
               sessionKey: params.sessionKey,
@@ -240,13 +240,17 @@ export async function trySessionsSendActiveRunDelivery(
             queue,
           )
         : await queue(selection.assertCurrent);
-      if (queueOutcome.queued) {
+      if (steer.status === "accepted") {
         return {
           ok: true,
           runId: params.runId,
           targetDisposition: "steered",
-          steeredRunId: queueOutcome.runId,
+          steeredRunId: steer.targetRunId,
         };
+      }
+      if (steer.status === "indeterminate") {
+        // Consumed without a confirmed commit: never replay it as a new turn.
+        throw new Error(steer.errorMessage);
       }
       fallbackSessionKey = ownChild
         ? undefined
@@ -254,13 +258,11 @@ export async function trySessionsSendActiveRunDelivery(
       if (
         params.mode === "steer" ||
         (!ownChild && (params.expectedSessionId || !fallbackSessionKey)) ||
-        (!ownChild &&
-          queueOutcome.reason !== "not_streaming" &&
-          queueOutcome.reason !== "no_active_run" &&
-          queueOutcome.reason !== "stale_run")
+        (!ownChild && !FALLBACK_STEER_REJECTIONS.has(steer.reason))
       ) {
+        const errorPart = steer.errorMessage ? ` error=${steer.errorMessage}` : "";
         throw new Error(
-          formatEmbeddedAgentQueueFailureSummary(queueOutcome) ?? "active run queue rejected",
+          `queue_message_failed reason=${steer.reason} sessionId=${activeRunSessionId} gatewayHealth=live${errorPart}`,
         );
       }
     }
