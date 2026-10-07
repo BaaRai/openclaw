@@ -2,14 +2,19 @@ import { runSqliteReadOperationSync } from "../../infra/sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import {
+  assertOpenClawAgentDatabaseIdentity,
   isOpenClawAgentDatabasePathCurrent,
   readOpenClawAgentDatabaseIdentity,
 } from "../../state/openclaw-agent-db-identity.js";
-import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
+import {
+  withOpenClawAgentDatabaseReadOnly,
+  type OpenClawAgentReadOnlyDatabase,
+} from "../../state/openclaw-agent-db-readonly.js";
 import { resolveSessionLifecycleTimestampsWithHeader } from "./lifecycle-timestamps.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
 import { readTranscriptHeaderFromDatabase } from "./session-accessor.sqlite-transcript-metadata-read.js";
+import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 import { SessionEntryChangedDuringReadError } from "./session-entry-read-errors.js";
 import type {
   SessionEntryCohortRequest,
@@ -18,6 +23,35 @@ import type {
   SessionExactEntriesWorkerResult,
 } from "./session-entry-read.types.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "./session-transcript-worker.types.js";
+
+/** Captured cohorts retain their native handle and snapshot; standalone reads keep admission. */
+export function createSessionEntryReadScope(capturedDatabase?: OpenClawAgentReadOnlyDatabase) {
+  return {
+    assertCanonicalRead(
+      database: OpenClawAgentReadOnlyDatabase,
+      expectedIdentity: SessionExactEntriesWorkerInput["expectedIdentity"],
+    ) {
+      if (expectedIdentity) {
+        assertOpenClawAgentDatabaseIdentity(database, expectedIdentity);
+      }
+      // Admitted cohorts validate current selected bytes, including uncertified foreign edits.
+      if (!capturedDatabase) {
+        assertCanonicalSqliteSessionKeysCurrent(database);
+      }
+    },
+    readDatabase: <T>(
+      read: (database: OpenClawAgentReadOnlyDatabase) => T,
+      options: Parameters<typeof withOpenClawAgentDatabaseReadOnly>[1],
+    ) =>
+      capturedDatabase
+        ? { found: true as const, value: read(capturedDatabase) }
+        : withOpenClawAgentDatabaseReadOnly(read, options),
+    snapshot: <T>(database: OpenClawAgentReadOnlyDatabase, read: () => T) =>
+      capturedDatabase?.db === database.db && database.db.isTransaction
+        ? read()
+        : runSqliteDeferredTransactionSync(database.db, read),
+  };
+}
 
 /** One bounded snapshot on the supplied owner; no locator resolution or connection admission. */
 export function readSessionEntryCohort(

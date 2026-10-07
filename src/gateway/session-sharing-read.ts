@@ -38,7 +38,6 @@ import {
   loadCachedSessionSharingSnapshot,
   type SessionSharingSnapshot,
 } from "./session-sharing-snapshot-cache.js";
-
 import type { GatewaySessionStoreSelection } from "./session-utils-store-retained.js";
 
 function sharingSnapshot(

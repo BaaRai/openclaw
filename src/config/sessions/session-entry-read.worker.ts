@@ -45,22 +45,18 @@ import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sql
 import { readSessionWorktreeOwnerFactsInDatabase } from "./session-accessor.sqlite-worktree-owner.js";
 import {
   assertCanonicalSessionKeyWrite,
-  assertCanonicalSqliteSessionKeysCurrent,
   canonicalSessionKeyMigrationRequiredError,
   readWithCanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
 import { prepareSessionColdSourceGuard } from "./session-cold-storage-source-guard.worker.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import { boundSessionDiagnosticText } from "./session-diagnostic-text.js";
-import { readSessionEntryCohort } from "./session-entry-cohort.worker.js";
-
-export { readSessionEntryDataInDatabase } from "./session-entry-cohort.worker.js";
+import { createSessionEntryReadScope } from "./session-entry-cohort.worker.js";
 import {
   assertSessionEntryCurrentNativeSource,
   readSessionEntryCurrentFactsInDatabase,
 } from "./session-entry-current-admission.worker.js";
 import type {
-  SessionEntryCohortRequest,
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
   SessionEntryReadWorkerInput,
@@ -357,17 +353,8 @@ export function readExactSessionEntriesWithLifecycle(
   request: SessionExactEntriesWorkerInput,
   capturedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): SessionExactEntriesWorkerResult {
-  const readDatabase = <T>(
-    read: (database: OpenClawAgentReadOnlyDatabase) => T,
-    options: Parameters<typeof withOpenClawAgentDatabaseReadOnly>[1],
-  ) =>
-    capturedDatabase
-      ? { found: true as const, value: read(capturedDatabase) }
-      : withOpenClawAgentDatabaseReadOnly(read, options);
-  const snapshot = <T>(database: OpenClawAgentReadOnlyDatabase, read: () => T) =>
-    capturedDatabase?.db === database.db && database.db.isTransaction
-      ? read()
-      : runSqliteDeferredTransactionSync(database.db, read);
+  const { readDatabase, snapshot, assertCanonicalRead } =
+    createSessionEntryReadScope(capturedDatabase);
   if (request.projection === "exact" || request.projection === "worktree") {
     // Logical accessors validate only their candidates; unrelated rows are not listing admission.
     let source: SessionExactEntriesWorkerResult["source"];
@@ -445,13 +432,7 @@ export function readExactSessionEntriesWithLifecycle(
           }
         : withSqlitePostCommitPublications(database.db, () =>
             snapshot(database, () => {
-              if (request.expectedIdentity) {
-                assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
-              }
-              // Admitted cohorts validate current selected bytes, including uncertified foreign edits.
-              if (!capturedDatabase) {
-                assertCanonicalSqliteSessionKeysCurrent(database);
-              }
+              assertCanonicalRead(database, request.expectedIdentity);
               if (request.projection === "creation") {
                 const { identity, canonicalPath } = readOpenClawAgentDatabaseIdentity(database);
                 const sessionKey = request.sessionKeys[0];
@@ -670,16 +651,6 @@ export function readExactSessionEntriesWithLifecycle(
     lifecycleTimestamps: {},
     ...(request.projection === "lifecycle" ? { pendingArchives: false } : {}),
   };
-}
-
-/** The actor lends its admitted handle; the history adapter uses this same exact-read kernel. */
-export function readSessionEntryCohortInDatabase(
-  database: OpenClawAgentReadOnlyDatabase,
-  input: SessionEntryCohortRequest,
-) {
-  return readSessionEntryCohort(database, input, (request) =>
-    readExactSessionEntriesWithLifecycle(request, database),
-  );
 }
 
 /** Entry, board presence, and summary validity describe one committed snapshot. */

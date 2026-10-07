@@ -134,13 +134,18 @@ export async function loadAgentRestartRecoveryOperations() {
 }
 
 export async function loadAgentEntryReadOperations() {
-  const kernel = await import("../config/sessions/session-entry-read.worker.js");
+  const [kernel, cohort] = await Promise.all([
+    import("../config/sessions/session-entry-read.worker.js"),
+    import("../config/sessions/session-entry-cohort.worker.js"),
+  ]);
   return {
     "session.entry.read": (input: { sessionKey: string } | SessionEntryCohortRequest, { open }) => {
       const database = open();
       return "sessionKeys" in input
-        ? kernel.readSessionEntryCohortInDatabase(database, input)
-        : kernel.readSessionEntryDataInDatabase(database, input.sessionKey);
+        ? cohort.readSessionEntryCohort(database, input, (request) =>
+            kernel.readExactSessionEntriesWithLifecycle(request, database),
+          )
+        : cohort.readSessionEntryDataInDatabase(database, input.sessionKey);
     },
   } satisfies Handlers;
 }
