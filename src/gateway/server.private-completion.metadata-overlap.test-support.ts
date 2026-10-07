@@ -494,11 +494,13 @@ export function registerPrivateCompletionStopMetadataTests(
       expect(await observedChild).toMatchObject({
         value: { status: "timeout", stopReason: "rpc" },
       });
+      // The descendant's kill is confirmed once its operation settles (3ae092f8f79): its row
+      // retires, and the durable receipt below keeps the cancelled outcome.
       expect(
         loadSubagentRunsForControllerFromSqlite(sessionKey).find(
           (run) => run.runId === descendantRunId,
         ),
-      ).toMatchObject({ endedReason: "subagent-killed", execution: { status: "terminal" } });
+      ).toBeUndefined();
       expect(completions()).toMatchObject([{ succeeded: 0 }]);
       expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
         reason: "cancelled",
