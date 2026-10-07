@@ -3,7 +3,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as configFileSource from "../config/source-file.js";
@@ -60,6 +60,28 @@ async function prepareInstanceBindingTest(
 }
 
 installInstanceBindingConfigIo();
+
+function controlRpcOwnedConfigWatcher(configPath: string) {
+  const createConfigFileAdapter = configFileSource.createConfigFileAdapter;
+  const configWatcher = vi
+    .spyOn(configFileSource, "createConfigFileAdapter")
+    .mockImplementation((options) => {
+      if (options.path !== configPath) {
+        return createConfigFileAdapter(options);
+      }
+      // Explicit config writes own these cases; filesystem echoes can race the next RPC.
+      const watcher = createWatcherMock();
+      const adapter = watcher.attach(options);
+      return {
+        ...adapter,
+        start() {
+          adapter.start();
+          queueMicrotask(() => watcher.emit("ready"));
+        },
+      };
+    });
+  onTestFinished(() => configWatcher.mockRestore());
+}
 
 describe("gateway plugin instance bindings", () => {
   const started: Array<Awaited<ReturnType<typeof startTestGatewayServer>>> = [];
@@ -531,29 +553,11 @@ describe("gateway plugin instance bindings", () => {
   it(
     "retains unchanged channel runtimes and renews them only when their plugin reloads",
     { timeout: 600_000 },
-    async ({ onTestFinished }) => {
+    async () => {
       const { coordinator, configPath, bundledRoot } = await prepareInstanceBindingTest({
         channels: true,
       });
-      const createConfigFileAdapter = configFileSource.createConfigFileAdapter;
-      const configWatcher = vi
-        .spyOn(configFileSource, "createConfigFileAdapter")
-        .mockImplementation((options) => {
-          if (options.path !== configPath) {
-            return createConfigFileAdapter(options);
-          }
-          // Explicit config writes own this case; filesystem echoes can race the next RPC.
-          const watcher = createWatcherMock();
-          const adapter = watcher.attach(options);
-          return {
-            ...adapter,
-            start() {
-              adapter.start();
-              queueMicrotask(() => watcher.emit("ready"));
-            },
-          };
-        });
-      onTestFinished(() => configWatcher.mockRestore());
+      controlRpcOwnedConfigWatcher(configPath);
       const proof = coordinator.channelProof;
       if (!proof) {
         throw new Error("channel binding fixture was not installed");
@@ -786,7 +790,11 @@ describe("gateway plugin instance bindings", () => {
     "refuses replacement during %s cleanup while keeping the Gateway available",
     { timeout: 600_000 },
     async (serviceStopFailure) => {
-      const { coordinator, bundledRoot } = await prepareInstanceBindingTest({ serviceStopFailure });
+      const { coordinator, configPath, bundledRoot } = await prepareInstanceBindingTest({
+        serviceStopFailure,
+      });
+      coordinator.reportReloadSettlement = true;
+      controlRpcOwnedConfigWatcher(configPath);
       finishServiceStops.push(coordinator.serviceStopCompletion.resolve);
       const hotReloadRecovery = vi.fn(() => {
         // No run loop consumes this synthetic emission, so release its signal-admission lease.
@@ -827,7 +835,7 @@ describe("gateway plugin instance bindings", () => {
         coordinator.runtimes.slice(0, initialRegistrationCount),
         "initial",
       );
-      const initialProbe = await requestInstanceBindingProbe(initialRuntime);
+      const initialProbe = await requestSettledInstanceBindingProbe(initialRuntime);
 
       const socket = await connectWebchatClient({ port: claim.port, scopes: ["operator.admin"] });
       sockets.push(socket);
