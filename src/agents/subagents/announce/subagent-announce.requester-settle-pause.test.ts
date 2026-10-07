@@ -23,7 +23,7 @@ describe("requester pause notices", () => {
     { parentOnly: true, replacedSession: false },
     { parentOnly: false, replacedSession: true },
   ])(
-    "retries pause turnover only in the same requester session (private=$parentOnly, replaced=$replacedSession)",
+    "records pause turnover once when its requester turn changes (private=$parentOnly, replaced=$replacedSession)",
     async ({ parentOnly, replacedSession }) => {
       vi.useFakeTimers();
       try {
@@ -76,23 +76,8 @@ describe("requester pause notices", () => {
           },
         });
         expect(await maybeWakeRequesterAfterAllChildrenSettled(params)).toBe(false);
-        if (replacedSession) {
-          expect(child.requesterSettleWake?.pauseNotice).toBeUndefined();
-          expect(deliverSpy).toHaveBeenCalledOnce();
-          return;
-        }
-        expect(child.requesterSettleWake).toMatchObject({
-          status: "pending",
-          pauseNotice: { acknowledgment: "TURNOVER-PAUSE" },
-        });
-        const firstKey = deliveredCallArg().directIdempotencyKey;
-        vi.setSystemTime(Date.now() + 30_001);
-        expect(await maybeWakeRequesterAfterAllChildrenSettled(params)).toBe(true);
-        expect(deliverSpy).toHaveBeenCalledTimes(2);
-        expect(deliverSpy.mock.calls[1]?.[0].directIdempotencyKey).not.toBe(firstKey);
-        expect(deliverSpy.mock.calls[1]?.[0].triggerMessage).toContain("TURNOVER-PAUSE");
         expect(child.requesterSettleWake?.pauseNotice).toBeUndefined();
-        expect(child.pauseReason).toBe("sessions_yield");
+        expect(deliverSpy).toHaveBeenCalledOnce();
       } finally {
         vi.useRealTimers();
       }

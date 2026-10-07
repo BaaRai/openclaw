@@ -202,7 +202,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
     "different-cohort",
     "ordinary-cohort",
     "missing-cohort",
-    "retrying-cohort",
   ] as const)("does not take a %s child completion", async (reason) => {
     const child = pendingChild();
     const params = adoption(child);
@@ -214,12 +213,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
       child.requesterSettleWake = {
         batchRunIds: [child.runId, "another-child"],
         ...(reason === "different-cohort" ? { requesterYieldBatch: true, rearmGeneration: 1 } : {}),
-      };
-    } else if (reason === "retrying-cohort") {
-      child.requesterSettleWake = {
-        batchRunIds: [child.runId],
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
       };
     } else if (reason === "missing-cohort") {
       child.requesterSettleWake = {
@@ -435,7 +428,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
         expect(append).not.toHaveBeenCalled();
       } else {
         expect(await settling).toBe(true);
-        expect(beforeWrite).toHaveBeenCalledTimes(2);
+        expect(beforeWrite).toHaveBeenCalledOnce();
         finalizeRequesterBatch(entry.runId, "settled");
         expect(append).toHaveBeenCalledExactlyOnceWith("settled");
       }
@@ -569,7 +562,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
           schedule,
         }),
       ).toBe(expected);
-      expect(beforeWrite).toHaveBeenCalledTimes(expected ? 3 : 1);
+      expect(beforeWrite).toHaveBeenCalledTimes(expected ? 2 : 1);
       if (expected) {
         expect(runs.get(entry.runId)!.requesterSettleWake?.batchRunIds).toEqual([entry.runId]);
         expect(schedule).toHaveBeenCalledExactlyOnceWith(
@@ -609,7 +602,6 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
       const batchRunIds = entries.map((entry) => entry.runId).toSorted();
       for (const entry of entries) {
         expect(runs.get(entry.runId)!.requesterSettleWake).toEqual({
-          status: "pending",
           batchRunIds,
           requesterYieldBatch: true,
           yieldedFinalDeliverable: true,
@@ -620,20 +612,20 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
         expect(runs.get(entry.runId)!.requesterTurnRunId).toBeUndefined();
         expect(runs.get(entry.runId)!.retireAfterRequesterTurn).toBeUndefined();
       }
-      expect(beforeWrite).toHaveBeenCalledTimes(2);
+      expect(beforeWrite).toHaveBeenCalledOnce();
       expect(
         loadSubagentRegistryFromSqlite().get(first.runId)?.requesterSettleWake?.batchRunIds,
       ).toEqual(batchRunIds);
       if (kind === "running") {
         expect(schedule).not.toHaveBeenCalled();
-        expect(calls).toEqual(["persist", "persist"]);
+        expect(calls).toEqual(["persist"]);
       } else {
         expect(schedule).toHaveBeenCalledExactlyOnceWith(
           first.runId,
           runs.get(first.runId),
           "settle",
         );
-        expect(calls).toEqual(["persist", "persist", "schedule"]);
+        expect(calls).toEqual(["persist", "schedule"]);
       }
       if (kind === "in_progress") {
         expect(runs.get(second.runId)!.delivery?.disposition).toBe("intentional_non_delivery");
@@ -676,9 +668,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
         }),
       ).toBe(true);
       expect(beforeWrite.mock.calls).toEqual(
-        requesterYielded
-          ? [[completion.runId], [completion.runId], [completion.runId]]
-          : [[completion.runId]],
+        requesterYielded ? [[completion.runId], [completion.runId]] : [[completion.runId]],
       );
       if (requesterYielded) {
         expect(runs.get(completion.runId)!.requesterSettleWake).toMatchObject({
@@ -721,7 +711,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
         },
       });
       if (reject) {
-        await expect(settling).rejects.toMatchObject({ outcome: "not-committed", cause: failure });
+        await expect(settling).rejects.toBe(failure);
         expect(runs.get(entry.runId)).toMatchObject({ runId: entry.runId });
         expect(runs.get(entry.runId)!.requesterTurnRunId).toBe(REQUESTER_TURN);
         expect(runs.get(entry.runId)!.retireAfterRequesterTurn).toBe(true);

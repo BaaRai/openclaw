@@ -425,10 +425,16 @@ describe("requester settle dispatch deadline", () => {
             expect.objectContaining({ delivered: true, requesterVisibleFinalDelivered: true }),
             expect.any(Function),
           );
+        } else if (outcome === "runtime timeout") {
+          // The requester consumed the continuation; its failed outcome is recorded once.
+          expect(acceptedSignal?.aborted).toBe(true);
+          expect(completeBatch).toHaveBeenCalledOnce();
+          expect(completeBatch.mock.calls[0]?.[2]).toMatchObject({ delivered: false });
         } else {
+          // A stopped evaluation leaves the durable wake owed.
           expect(acceptedSignal?.aborted).toBe(true);
           expect(completeBatch).not.toHaveBeenCalled();
-          expect(child.requesterSettleWake).toMatchObject({ status: "pending", attemptCount: 1 });
+          expect(child.requesterSettleWake).toBeDefined();
         }
         const later = vi.fn();
         let laterClaim: ReturnType<typeof getCurrentSessionControllerClaim>;

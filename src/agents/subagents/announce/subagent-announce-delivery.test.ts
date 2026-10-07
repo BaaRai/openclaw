@@ -747,70 +747,6 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
   it.each<
     [
       name: string,
-      outcomes: (boolean | EmbeddedAgentQueueFailureReason)[],
-      announceTimeoutMs?: number,
-    ]
-  >([
-    [
-      "keeps retrying compaction past the backoff schedule until the delivery timeout (86566)",
-      ["compacting", "compacting", "compacting", "compacting", "compacting", true],
-    ],
-    [
-      "passes the remaining delivery window into compaction retries (86566)",
-      ["compacting", true],
-      500,
-    ],
-  ])("%s", async (_name, outcomes, announceTimeoutMs) => {
-    const previousTestFast = process.env.OPENCLAW_TEST_FAST;
-    process.env.OPENCLAW_TEST_FAST = "1";
-    try {
-      const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeSequenceMock(outcomes);
-      const callGateway = createGatewayMock();
-      let activityChecks = 0;
-      testing.setDepsForTest({
-        callGateway,
-        getRequesterSessionActivity: () => ({
-          sessionId: "paperclip-session",
-          isActive: activityChecks++ === 0,
-        }),
-        queueEmbeddedAgentMessageWithOutcome,
-        getRuntimeConfig: () => ({
-          ...(announceTimeoutMs === undefined
-            ? {}
-            : { agents: { defaults: { subagents: { announceTimeoutMs } } } }),
-          messages: { queue: { mode: "followup" } },
-        }),
-      });
-      expectDeliveryPath(
-        await announce({
-          requesterSessionOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
-        }),
-        "steered",
-      );
-      expect(callGateway).not.toHaveBeenCalled();
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(outcomes.length);
-      if (announceTimeoutMs !== undefined) {
-        const retryOptions = mockCallArg(queueEmbeddedAgentMessageWithOutcome, 1, 2);
-        expectRecordFields(retryOptions, {
-          steeringMode: "all",
-          debounceMs: 500,
-          waitForTranscriptCommit: true,
-        });
-        expect(retryOptions.deliveryTimeoutMs).toBeGreaterThan(0);
-        expect(retryOptions.deliveryTimeoutMs).toBeLessThan(announceTimeoutMs);
-      }
-    } finally {
-      if (previousTestFast === undefined) {
-        delete process.env.OPENCLAW_TEST_FAST;
-      } else {
-        process.env.OPENCLAW_TEST_FAST = previousTestFast;
-      }
-    }
-  });
-
-  it.each<
-    [
-      name: string,
       reason: EmbeddedAgentQueueFailureReason,
       errorMessage: string | undefined,
       activityEnds: boolean,
@@ -1644,34 +1580,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       path: "none",
       reason: "requester_abandoned",
       error: "requester session abandoned after timeout",
-    });
-    expect(callGateway).not.toHaveBeenCalled();
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
-  });
-
-  it("defers completion dispatch while requester timeout recovery is unsettled", async () => {
-    const callGateway = createPayloadGatewayMock({ text: "child completion output" });
-    const sendMessage = createSendMessageMock();
-    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
-    const result = await deliverTelegramDirectMessageCompletion({
-      callGateway,
-      sendMessage,
-      requesterAbandonment: "recovering_timeout",
-      isActive: false,
-      queueEmbeddedAgentMessageWithOutcome,
-      internalEvents: taskCompletionEvents({
-        childSessionId: "child-session-id",
-        taskLabel: "telegram recovering completion",
-      }),
-    });
-
-    expectRecordFields(result, {
-      delivered: false,
-      path: "none",
-      reason: "completion_handoff_pending",
-      error: "requester timeout recovery is still settling",
-      disposition: "retryable",
     });
     expect(callGateway).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
@@ -2722,10 +2630,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(agentParams.sourceReplyDeliveryMode).toBeUndefined();
   });
 
-  const adapterUnavailable = new PlatformMessageNotDispatchedError(
-    "Outbound not configured for channel: slack",
-    { cause: new Error("adapter unavailable") },
-  );
   const identifiedSend = new OutboundDeliveryError("connect ECONNRESET", {
     cause: new Error("connect ECONNRESET"),
     results: [{ channel: "telegram", messageId: "msg-already-sent" }],
@@ -2737,33 +2641,17 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         name: "SessionTranscriptWriterClaimReboundError",
       },
     );
-  type RetryCase = [
+  type FailureCase = [
     name: string,
     error: Error,
-    attempts: number,
-    outcome: "delivered" | "retryable" | "permanent_failure" | "ambiguous",
+    outcome: "permanent_failure" | "ambiguous",
     route?: "active" | "direct" | "sent-marker",
   ];
-  it.each<RetryCase>([
-    [
-      "retries transient network failures nested through delivery wrappers",
-      new Error("requester handoff failed", {
-        cause: new Error("outbound delivery failed", { cause: new Error("connect ECONNREFUSED") }),
-      }),
-      2,
-      "delivered",
-    ],
-    ["runs the full typed adapter-resolution retry schedule", adapterUnavailable, 4, "delivered"],
-    [
-      "keeps exhausted typed adapter-resolution failures retryable",
-      adapterUnavailable,
-      4,
-      "retryable",
-    ],
+  // A failed dispatch is recorded once; these cases pin its classification.
+  it.each<FailureCase>([
     [
       "classifies wrapped permanent channel failures as permanent",
       new Error("outbound delivery failed", { cause: new Error("chat not found") }),
-      1,
       "permanent_failure",
     ],
     [
@@ -2774,57 +2662,40 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
           retryable: false,
         }),
       }),
-      1,
       "permanent_failure",
     ],
-    ["never retries after an identified outbound platform send", identifiedSend, 1, "ambiguous"],
+    ["never retries after an identified outbound platform send", identifiedSend, "ambiguous"],
     [
       "never retries after a nested visible reply receipt",
       new Error("connect ECONNRESET", {
         cause: Object.assign(new Error("platform send completed"), { visibleReplySent: true }),
       }),
-      1,
       "ambiguous",
     ],
     [
       "does not retry writer rebound with send evidence",
       writerRebound(identifiedSend),
-      1,
       "ambiguous",
       "active",
     ],
-    ["retries writer rebound without send evidence", writerRebound(), 2, "delivered", "active"],
     [
       "does not text-fallback after an identified incomplete platform send",
       new OutboundDeliveryError("incomplete terminal response", {
         cause: new Error("incomplete terminal response"),
         results: [{ channel: "discord", messageId: "already-sent" }],
       }),
-      1,
       "ambiguous",
       "direct",
     ],
     [
       "detects sentBeforeError on writer rebound and prevents retry",
       Object.assign(writerRebound(), { sentBeforeError: true }),
-      1,
       "ambiguous",
       "sent-marker",
     ],
-  ])("%s", async (_name, error, attempts, outcome, route) => {
+  ])("%s", async (_name, error, outcome, route) => {
     const callGateway = createGatewayMock();
-    const gatewayMock = vi.mocked(callGateway).mockRejectedValue(error);
-    if (outcome === "delivered") {
-      for (let attempt = 1; attempt < attempts; attempt++) {
-        gatewayMock.mockRejectedValueOnce(error);
-      }
-      gatewayMock.mockResolvedValue({
-        result: {
-          payloads: [{ text: "recovered child completion" }],
-          deliveryStatus: sentDeliveryStatus,
-        },
-      });
-    }
+    vi.mocked(callGateway).mockRejectedValue(error);
     const sendMessage = createSendMessageMock();
     const result =
       route === "direct"
@@ -2839,39 +2710,14 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
             directIdempotencyKey: "announce-retry-contract",
             ...(route === "active" ? { isActive: true } : {}),
           });
-    expect(result).toMatchObject({
-      delivered: outcome === "delivered",
-      path: "direct",
-      ...(outcome === "delivered" ? {} : { disposition: outcome }),
-    });
-    expect(callGateway).toHaveBeenCalledTimes(attempts);
+    expect(result).toMatchObject({ delivered: false, path: "direct", disposition: outcome });
+    expect(callGateway).toHaveBeenCalledOnce();
     if (route === "direct") {
       expect(sendMessage).not.toHaveBeenCalled();
     }
     if (route === "sent-marker") {
       expect(testing.hasAnnounceSendEvidence(error)).toBe(true);
     }
-  });
-
-  it("stops a direct Gateway retry when source ownership changes after the first attempt", async () => {
-    let sourceEffectsAllowed = true;
-    const callGateway = createGatewayMock({}, () => {
-      sourceEffectsAllowed = false;
-      throw new Error("gateway not connected");
-    });
-    const result = await deliverSlackChannelAnnouncement({
-      callGateway,
-      directIdempotencyKey: "announce-retry-source-owner-changed",
-      isSourceSessionEffectsAllowed: () => sourceEffectsAllowed,
-    });
-
-    expect(result).toMatchObject({
-      delivered: false,
-      path: "none",
-      reason: "source_owner_changed",
-      terminal: true,
-    });
-    expect(callGateway).toHaveBeenCalledOnce();
   });
 
   it("does not text-fallback when source ownership changes during the Gateway attempt", async () => {

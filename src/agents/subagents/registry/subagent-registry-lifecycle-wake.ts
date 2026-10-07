@@ -4,9 +4,9 @@ import { isGatewayRestartDrainError } from "../../../process/gateway-work-admiss
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
-import { retireSubagentControllerInputs } from "../announce/subagent-announce-controller-source.js";
 import { revokeRequesterCronAuthorityBatch } from "../requester-cron-authority.js";
 import { revokeRequesterFinalAttachment } from "../requester-final-attachment.js";
+import { retireSubagentControllerInputs } from "./subagent-controller-inputs.js";
 import { isCompletedRequesterDeliveryBlocked } from "./subagent-delivery-state.js";
 import { retireSubagentGatewayBinding } from "./subagent-registry-execution-cleanup.js";
 import type { SubagentLifecycleWakeContext } from "./subagent-registry-lifecycle-context.js";

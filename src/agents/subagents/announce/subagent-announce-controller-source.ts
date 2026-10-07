@@ -1,19 +1,15 @@
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import {
-  abortSessionControllerInput,
   reserveSessionControllerSource,
-  sessionControllerMailboxes,
   type SessionControllerInput,
 } from "../../../sessions/session-controller.mailbox.js";
+import { subagentCompletionSourceId } from "../registry/subagent-controller-inputs.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import {
   buildRequesterSettleWakeIdentity,
   hasRequesterCompletionCohort,
 } from "../registry/subagent-requester-settle-identity.js";
 import { loadRequesterSessionEntry } from "./subagent-announce-delivery.runtime.js";
-
-const subagentCompletionSourceId = (entry: SubagentRunRecord) =>
-  `subagent-completion:${entry.runId}:${entry.generation ?? 0}`;
 
 /** Reserves one followup source against the durable registry row that owns it. */
 export function reserveSubagentControllerSource(
@@ -41,35 +37,6 @@ export function reserveSubagentControllerSource(
       incarnation: requester.entry.sessionId,
     }),
   });
-}
-
-/** Live mailbox inputs that deliver this run, by their stable reservation identities. */
-function* subagentControllerInputs(entry: SubagentRunRecord) {
-  const completionId = subagentCompletionSourceId(entry);
-  for (const mailbox of sessionControllerMailboxes()) {
-    for (const input of mailbox.entries.slice()) {
-      const id = input.sourceTurnId;
-      if (
-        input.phase !== "consumed" &&
-        (id === completionId ||
-          (id?.startsWith("requester-settle:") === true && id.includes(entry.runId)))
-      ) {
-        yield input;
-      }
-    }
-  }
-}
-
-export const hasSubagentControllerInput = (entry: SubagentRunRecord): boolean =>
-  !subagentControllerInputs(entry).next().done;
-
-/** Withdraws every unclaimed input that delivers this run; claimed turns revalidate at execution. */
-export function retireSubagentControllerInputs(entry: SubagentRunRecord): void {
-  for (const input of subagentControllerInputs(entry)) {
-    if (!input.claim) {
-      abortSessionControllerInput(input, new Error("Subagent obligation retired"));
-    }
-  }
 }
 
 export const reserveSubagentCompletionControllerSource = (

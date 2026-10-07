@@ -1,4 +1,3 @@
-/** Deliver drained requester waves; lifecycle owns their persisted outbox on retained run rows. */
 import { getRuntimeConfig } from "../../../config/config.js";
 import { isSystemEventStoreCurrent } from "../../../infra/system-event-ownership.js";
 import { getSharedGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
@@ -43,6 +42,8 @@ import {
 } from "../requester-final-attachment.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { reserveSubagentControllerSource } from "./subagent-announce-controller-source.js";
+/** Deliver drained requester waves; lifecycle owns their persisted outbox on retained run rows. */
+import { hasAnnounceSendEvidence } from "./subagent-announce-delivery-retry.js";
 import {
   deliverSubagentAnnouncement,
   loadRequesterSessionEntry,
@@ -452,8 +453,14 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     }
   };
   // Revocation or retirement owns a changed batch: record nothing, or consume the obsolete wake.
+  // A stopped evaluation records nothing; the durable wake stays owed.
   const settleRevokedBatch = async (): Promise<boolean> => {
-    if (isGatewayClosed() || !isBatchCurrent() || (await retireReplacedStore())) {
+    if (
+      params.signal?.aborted ||
+      isGatewayClosed() ||
+      !isBatchCurrent() ||
+      (await retireReplacedStore())
+    ) {
       return true;
     }
     if (isBatchDeliveryClosed() || !isRequesterCurrent()) {
@@ -524,6 +531,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     await completeBatch(settledBatch, state, {
       delivered: false,
       path: "none",
+      disposition: hasAnnounceSendEvidence(error) ? "ambiguous" : "permanent_failure",
       error: error instanceof Error ? error.message : String(error),
     });
     return false;

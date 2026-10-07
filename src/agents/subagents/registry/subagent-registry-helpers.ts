@@ -35,6 +35,8 @@ const MIN_ANNOUNCE_RETRY_DELAY_MS = 15_000;
 const MAX_ANNOUNCE_RETRY_DELAY_MS = 5 * 60_000;
 const ANNOUNCE_RETRY_JITTER = 0.2;
 export const ANNOUNCE_EXPIRY_MS = 5 * 60_000;
+/** The durable media outbox owns its own delivery window, independent of the mailbox. */
+export const SESSION_DELIVERY_DEADLINE_MS = 30 * 60_000;
 
 const ANNOUNCE_RETRY_BACKOFF = {
   initialMs: MIN_ANNOUNCE_RETRY_DELAY_MS,

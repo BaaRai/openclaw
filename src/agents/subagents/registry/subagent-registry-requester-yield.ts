@@ -3,13 +3,14 @@ import type { ProgressContinuationState } from "../../../channels/progress-conti
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
-import { hasSubagentControllerInput } from "../announce/subagent-announce-controller-source.js";
 import { promoteFollowupYield } from "../completion/session-followup-completion.js";
 import {
   promoteRequesterCronAuthority,
   type PreparedRequesterCronAuthority,
 } from "../requester-cron-authority.js";
 import { promoteRequesterFinalAttachment } from "../requester-final-attachment.js";
+import { hasSubagentControllerInput } from "./subagent-controller-inputs.js";
+import { SESSION_DELIVERY_DEADLINE_MS } from "./subagent-registry-helpers.js";
 import {
   mutateSubagentRuns,
   SubagentRegistryMutationRejectedError,
@@ -597,6 +598,16 @@ export async function settleRequesterTurnAfterSessionSpawns(params: {
           }
           entry.requesterTurnRunId = undefined;
           entry.requesterTurnYielded = undefined;
+          if (
+            entry.completionTarget === "parent" &&
+            typeof entry.execution.endedAt === "number" &&
+            entry.delivery?.status === "pending"
+          ) {
+            // Private delivery becomes eligible only when its spawning turn releases it.
+            entry.delivery.windowStartedAt ??= Date.now();
+            entry.delivery.deadlineAt ??=
+              entry.delivery.windowStartedAt + SESSION_DELIVERY_DEADLINE_MS;
+          }
           if (entry.retireAfterRequesterTurn === true) {
             if (entry.requesterSettleWake) {
               entry.requesterSettleWake = { ...entry.requesterSettleWake, retireAfterSettle: true };
