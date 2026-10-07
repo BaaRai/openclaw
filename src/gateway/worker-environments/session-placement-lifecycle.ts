@@ -1,7 +1,6 @@
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
 import { DEVICE_WORKER_PROVIDER_ID } from "./device-provider-identity.js";
-import { isCurrentActiveWorkerEnvironment } from "./placement-dispatch-failure.js";
-import type { WorkerPlacementDispatchService } from "./placement-dispatch.js";
+import type { WorkerEnvironmentRecord } from "./environment-record.js";
 import type { WorkerEnvironmentPlacementFacts } from "./placement-read-projection.types.js";
 import type { WorkerSessionPlacementRecord } from "./placement-record.js";
 import type {
@@ -9,6 +8,7 @@ import type {
   WorkerSessionPlacementStore,
 } from "./placement-store.js";
 import {
+  isCurrentActiveWorkerEnvironment,
   isFailedWorkerPlacementEnvironmentGone,
   matchesWorkerPlacementTarget,
   type WorkerPlacementCancellationTarget,
@@ -18,9 +18,8 @@ import type {
   WorkerEnvironmentServiceContract,
   WorkerPlacementDispatchContract,
   WorkerPlacementReclaimSourceCheck,
+  WorkerPlacementRedispatch,
 } from "./service-contract.js";
-import type { WorkerEnvironmentService } from "./service.js";
-import type { createWorkerPlacementRedispatch } from "./worker-placement-redispatch.js";
 
 export type SessionWorkerPlacementContext = {
   workerEnvironmentService?: Pick<WorkerEnvironmentServiceContract, "get">;
@@ -400,20 +399,20 @@ export function prepareSessionWorkerPlacementStop(params: {
 export async function ensureWorkerSessionPlacement(params: {
   request: WorkerPlacementDispatchRequest;
   placements: Pick<WorkerSessionPlacementStore, "get">;
-  environments: Pick<WorkerEnvironmentService, "get">;
-  dispatch: WorkerPlacementDispatchService["dispatch"];
+  environments: { get(environmentId: string): WorkerEnvironmentRecord | undefined };
+  dispatch: WorkerPlacementDispatchContract["dispatch"];
   startDispatch: (
-    ...args: Parameters<WorkerPlacementDispatchService["dispatch"]>
+    ...args: Parameters<WorkerPlacementDispatchContract["dispatch"]>
   ) => Promise<WorkerSessionPlacementRecord>;
   waitForInitialPlacement: (
     placement: WorkerSessionPlacementRecord,
     signal?: AbortSignal,
   ) => Promise<unknown>;
-  redispatchPlacement: ReturnType<typeof createWorkerPlacementRedispatch>;
+  redispatchPlacement: WorkerPlacementRedispatch;
   prepareWorkspace: (canPrepare: () => boolean) => Promise<void>;
   assertCurrent: () => void;
   authorizeDispatch: () => void;
-  onTransition?: Parameters<WorkerPlacementDispatchService["dispatch"]>[1];
+  onTransition?: Parameters<WorkerPlacementDispatchContract["dispatch"]>[1];
   signal?: AbortSignal;
   waitForReady?: boolean;
 }): Promise<() => void> {

@@ -158,14 +158,14 @@ async function resolveSessionWorkspace(params: {
   const article = params.method === "sessions.dispatch" ? "a" : "the";
   try {
     const resolved = await resolveWorkerPlacementSessionTarget({
-        sessionRuntime: await loadWorkerPlacementSessionRuntimeModule(),
-        config: params.config,
-        sessionId: params.entry.sessionId,
-        sessionKey: params.sessionKey,
-        agentId: params.agentId,
-        expectedEntry: params.entry,
-        errorMessage: `${params.method} requires ${article} session-owned worktree or repository workspace`,
-      });
+      sessionRuntime: await loadWorkerPlacementSessionRuntimeModule(),
+      config: params.config,
+      sessionId: params.entry.sessionId,
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      expectedEntry: params.entry,
+      errorMessage: `${params.method} requires ${article} session-owned worktree or repository workspace`,
+    });
     params.assertCurrent?.();
     return resolved.workspace;
   } catch (error) {
