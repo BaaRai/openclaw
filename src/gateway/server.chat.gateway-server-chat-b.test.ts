@@ -72,6 +72,7 @@ import { readWarmChatStartup } from "./server-chat-startup.test-support.js";
 import {
   createChatVisionModelCatalogSnapshot,
   createDirectChatContext,
+  createOversizedReplayTranscriptEvent,
   createTextTranscriptEvent,
   registerChatConnectionIdentityTest,
 } from "./server-chat.agent-events.test-helpers.js";
@@ -5637,24 +5638,10 @@ describe("gateway server chat", () => {
               timestamp: Date.now(),
             }),
           },
-          JSON.stringify({
-            type: "message",
+          createOversizedReplayTranscriptEvent({
             id: projectedMessageId,
             parentId: olderMessageId,
-            message: {
-              role: "assistant",
-              // Replay metadata repeats the text; keep each row below the per-message byte cap.
-              content: Array.from({ length: projectedSiblingCount }, (_, index) => ({
-                type: "text",
-                text: `projected sibling ${index + 1} ${"x".repeat(50_000)}`,
-                textSignature: JSON.stringify({
-                  v: 1,
-                  id: `history-progress-${index}`,
-                  phase: "commentary",
-                }),
-              })),
-              timestamp: Date.now() + 1,
-            },
+            siblingCount: projectedSiblingCount,
           }),
         ]);
 
