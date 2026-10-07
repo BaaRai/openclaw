@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { subagentRuns } from "../../agents/subagents/registry/subagent-registry-memory.js";
+import { subscribeSubagentRunChanges } from "../../agents/subagents/registry/subagent-registry-publication.js";
 import { settleSubagentRegistryPersistenceWork } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
+import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
@@ -168,6 +170,7 @@ describe("visible yielded session continuation", () => {
       let resetComplete = false;
       let unexpectedInference = 0;
       let stopping = false;
+      let stopRecordingPublished: (() => void) | undefined;
       let providerServer: ReturnType<typeof createServer> | undefined;
       let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
       const snapshot = (): Array<Record<string, unknown>> =>
@@ -629,6 +632,18 @@ describe("visible yielded session continuation", () => {
           expect(fixtureErrors).toEqual([]);
           return;
         }
+        // A confirmed kill retires its row, so record each run's last published state.
+        const lastPublished = new Map<string, SubagentRunRecord>();
+        const recordPublished = () => {
+          for (const receipt of [requester, child]) {
+            const run = receipt ? subagentRuns.get(receipt.runId) : undefined;
+            if (run) {
+              lastPublished.set(run.runId, structuredClone(run));
+            }
+          }
+        };
+        recordPublished();
+        stopRecordingPublished = subscribeSubagentRunChanges("projection", recordPublished);
         await gateway.client.request(
           "chat.send",
           { sessionKey, message: "/new", deliver: false, idempotencyKey: resetId },
@@ -657,11 +672,12 @@ describe("visible yielded session continuation", () => {
         });
         for (const receipt of [requester, child]) {
           expect(receipt).toBeDefined();
-          const run = receipt ? subagentRuns.get(receipt.runId) : undefined;
+          const run = receipt ? lastPublished.get(receipt.runId) : undefined;
           expect(run?.execution).toMatchObject({ status: "terminal" });
           expect(run?.endedReason).toBe("subagent-killed");
         }
       } finally {
+        stopRecordingPublished?.();
         stopping = true;
         fixtureAbort.abort();
         providerServer?.closeAllConnections();
