@@ -33,11 +33,11 @@ import {
   registerSessionStateWatch,
   sweepSessionStateWatchNotices,
 } from "./session-state-events.js";
-import { registerSessionStateNoticeHandoffCases } from "./session-state-events.notice-handoff.cases.js";
 import {
   recordSessionStateEventInDatabase,
   type SessionStateEventRow,
 } from "./session-state-events.kernel.js";
+import { registerSessionStateNoticeHandoffCases } from "./session-state-events.notice-handoff.cases.js";
 import {
   child,
   cleanupSessionStateTestState,
