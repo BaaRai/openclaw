@@ -131,20 +131,27 @@ export function resolveActiveReplyOperationForSessionId(
 }
 
 /**
- * Finds the unfinished operation that owns a backend or Gateway protocol run ID. A backend
- * run stays owned after its attempt detaches, until the operation itself settles.
+ * Resolves the one unfinished operation that owns a backend run ID (kept after detach until the
+ * operation settles) or a claimed input's protocol run ID; ambiguity fails closed.
  */
 export function findSessionControllerOperationByRunId(runId: string): ReplyOperation | undefined {
+  const matches = new Set<ReplyOperation>();
   for (const operation of activeSessionOperations()) {
-    if (!operation.result && hasOperationBackendRunId(operation, runId)) {
-      return operation;
+    const claim = getSessionControllerEntryForOperation(operation).mailbox?.claim;
+    if (
+      !operation.result &&
+      (hasOperationBackendRunId(operation, runId) ||
+        (claim?.operation === operation &&
+          claim.inputs.some((input) => input.protocolRunId === runId)))
+    ) {
+      matches.add(operation);
     }
   }
   for (const source of rpcSourcesByRunId.get(runId) ?? []) {
     const claim = source.input.claim;
     if (claim && !claim.released && claim.operation && !claim.operation.result) {
-      return claim.operation;
+      matches.add(claim.operation);
     }
   }
-  return undefined;
+  return matches.size === 1 ? [...matches][0] : undefined;
 }
