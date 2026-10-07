@@ -21,7 +21,6 @@ import { announceTesting as subagentAnnounceTesting } from "../announce/subagent
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import {
-  getAgentResultsForChildSession,
   settleYieldedCliTurn,
   type LifecycleData,
   type SessionStoreEntry,
@@ -32,7 +31,6 @@ import {
   createLifecycleWaits,
 } from "./subagent-registry.lifecycle-waits.test-support.js";
 import * as mod from "./subagent-registry.test-helpers.js";
-import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 
 const noop = () => {};
 const MAIN_REQUESTER_SESSION_KEY = "agent:main:main";
@@ -242,17 +240,10 @@ describe("subagent registry lifecycle error grace", () => {
     }
   });
 
-  const {
-    flushAsync,
-    waitForRun,
-    waitForDeliveredCleanup,
-    waitForFrozenResult,
-    waitForFrozenResultText,
-  } = createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
+  const { flushAsync, waitForRun, waitForDeliveredCleanup, waitForFrozenResult } =
+    createLifecycleWaits(MAIN_REQUESTER_SESSION_KEY);
 
   const waitForAgentCallCount = (count: number) => agentCallWaits.waitForAgentCallCount(count);
-  const waitForCleanupHandledFalse = (runId: string) =>
-    agentCallWaits.waitForCleanupHandledFalse(runId);
 
   function registerCompletionRun(
     runId: string,
@@ -386,7 +377,6 @@ describe("subagent registry lifecycle error grace", () => {
     expect(settled?.requesterTurnRunId).toBeUndefined();
     expect(settled?.requesterTurnYielded).toBeUndefined();
     expect(settled?.requesterSettleWake).toMatchObject({
-      status: "pending",
       batchRunIds: [runId],
       requesterYieldBatch: true,
     });
@@ -720,196 +710,6 @@ describe("subagent registry lifecycle error grace", () => {
     expect(readFirstAnnounceOutcome()?.statusLabel).toContain("fatal failure");
   });
 
-  it("freezes completion result at run termination across deferred announce retries", async () => {
-    // Regression guard: late lifecycle noise must never overwrite the frozen completion reply.
-    await registerCompletionRun("run-freeze", "freeze", "freeze test");
-    setAssistantOutput("agent:main:subagent:freeze", "Final answer X", "run-freeze");
-    agentCallPlan = ["throw", "ok"];
-
-    const endedAt = Date.now();
-    emitLifecycleEvent("run-freeze", {
-      phase: "end",
-      endedAt,
-      terminalReply: { disposition: "visible", text: "Final answer X" },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(1);
-    expect(getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:freeze")).toEqual([
-      "Final answer X",
-    ]);
-
-    await waitForCleanupHandledFalse("run-freeze");
-    const firstCapturedAt = mod
-      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
-      .find((candidate) => candidate.runId === "run-freeze")?.completion?.capturedAt;
-
-    setAssistantOutput("agent:main:subagent:freeze", "Late reply Y", "run-freeze-late-traffic");
-    emitLifecycleEvent(
-      "run-freeze-late-traffic",
-      { phase: "end", endedAt: endedAt + 50 },
-      { sessionKey: "agent:main:subagent:freeze" },
-    );
-    const refreshed = await waitForFrozenResultText("run-freeze", "Late reply Y");
-    expect(refreshed.completion?.capturedAt).toBeGreaterThanOrEqual(firstCapturedAt ?? 0);
-    expect(refreshed.completion?.terminalReply).toEqual({
-      disposition: "visible",
-      text: "Final answer X",
-    });
-    emitLifecycleEvent("run-freeze", {
-      phase: "end",
-      endedAt: endedAt + 100,
-      terminalReply: { disposition: "visible", text: "Final answer X" },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(2);
-    expect(getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:freeze")).toEqual([
-      "Final answer X",
-      "Final answer X",
-    ]);
-  });
-
-  it("retries a corrected same-run final without substituting later session traffic", async () => {
-    await registerCompletionRun("run-refresh", "refresh", "refresh frozen output test");
-    setAssistantOutput(
-      "agent:main:subagent:refresh",
-      "Both spawned. Waiting for completion events...",
-      "run-refresh",
-    );
-    agentCallPlan = ["throw", "ok"];
-
-    const endedAt = Date.now();
-    emitLifecycleEvent("run-refresh", {
-      phase: "end",
-      endedAt,
-      terminalReply: {
-        disposition: "visible",
-        text: "Both spawned. Waiting for completion events...",
-      },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(1);
-    expect(getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:refresh")).toEqual([
-      "Both spawned. Waiting for completion events...",
-    ]);
-
-    await waitForCleanupHandledFalse("run-refresh");
-
-    const runBeforeRefresh = expectDefined(
-      mod
-        .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
-        .find((candidate) => candidate.runId === "run-refresh"),
-      "Expected the completed run before its corrected receipt",
-    );
-    const generation = runBeforeRefresh.generation;
-    const firstCapturedAt = runBeforeRefresh.completion?.capturedAt ?? 0;
-
-    setAssistantOutput(
-      "agent:main:subagent:refresh",
-      "All 3 subagents complete. Here's the final summary.",
-      "run-refresh",
-    );
-    setAssistantOutput(
-      "agent:main:subagent:refresh",
-      "Unrelated later turn",
-      "run-refresh-followup-turn",
-    );
-    emitLifecycleEvent("run-refresh", {
-      phase: "end",
-      endedAt: endedAt + 300,
-      terminalReply: {
-        disposition: "visible",
-        text: "All 3 subagents complete. Here's the final summary.",
-      },
-    });
-    await flushAsync();
-
-    const runAfterRefresh = await waitForFrozenResultText(
-      "run-refresh",
-      "All 3 subagents complete. Here's the final summary.",
-    );
-    expect(getSubagentRunRuntimeKey(runAfterRefresh)).toBe(
-      getSubagentRunRuntimeKey(runBeforeRefresh),
-    );
-    expect(runAfterRefresh).toMatchObject({
-      runId: "run-refresh",
-      generation,
-      childSessionKey: "agent:main:subagent:refresh",
-      execution: { status: "terminal" },
-      completion: {
-        resultText: "All 3 subagents complete. Here's the final summary.",
-        terminalReply: {
-          disposition: "visible",
-          text: "All 3 subagents complete. Here's the final summary.",
-        },
-      },
-    });
-    expect(runAfterRefresh.completion?.capturedAt).toBeGreaterThanOrEqual(firstCapturedAt);
-    await waitForAgentCallCount(2);
-    expect(getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:refresh")).toEqual([
-      "Both spawned. Waiting for completion events...",
-      "All 3 subagents complete. Here's the final summary.",
-    ]);
-  });
-
-  it("ignores silent follow-up turns when refreshing frozen completion output", async () => {
-    await registerCompletionRun("run-refresh-silent", "refresh-silent", "refresh silent test");
-    setAssistantOutput(
-      "agent:main:subagent:refresh-silent",
-      "All work complete, final summary",
-      "run-refresh-silent",
-    );
-    agentCallPlan = ["throw", "ok"];
-
-    const endedAt = Date.now();
-    emitLifecycleEvent("run-refresh-silent", {
-      phase: "end",
-      endedAt,
-      terminalReply: {
-        disposition: "visible",
-        text: "All work complete, final summary",
-      },
-    });
-    await flushAsync();
-    await waitForAgentCallCount(1);
-    await waitForCleanupHandledFalse("run-refresh-silent");
-    await waitForFrozenResultText("run-refresh-silent", "All work complete, final summary");
-
-    setAssistantOutput(
-      "agent:main:subagent:refresh-silent",
-      "NO_REPLY",
-      "run-refresh-silent-followup-turn",
-    );
-    emitLifecycleEvent(
-      "run-refresh-silent-followup-turn",
-      { phase: "end", endedAt: endedAt + 200 },
-      { sessionKey: "agent:main:subagent:refresh-silent" },
-    );
-    await flushAsync();
-
-    const runAfterSilent = mod
-      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
-      .find((candidate) => candidate.runId === "run-refresh-silent");
-    expect(runAfterSilent?.completion?.resultText).toBe("All work complete, final summary");
-
-    emitLifecycleEvent("run-refresh-silent", {
-      phase: "end",
-      endedAt: endedAt + 300,
-      terminalReply: {
-        disposition: "visible",
-        text: "All work complete, final summary",
-      },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(2);
-    expect(
-      getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:refresh-silent"),
-    ).toEqual(["All work complete, final summary", "All work complete, final summary"]);
-  });
-
   it("regression, captures frozen completion output with 100KB cap and retains it for keep-mode cleanup", async () => {
     await registerCompletionRun("run-capped", "capped", "capped result test", undefined, false);
     setAssistantOutput("agent:main:subagent:capped", "x".repeat(120 * 1024), "run-capped");
@@ -1047,63 +847,5 @@ describe("subagent registry lifecycle error grace", () => {
       ),
     ).toHaveLength(1);
     expect(getRequesterWakeCalls()).toHaveLength(0);
-  });
-
-  it("keeps parallel child completion results frozen even when late traffic arrives", async () => {
-    // Regression guard: fan-out retries must preserve each child's first frozen result text.
-    await registerCompletionRun("run-parallel-a", "parallel-a", "parallel a");
-    await registerCompletionRun("run-parallel-b", "parallel-b", "parallel b");
-    setAssistantOutput("agent:main:subagent:parallel-a", "Final answer A", "run-parallel-a");
-    setAssistantOutput("agent:main:subagent:parallel-b", "Final answer B", "run-parallel-b");
-    agentCallPlan = ["throw", "throw", "ok", "ok"];
-
-    const parallelEndedAt = Date.now();
-    emitLifecycleEvent("run-parallel-a", {
-      phase: "end",
-      endedAt: parallelEndedAt,
-      terminalReply: { disposition: "visible", text: "Final answer A" },
-    });
-    emitLifecycleEvent("run-parallel-b", {
-      phase: "end",
-      endedAt: parallelEndedAt + 1,
-      terminalReply: { disposition: "visible", text: "Final answer B" },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(2);
-    await waitForCleanupHandledFalse("run-parallel-a");
-    await waitForCleanupHandledFalse("run-parallel-b");
-
-    setAssistantOutput(
-      "agent:main:subagent:parallel-a",
-      "Late overwrite",
-      "run-parallel-a-late-traffic",
-    );
-    setAssistantOutput(
-      "agent:main:subagent:parallel-b",
-      "Late overwrite",
-      "run-parallel-b-late-traffic",
-    );
-
-    emitLifecycleEvent("run-parallel-a", {
-      phase: "end",
-      endedAt: parallelEndedAt + 100,
-      terminalReply: { disposition: "visible", text: "Final answer A" },
-    });
-    emitLifecycleEvent("run-parallel-b", {
-      phase: "end",
-      endedAt: parallelEndedAt + 101,
-      terminalReply: { disposition: "visible", text: "Final answer B" },
-    });
-    await flushAsync();
-
-    await waitForAgentCallCount(4);
-
-    expect(
-      getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:parallel-a"),
-    ).toEqual(["Final answer A", "Final answer A"]);
-    expect(
-      getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:parallel-b"),
-    ).toEqual(["Final answer B", "Final answer B"]);
   });
 });

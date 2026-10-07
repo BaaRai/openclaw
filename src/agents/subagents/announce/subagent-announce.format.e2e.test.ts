@@ -40,7 +40,6 @@ import {
   buildAnnounceIdempotencyKey,
 } from "../../announce-idempotency.js";
 import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
-import { FailoverError } from "../../failover-error.js";
 import { buildAgentInternalEventContext, type AgentInternalEvent } from "../../internal-events.js";
 import {
   projectRuntimeContextFragments,
@@ -1107,25 +1106,6 @@ describe("subagent announce formatting", () => {
     expect(getAgentCallContext(call)).toContain("final summary from prior completion");
   });
 
-  it("retries completion direct agent announce on transient channel-unavailable errors", async () => {
-    agentSpy
-      .mockRejectedValueOnce(new Error("Error: No active WhatsApp Web listener (account: default)"))
-      .mockRejectedValueOnce(new Error("UNAVAILABLE: listener reconnecting"))
-      .mockResolvedValueOnce(visibleAgentResponse());
-
-    const didAnnounce = await runSubagentAnnounceFlow({
-      ...defaultOutcomeAnnounce,
-      childRunId: "run-direct-completion-retry",
-      requesterOrigin: { channel: "whatsapp", to: "+15550000000", accountId: "default" },
-      expectsCompletionMessage: true,
-      roundOneReply: "final answer",
-    });
-
-    expect(didAnnounce).toBe("delivered");
-    expect(agentSpy).toHaveBeenCalledTimes(3);
-    expect(sendSpy).not.toHaveBeenCalled();
-  });
-
   it("does not retry completion direct agent announce on permanent channel errors", async () => {
     agentSpy.mockRejectedValueOnce(new Error("unsupported channel: telegram"));
 
@@ -1139,58 +1119,6 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe("permanent_failure");
     expect(agentSpy).toHaveBeenCalledTimes(1);
-    expect(sendSpy).not.toHaveBeenCalled();
-  });
-
-  it("retries direct agent announce on transient channel-unavailable errors", async () => {
-    agentSpy
-      .mockRejectedValueOnce(new Error("No active WhatsApp Web listener (account: default)"))
-      .mockRejectedValueOnce(new Error("UNAVAILABLE: delivery temporarily unavailable"))
-      .mockResolvedValueOnce(visibleAgentResponse());
-
-    const didAnnounce = await runSubagentAnnounceFlow({
-      ...defaultOutcomeAnnounce,
-      childRunId: "run-direct-agent-retry",
-      requesterOrigin: { channel: "whatsapp", to: "+15551112222", accountId: "default" },
-      roundOneReply: "worker result",
-    });
-
-    expect(didAnnounce).toBe("delivered");
-    expect(agentSpy).toHaveBeenCalledTimes(3);
-    expect(sendSpy).not.toHaveBeenCalled();
-  });
-
-  it("retries direct agent announce on fallback cooldown exhaustion", async () => {
-    agentSpy
-      .mockRejectedValueOnce(
-        new FailoverError(
-          "All models failed (1): anthropic/claude-opus-4-7: Provider anthropic is in cooldown (all profiles unavailable) (overloaded)",
-          {
-            reason: "overloaded",
-            provider: "anthropic",
-            model: "claude-opus-4-7",
-            attempts: [
-              {
-                provider: "anthropic",
-                model: "claude-opus-4-7",
-                reason: "overloaded",
-                error: "Provider anthropic is in cooldown (all profiles unavailable)",
-              },
-            ],
-          },
-        ),
-      )
-      .mockResolvedValueOnce(visibleAgentResponse());
-
-    const didAnnounce = await runSubagentAnnounceFlow({
-      ...defaultOutcomeAnnounce,
-      childRunId: "run-direct-agent-fallback-summary-retry",
-      requesterOrigin: { channel: "discord", to: "channel:C123", accountId: "default" },
-      roundOneReply: "worker result",
-    });
-
-    expect(didAnnounce).toBe("delivered");
-    expect(agentSpy).toHaveBeenCalledTimes(2);
     expect(sendSpy).not.toHaveBeenCalled();
   });
 

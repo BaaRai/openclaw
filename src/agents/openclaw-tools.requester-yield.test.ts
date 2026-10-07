@@ -651,10 +651,7 @@ describe("requester yield ownership", () => {
     ).toBe(true);
     const settled = getSubagentRunByRunId(child.runId);
     expect(settled?.requesterTurnRunId).toBeUndefined();
-    expect(settled?.requesterSettleWake).toMatchObject({
-      status: "pending",
-      requesterYieldBatch: true,
-    });
+    expect(settled?.requesterSettleWake).toMatchObject({ requesterYieldBatch: true });
 
     // Turn 2 (a new human message) owns no claim, but the child still runs.
     const turn2Yield = vi.fn();

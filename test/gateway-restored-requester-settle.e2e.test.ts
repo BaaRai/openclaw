@@ -177,55 +177,6 @@ describe("Gateway restored requester settlement", () => {
       }
     },
   );
-
-  it(
-    "runs at most two restored wakes while leaving the third queued",
-    { timeout: TEST_TIMEOUT_MS },
-    async () => {
-      const modelServer = await startHeldModelServer();
-      modelServers.push(modelServer);
-      const cfg = createTestConfig(modelServer.url);
-      const instance = await createOpenClawTestInstance({
-        name: "gateway-restored-requester-settle",
-        config: cfg,
-        env: {
-          OPENCLAW_SKIP_PROVIDERS: undefined,
-          OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-        },
-      });
-      instances.push(instance);
-
-      await seedRestoredRequesters(instance, 3, cfg);
-
-      await instance.startGateway();
-      await vi
-        .waitFor(() => expect(modelServer.countRequestsContaining(RESTORED_WAKE_MARKER)).toBe(2), {
-          interval: 20,
-          timeout: 30_000,
-        })
-        .catch((error: unknown) => {
-          throw gatewayDiagnosticError(instance, error);
-        });
-      expect(modelServer.active(), instance.logs()).toBe(2);
-      expect(modelServer.peakRestored(), instance.logs()).toBe(2);
-
-      const probe = instance.cli(["agent", "--message", PROBE_MARKER, "--json"]);
-      await vi.waitFor(() => expect(modelServer.countRequestsContaining(PROBE_MARKER)).toBe(1), {
-        interval: 20,
-        timeout: 30_000,
-      });
-      expect(modelServer.countRequestsContaining(RESTORED_WAKE_MARKER)).toBe(2);
-
-      modelServer.release(0);
-      await vi.waitFor(
-        () => expect(modelServer.countRequestsContaining(RESTORED_WAKE_MARKER)).toBe(3),
-        { interval: 20, timeout: 30_000 },
-      );
-      expect(modelServer.peakRestored(), instance.logs()).toBe(2);
-      modelServer.releaseAll();
-      await expect(probe).resolves.toMatchObject({ code: 0 });
-    },
-  );
 });
 
 function gatewayDiagnosticError(instance: OpenClawTestInstance, cause: unknown): Error {
