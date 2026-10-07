@@ -165,7 +165,7 @@ it("refuses a retained actor after replacement instead of selecting its successo
   });
   assert(old);
   const sessionKey = "agent:main:dashboard:incognito-replaced-approval";
-  const entry = {
+  const entry: SessionEntry = {
     sessionId: "replaced-approval",
     updatedAt: 1,
     incognito: true,
