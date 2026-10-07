@@ -113,8 +113,7 @@ export async function runReplyQuestionInput(
         return { handled: false };
       }
       if (error instanceof QuestionDispatchRefusedError) {
-        // Only a source that could not start a normal turn is refused. Other
-        // refusals are ordinary input the caller must queue, never steer.
+        // A source still current is ordinary input the caller queues, never steers.
         try {
           assertSourceCurrent();
         } catch {
