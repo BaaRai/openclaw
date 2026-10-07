@@ -2,6 +2,11 @@ import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coerc
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveActiveEmbeddedRunRecoveryBlocker } from "../../agents/embedded-agent-runner/run-state.js";
 import { isEmbeddedRunHandleCompacting } from "../../agents/embedded-agent-runner/runs.probes.js";
+import type {
+  SessionAdmissionDatabaseClaim,
+  SessionAdmissionInitialization,
+} from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { notifyGatewayWorkMetricsChanged } from "../../infra/gateway-work-metrics-events.js";
 import {
@@ -48,9 +53,12 @@ export type ReplyRunAdmissionBarrier = {
   sources: Map<OpenClawAgentDatabaseIdentity | undefined, ReplyRunAdmissionSource>;
 };
 
-type ReplyOperationAdmission = {
+export type ReplyOperationAdmission = {
   lease?: SessionWorkAdmissionLease;
   readonly databaseIdentity?: OpenClawAgentDatabaseIdentity;
+  databaseClaim?: SessionAdmissionDatabaseClaim;
+  reader?: SessionEntryCohortReader;
+  afterInitialization?: (initialized: SessionAdmissionInitialization) => Promise<void>;
 };
 
 type ReplyRunState = {
@@ -88,6 +96,18 @@ export const replyRunState = resolveGlobalSingleton<ReplyRunState>(REPLY_RUN_STA
 // Admission and the active operation must remain visible across transformed SDK graphs.
 export const lifecycleAdmissionByOperation = (replyRunState.lifecycleAdmissionByOperation ??=
   new WeakMap<ReplyOperation, ReplyOperationAdmission>());
+
+/** Resolve only the supplied operation's borrow; a key lookup could select its successor. */
+export function getReplyOperationSessionReader(operation: ReplyOperation | undefined) {
+  return operation ? lifecycleAdmissionByOperation.get(operation)?.reader : undefined;
+}
+/** Called only with the acknowledged initialization commit, never a later row lookup. */
+export function acknowledgeReplySessionInitialization(
+  operation: ReplyOperation,
+  initialized: SessionAdmissionInitialization,
+) {
+  return lifecycleAdmissionByOperation.get(operation)?.afterInitialization?.(initialized);
+}
 replyRunState.followupAdmissionBarriersByKey ??= new Map();
 replyRunState.successorAdmissionBarriersByKey ??= new Map();
 replyRunState.sourceTurnByKey ??= new Map();

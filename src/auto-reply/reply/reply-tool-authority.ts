@@ -39,6 +39,7 @@ import { captureRuntimeConfig } from "../../config/runtime-source-projection.js"
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { withSessionEntriesFromStoresInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import {
   prepareGatewaySessionEntryReadOnlyInWorker,
   type GatewaySessionEntryReadPlan,
@@ -54,6 +55,12 @@ import type {
   ReplyToolAuthorityRoute,
   ReplyToolAuthoritySnapshot,
 } from "./reply-run-registry.contracts.js";
+import {
+  captureReplyToolAuthoritySession,
+  selectReplyToolAuthorityEntry,
+  withReplyToolAuthorityCohort,
+  type CapturedReplyToolAuthoritySession,
+} from "./reply-tool-authority-cohort.js";
 import { prepareNativeReplyToolAuthorityRead } from "./reply-tool-authority.native-read.js";
 
 export type ReplyToolAuthorityInput = {
@@ -437,9 +444,29 @@ export async function resolveFollowupRunToolAuthorityFingerprintAsync(
 }
 
 /** Capture execution policy once; incoming overlays replace only caller-owned facts. */
+function resolvePreparedReplyToolAuthorityFingerprint(
+  input: ReplyToolAuthorityInput,
+  route: ReplyToolAuthorityRoute | undefined,
+  entry: SessionEntry | undefined,
+) {
+  const sandbox = resolveSandboxRuntimeStatus({
+    cfg: input.run.config,
+    agentId: input.run.agentId,
+    sessionKey: input.run.sessionKey,
+    classificationSessionKey: input.run.runtimePolicySessionKey ?? input.run.sessionKey,
+    preparedSessionEntry: entry ?? null,
+  });
+  return resolveFollowupRunToolAuthorityFingerprint(
+    input,
+    route,
+    resolveReplyToolAuthorityContext(input, route, sandbox),
+  );
+}
+
 export function prepareReplyToolAuthority(
   run: ReplyToolAuthorityInput,
   narrow?: (input: ReplyToolAuthorityInput) => ReplyToolAuthorityInput,
+  reader?: SessionEntryCohortReader,
 ): ReplyToolAuthoritySnapshot &
   Required<Pick<ReplyToolAuthoritySnapshot, "fingerprintAsync" | "projectAsync">> {
   const handoff = run.run.trustedInternalHandoff;
@@ -483,24 +510,14 @@ export function prepareReplyToolAuthority(
   };
   const env = { ...process.env };
   const cwd = process.cwd();
-  let captured:
-    | {
-        storePath: string;
-        canonicalKey: string;
-        storeKeys: readonly string[];
-        agentId: string;
-        source: Awaited<
-          ReturnType<typeof prepareGatewaySessionEntryReadOnlyInWorker>
-        >["loaded"]["capturedReadSource"];
-        sources: Awaited<
-          ReturnType<typeof prepareGatewaySessionEntryReadOnlyInWorker>
-        >["loaded"]["capturedReadSources"];
-        sessionId: string | undefined;
-        lifecycleRevision: SessionEntry["lifecycleRevision"];
-      }
-    | undefined;
+  let captured: CapturedReplyToolAuthoritySession | undefined;
   let capturedReadPlan: GatewaySessionEntryReadPlan | undefined;
-  const prepare = async (input: ReplyToolAuthorityInput, route?: ReplyToolAuthorityRoute) => {
+  const prepare = async (
+    input: ReplyToolAuthorityInput,
+    route?: ReplyToolAuthorityRoute,
+    consumeInitialSelection = false,
+  ) => {
+    let selectedFingerprint: string | undefined;
     const assertCurrent = () => {
       assertCurrentOperatorAuthority(snapshot.operatorAuthority);
       assertCurrentOperatorAuthority(input.operatorAuthority);
@@ -508,30 +525,37 @@ export function prepareReplyToolAuthority(
     const key = snapshot.run.runtimePolicySessionKey ?? snapshot.run.sessionKey;
     capturedReadPlan?.assertCurrent();
     const preparedLookup = key
-      ? await prepareGatewaySessionEntryReadOnlyInWorker({
-          cfg: snapshot.run.config ?? {},
-          key,
-          agentId: resolveSessionAgentId({
-            config: snapshot.run.config,
-            sessionKey: key,
-            fallbackAgentId: key === snapshot.run.sessionKey ? snapshot.run.agentId : undefined,
-          }),
-          env,
-          assertActive: assertCurrent,
-        })
+      ? await prepareGatewaySessionEntryReadOnlyInWorker(
+          {
+            cfg: snapshot.run.config ?? {},
+            key,
+            agentId: resolveSessionAgentId({
+              config: snapshot.run.config,
+              sessionKey: key,
+              fallbackAgentId: key === snapshot.run.sessionKey ? snapshot.run.agentId : undefined,
+            }),
+            env,
+            assertActive: assertCurrent,
+          },
+          consumeInitialSelection
+            ? (target) => {
+                const entry = selectReplyToolAuthorityEntry(target, key);
+                if (!entry) {
+                  return;
+                }
+                assertCurrent();
+                selectedFingerprint = resolvePreparedReplyToolAuthorityFingerprint(
+                  input,
+                  route,
+                  entry,
+                );
+                assertCurrent();
+              }
+            : undefined,
+        )
       : undefined;
     if (preparedLookup) {
-      const loaded = preparedLookup.loaded;
-      const identity = {
-        storePath: loaded.storePath,
-        canonicalKey: loaded.canonicalKey,
-        storeKeys: [...loaded.storeKeys],
-        agentId: loaded.agentId,
-        source: loaded.capturedReadSource,
-        sources: loaded.capturedReadSources,
-        sessionId: loaded.entry?.sessionId,
-        lifecycleRevision: loaded.entry?.lifecycleRevision,
-      };
+      const identity = captureReplyToolAuthoritySession(preparedLookup.loaded);
       if (captured && !isDeepStrictEqual(identity, captured)) {
         throw new Error("Tool authority classification source changed");
       }
@@ -540,6 +564,9 @@ export function prepareReplyToolAuthority(
         capturedReadPlan = preparedLookup.readPlan;
       }
       capturedReadPlan?.assertCurrent();
+    }
+    if (selectedFingerprint !== undefined) {
+      return selectedFingerprint;
     }
     return withPreparedReplyToolAuthorityContext(
       input,
@@ -572,7 +599,16 @@ export function prepareReplyToolAuthority(
     requestedRoute: Object.freeze({ provider: snapshot.run.provider, model: snapshot.run.model }),
     fingerprint: (route?: ReplyToolAuthorityRoute) =>
       resolveFollowupRunToolAuthorityFingerprint(snapshot, route),
-    fingerprintAsync: (route?: ReplyToolAuthorityRoute) => prepare(snapshot, route),
+    fingerprintAsync: (route?: ReplyToolAuthorityRoute) =>
+      withReplyToolAuthorityCohort({
+        reader,
+        original: captured,
+        readPlan: capturedReadPlan,
+        env,
+        assertCurrent: () => assertCurrentOperatorAuthority(snapshot.operatorAuthority),
+        prepare: () => prepare(snapshot, route, captured === undefined),
+        consume: (entry) => resolvePreparedReplyToolAuthorityFingerprint(snapshot, route, entry),
+      }),
     projectAsync: async (overlay: ReplyToolAuthorityOverlay, route: ReplyToolAuthorityRoute) => {
       const assertCurrent = () => assertCurrentOperatorAuthority(snapshot.operatorAuthority);
       assertCurrent();

@@ -13,6 +13,7 @@ import {
   readOpenClawAgentDatabaseIdentity,
 } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
@@ -51,11 +52,15 @@ import {
 import { prepareSessionColdSourceGuard } from "./session-cold-storage-source-guard.worker.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import { boundSessionDiagnosticText } from "./session-diagnostic-text.js";
+import { readSessionEntryCohort } from "./session-entry-cohort.worker.js";
+
+export { readSessionEntryDataInDatabase } from "./session-entry-cohort.worker.js";
 import {
   assertSessionEntryCurrentNativeSource,
   readSessionEntryCurrentFactsInDatabase,
 } from "./session-entry-current-admission.worker.js";
 import type {
+  SessionEntryCohortRequest,
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
   SessionEntryReadWorkerInput,
@@ -350,18 +355,30 @@ export function readSessionDiagnosticText(request: SessionDiagnosticTextWorkerIn
 /** Full rows share a snapshot with lifecycle fallback; list reads retain listing admission. */
 export function readExactSessionEntriesWithLifecycle(
   request: SessionExactEntriesWorkerInput,
+  capturedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): SessionExactEntriesWorkerResult {
+  const readDatabase = <T>(
+    read: (database: OpenClawAgentReadOnlyDatabase) => T,
+    options: Parameters<typeof withOpenClawAgentDatabaseReadOnly>[1],
+  ) =>
+    capturedDatabase
+      ? { found: true as const, value: read(capturedDatabase) }
+      : withOpenClawAgentDatabaseReadOnly(read, options);
+  const snapshot = <T>(database: OpenClawAgentReadOnlyDatabase, read: () => T) =>
+    capturedDatabase?.db === database.db && database.db.isTransaction
+      ? read()
+      : runSqliteDeferredTransactionSync(database.db, read);
   if (request.projection === "exact" || request.projection === "worktree") {
     // Logical accessors validate only their candidates; unrelated rows are not listing admission.
     let source: SessionExactEntriesWorkerResult["source"];
-    const read = withOpenClawAgentDatabaseReadOnly(
+    const read = readDatabase(
       (database) => {
         source = captureSessionEntryReadSource(database, request.expectedIdentity);
         using sourceGuard = prepareSessionColdSourceGuard(
           { ...request.database, env: request.env },
           request.manualCompact?.sources,
         );
-        return runSqliteDeferredTransactionSync(database.db, () => {
+        return snapshot(database, () => {
           const entries =
             request.projection === "worktree"
               ? readSessionWorktreeOwnerFactsInDatabase(database, request.sessionKeys)
@@ -413,19 +430,28 @@ export function readExactSessionEntriesWithLifecycle(
       lifecycleTimestamps: {},
     };
   }
-  const result = withOpenClawAgentDatabaseReadOnly(
+  const result = readDatabase(
     (database) =>
       request.projection === "list"
         ? {
             kind: "session-exact-entries" as const,
+            ...(request.expectedIdentity
+              ? { source: captureSessionEntryReadSource(database, request.expectedIdentity) }
+              : {}),
             entries: readSelectedSessionEntriesInDatabase(database, request.sessionKeys, {
               continuation: request.continuation,
             }),
             lifecycleTimestamps: {},
           }
         : withSqlitePostCommitPublications(database.db, () =>
-            runSqliteDeferredTransactionSync(database.db, () => {
-              assertCanonicalSqliteSessionKeysCurrent(database);
+            snapshot(database, () => {
+              if (request.expectedIdentity) {
+                assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
+              }
+              // Admitted cohorts validate current selected bytes, including uncertified foreign edits.
+              if (!capturedDatabase) {
+                assertCanonicalSqliteSessionKeysCurrent(database);
+              }
               if (request.projection === "creation") {
                 const { identity, canonicalPath } = readOpenClawAgentDatabaseIdentity(database);
                 const sessionKey = request.sessionKeys[0];
@@ -486,6 +512,7 @@ export function readExactSessionEntriesWithLifecycle(
                       request.projection === "sharing"
                         ? "list"
                         : (request.snapshotFields ?? "full"),
+                      { validation: capturedDatabase ? "canonical" : undefined },
                     )[0],
                     "exact session read result",
                   );
@@ -506,6 +533,7 @@ export function readExactSessionEntriesWithLifecycle(
                       database,
                       [[parentKey]],
                       request.snapshotFields ?? "full",
+                      { validation: capturedDatabase ? "canonical" : undefined },
                     )[0],
                     "reply initialization parent read result",
                   );
@@ -633,12 +661,25 @@ export function readExactSessionEntriesWithLifecycle(
   if (result.reason !== "database-missing") {
     throw new SessionMetadataUnavailableError(result.reason);
   }
+  if (request.expectedIdentity?.key.startsWith("file:")) {
+    throw new Error("Session entry read lost its captured physical owner");
+  }
   return {
     kind: "session-exact-entries",
     entries: [],
     lifecycleTimestamps: {},
     ...(request.projection === "lifecycle" ? { pendingArchives: false } : {}),
   };
+}
+
+/** The actor lends its admitted handle; the history adapter uses this same exact-read kernel. */
+export function readSessionEntryCohortInDatabase(
+  database: OpenClawAgentReadOnlyDatabase,
+  input: SessionEntryCohortRequest,
+) {
+  return readSessionEntryCohort(database, input, (request) =>
+    readExactSessionEntriesWithLifecycle(request, database),
+  );
 }
 
 /** Entry, board presence, and summary validity describe one committed snapshot. */

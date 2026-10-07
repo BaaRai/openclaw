@@ -11,6 +11,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { captureSessionTranscriptStorageEnvironment } from "../../config/sessions/transcript-target-binding.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
@@ -101,6 +102,7 @@ async function persistSkillSnapshot(params: {
 
 export async function ensureSkillSnapshot(params: {
   agentId: string;
+  reader?: SessionEntryCohortReader;
   sessionEntry?: SessionEntry;
   sessionEntryHandle?: ReplySessionEntryHandle;
   sessionStore?: Record<string, SessionEntry>;
@@ -227,7 +229,8 @@ export async function ensureSkillSnapshot(params: {
 
   const skillsSnapshot =
     nextEntry?.skillsSnapshot &&
-    (nextEntry.skillsSnapshot !== existingSnapshot || !shouldRefreshSnapshot)
+    (nextEntry.skillsSnapshot !== existingSnapshot ||
+      (isFirstTurnInSession && !shouldRefreshSnapshot))
       ? (await resolveSnapshot(nextEntry.skillsSnapshot)).snapshot
       : initialSnapshotState.snapshot;
   if (
@@ -262,7 +265,12 @@ export async function ensureSkillSnapshot(params: {
     // Even a reusable snapshot crosses an await. Return the current row so the
     // reply caller cannot restore stale metadata or a retired session generation.
     const current = storePath
-      ? await readSessionEntryInWorker({ storePath, sessionKey, env }, assertCurrent)
+      ? await readSessionEntryInWorker(
+          { agentId, storePath, sessionKey, env },
+          assertCurrent,
+          undefined,
+          params.reader,
+        )
       : sessionEntryHandle
         ? sessionEntryHandle.get(sessionKey)
         : sessionStore?.[sessionKey];

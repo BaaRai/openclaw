@@ -305,6 +305,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const anthropicPayloadLogger = createAnthropicPayloadLogger(traceContext);
   const trajectoryRecorder = await prepareEmbeddedAttemptTrajectory({
     activeSession,
+    transcriptOwner: sessionLock.ownedTranscriptWriteContext,
     attempt,
     clientToolCount: preparedAgentSession.clientToolDefs.length,
     effectiveToolCount,

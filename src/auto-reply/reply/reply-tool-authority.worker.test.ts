@@ -6,6 +6,9 @@ import {
 } from "../../agents/admitted-run-context.js";
 import { withPreparedEmbeddedRunToolAuthority } from "../../agents/harness/tool-authority.runtime.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import { projectionLane } from "../../config/sessions/session-transcript-worker-resources.js";
+import * as sessionReaders from "../../gateway/session-utils-store-worker.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -80,13 +83,15 @@ it("prepares embedded tool authority without caller-thread SQL and refuses a clo
   });
 });
 
-it.each(["main", "policy"])(
+it.each(["main", "policy", "borrowed"] as const)(
   "rereads %s-agent sandbox policy after a foreign commit before projecting steering",
   async (policyAgent) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const classificationKey = `agent:${policyAgent}:authority-policy`;
+      const policyAgentId = policyAgent === "borrowed" ? "main" : policyAgent;
+      const classificationKey =
+        policyAgent === "borrowed" ? executionKey : `agent:${policyAgent}:authority-policy`;
       await upsertSessionEntryCore(
-        { agentId: policyAgent, sessionKey: classificationKey },
+        { agentId: policyAgentId, sessionKey: classificationKey },
         { sessionId: "policy", updatedAt: 1, sandboxMode: "off" },
       );
       // Settle setup maintenance before retaining the readers used across the foreign commit.
@@ -101,38 +106,91 @@ it.each(["main", "policy"])(
           tools: { sandbox: { tools: { deny: ["exec"] } } },
         },
       });
-      const snapshot = prepareReplyToolAuthority(run);
-      const operation = createTestReplyOperation({
-        sessionKey: executionKey,
-        sessionId: run.run.sessionId,
-      });
-      await operation.bindToolAuthoritySnapshotAsync(snapshot);
-      const admitted = await operation.bindToolAuthorityRouteAsync(run.run);
-      const foreign = new DatabaseSync(
-        resolveOpenClawAgentSqlitePath({ agentId: policyAgent, env: state.env }),
-      );
-      try {
-        foreign
-          .prepare(
-            "UPDATE session_nodes SET entry_json = json_remove(entry_json, '$.sandboxMode') WHERE session_key = ?",
-          )
-          .run(classificationKey);
-      } finally {
-        foreign.close();
+      const admission =
+        policyAgent === "borrowed"
+          ? await loadSessionEntryForAdmission({
+              agentId: "main",
+              sessionKey: classificationKey,
+              env: state.env,
+            })
+          : undefined;
+      const reader =
+        admission && "kind" in admission.databaseClaim ? admission.databaseClaim.reader : undefined;
+      if (admission && !reader) {
+        await admission.databaseClaim.release();
+        throw new Error("Expected admitted session reader");
       }
-      const calls = observeMainThreadSql();
+      const discovery = vi.spyOn(sessionReaders, "prepareGatewaySessionEntryReadOnlyInWorker");
+      const snapshot = prepareReplyToolAuthority(run, undefined, reader);
       try {
-        expect(await snapshot.fingerprintAsync(run.run)).not.toBe(admitted);
-        await expect(
-          operation.projectToolAuthorityFingerprintAsync({
-            senderIsOwner: run.run.senderIsOwner === true,
-            disableTools: false,
-            traceAuthorized: false,
-          }),
-        ).resolves.toBeUndefined();
-        calls.expectIdle();
+        const operation = createTestReplyOperation({
+          sessionKey: executionKey,
+          sessionId: run.run.sessionId,
+        });
+        const runRequest = projectionLane.pool.run.bind(projectionLane.pool);
+        let initialEntries = 0;
+        const initialReads = vi
+          .spyOn(projectionLane.pool, "run")
+          .mockImplementation(async (...args) => {
+            const reply = await runRequest(...args);
+            if (
+              reply.ok &&
+              typeof reply.value === "object" &&
+              reply.value !== null &&
+              "kind" in reply.value &&
+              reply.value.kind === "session-exact-entries"
+            ) {
+              initialEntries++;
+            }
+            return reply;
+          });
+        try {
+          await operation.bindToolAuthoritySnapshotAsync(snapshot);
+          expect(initialEntries).toBe(1);
+        } finally {
+          initialReads.mockRestore();
+        }
+        const admitted = await operation.bindToolAuthorityRouteAsync(run.run);
+        const foreign = new DatabaseSync(
+          resolveOpenClawAgentSqlitePath({ agentId: policyAgentId, env: state.env }),
+        );
+        try {
+          foreign
+            .prepare(
+              "UPDATE session_nodes SET entry_json = json_remove(entry_json, '$.sandboxMode') WHERE session_key = ?",
+            )
+            .run(classificationKey);
+        } finally {
+          foreign.close();
+        }
+        const calls = observeMainThreadSql();
+        try {
+          discovery.mockClear();
+          expect(await snapshot.fingerprintAsync(run.run)).not.toBe(admitted);
+          if (reader) {
+            expect(discovery).not.toHaveBeenCalled();
+          }
+          await expect(
+            operation.projectToolAuthorityFingerprintAsync({
+              senderIsOwner: run.run.senderIsOwner === true,
+              disableTools: false,
+              traceAuthorized: false,
+            }),
+          ).resolves.toBeUndefined();
+          calls.expectIdle();
+          expect(discovery).toHaveBeenCalled();
+          if (admission) {
+            await admission.databaseClaim.release();
+            discovery.mockClear();
+            await expect(snapshot.fingerprintAsync(run.run)).rejects.toThrow();
+            expect(discovery).not.toHaveBeenCalled();
+          }
+        } finally {
+          calls.restore();
+        }
       } finally {
-        calls.restore();
+        discovery.mockRestore();
+        await admission?.databaseClaim.release();
       }
     });
   },

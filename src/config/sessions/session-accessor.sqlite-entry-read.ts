@@ -216,9 +216,10 @@ export function prepareSqliteSessionEntryRowDecoder(
   database: Pick<OpenClawAgentDatabase, "db">,
   rows: readonly ReadableSessionEntryRow[],
   projection: SessionEntryProjection | "delivery" = "full",
+  projectParticipants = true,
 ): (row: ReadableSessionEntryRow) => SessionEntry | null {
-  const projectParticipants =
-    projection === "delivery"
+  const project =
+    projection === "delivery" || !projectParticipants
       ? (_key: string, entry: SessionEntry) => entry
       : prepareSqliteSessionParticipantProjection(
           database.db,
@@ -226,7 +227,7 @@ export function prepareSqliteSessionEntryRowDecoder(
         );
   return (row) => {
     const parsed = parseReadableSessionEntryData(database, row, projection);
-    return parsed ? projectParticipants(row.session_key, parsed) : null;
+    return parsed ? project(row.session_key, parsed) : null;
   };
 }
 
@@ -438,7 +439,7 @@ export function prepareExactSessionEntryRowReads(
   sessionKeys: readonly string[],
   projection: SessionEntryProjection | "delivery" = "full",
   validation?: "canonical",
-  options?: { includeBoardPresence?: boolean },
+  options?: { includeBoardPresence?: boolean; projectParticipants?: false },
 ): (sessionKey: string) => ResolvedSessionEntryRow | undefined {
   return runSqliteReadOperationSync(database.db, () => {
     const readRows = (selection: string | readonly string[]) =>
@@ -448,17 +449,19 @@ export function prepareExactSessionEntryRowReads(
       rows = readRows(sessionKeys);
     } catch {
       // Native conversion errors have no row identity; exact reads preserve each key's error.
-      if (options?.includeBoardPresence) {
+      if (options?.includeBoardPresence || options?.projectParticipants === false) {
         return (sessionKey) =>
           runSqliteReadOperationSync(database.db, () => {
             const row = readRows(sessionKey)[0];
             const entry =
               row &&
-              parseReadableSqliteSessionEntryRow(
-                database,
-                row,
-                projection === "delivery" ? "list" : projection,
-              );
+              (options.projectParticipants === false
+                ? parseReadableSessionEntryData(database, row, projection)
+                : parseReadableSqliteSessionEntryRow(
+                    database,
+                    row,
+                    projection === "delivery" ? "list" : projection,
+                  ));
             return row && entry ? { entry, row } : undefined;
           });
       }
@@ -471,7 +474,12 @@ export function prepareExactSessionEntryRowReads(
         );
     }
     const byKey = new Map(rows.map((row) => [row.session_key, row]));
-    const decodeRow = prepareSqliteSessionEntryRowDecoder(database, rows, projection);
+    const decodeRow = prepareSqliteSessionEntryRowDecoder(
+      database,
+      rows,
+      projection,
+      options?.projectParticipants !== false,
+    );
     return (sessionKey) =>
       runSqliteReadOperationSync(database.db, () => {
         // Match node:sqlite parameter binding before looking up the returned row.

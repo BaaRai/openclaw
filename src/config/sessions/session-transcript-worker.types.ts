@@ -48,6 +48,8 @@ import type {
 import type {
   LifecycleArtifactCleanupRequest,
   LifecycleArtifactCleanupWorkerResult,
+  SessionMaintenanceReadCommand,
+  SessionMaintenanceReadResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import type { readSessionTranscriptModelContext } from "./session-accessor.sqlite-model-context.js";
 import type { listSessionPendingInputReceipts } from "./session-accessor.sqlite-pending-input-receipts.js";
@@ -286,6 +288,13 @@ export type SessionRowFactsWorkerResult = {
   rows: SessionRowDatabaseFacts[];
 };
 
+type SessionMaintenanceReadWorkerInput = {
+  kind: "session-maintenance-read";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  plan: SessionMaintenanceReadCommand;
+};
+
 type SessionStoreTargetWorkerInput = {
   kind: "session-store-target";
   request: SessionStoreTargetReadRequest;
@@ -384,6 +393,7 @@ export type SessionHistoryWorkerInput =
   | SessionStoreSummaryWorkerInput
   | SessionExactEntriesWorkerInput
   | SessionRowFactsWorkerInput
+  | SessionMaintenanceReadWorkerInput
   | SessionStoreTargetWorkerInput
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
@@ -415,6 +425,11 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
   "board-widget-document": {
     kind: "board-widget-document";
     value: BoardReadOperations["boards.readWidgetDocument"]["output"];
+  };
+  "session-maintenance-read": {
+    kind: "session-maintenance-read";
+    result: SessionMaintenanceReadResult;
+    workerThreadId: number;
   };
   "cli-process-history": ChatHistoryDisplayResult;
   "conversation-rows": { kind: "conversation-rows"; rows: ConversationRecord[] };
@@ -647,6 +662,7 @@ export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
     signal?: AbortSignal,
   ) => Promise<SessionExactEntriesWorkerResult>;
   readRowFacts: SessionHistoryReader<SessionRowFactsWorkerInput>;
+  readSessionMaintenance: CancellableSessionHistoryReader<SessionMaintenanceReadWorkerInput>;
   readStoreProjection: SessionHistoryReader<SessionStoreProjectionWorkerInput>;
   readEntries: (
     scope: SessionEntryListWorkerInput["scope"],

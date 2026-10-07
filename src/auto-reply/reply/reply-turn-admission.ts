@@ -65,6 +65,7 @@ import {
   lifecycleAdmissionByOperation,
   resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
+import { bindReplyOperationDatabaseAdmission } from "./reply-turn-database-admission.js";
 import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 
@@ -557,14 +558,8 @@ export async function admitReplyTurn(
           scheduleMainSessionRecoveryPendingTarget(pendingRecovery);
           throw error;
         }
-        const operationAdmission = {
-          lease: admission,
-          databaseIdentity: admittedDatabaseClaim?.identity,
-        };
-        lifecycleAdmissionByOperation.set(operation, operationAdmission);
-        const databaseClaim = admittedDatabaseClaim;
-        const releaseWorkerDatabaseClaim =
-          databaseClaim && "kind" in databaseClaim ? () => databaseClaim.release() : undefined;
+        const { operationAdmission, releaseWorkerDatabaseClaim } =
+          bindReplyOperationDatabaseAdmission(operation, params, admission, admittedDatabaseClaim);
         if (releaseWorkerDatabaseClaim) {
           const admittedOperation = operation;
           let releasingForRestart = false;
@@ -574,7 +569,7 @@ export async function admitReplyTurn(
             }
             releasingForRestart = true;
             const runId = getAttachedBackend(admittedOperation)?.runId ?? "unbound";
-            // Admission's read has settled; model/tool finalization owns no native work here.
+            // Release rejects later phases and joins requests already accepted by this borrow.
             void releaseWorkerDatabaseClaim().then(
               () =>
                 log.info(
@@ -640,8 +635,8 @@ export async function admitReplyTurn(
             );
           });
         }
-        if (databaseClaim && !("kind" in databaseClaim)) {
-          runAfterReplyOperationClear(operation, databaseClaim.release);
+        if (admittedDatabaseClaim && !("kind" in admittedDatabaseClaim)) {
+          runAfterReplyOperationClear(operation, admittedDatabaseClaim.release);
         }
         if (releaseForeground) {
           foregroundTransferred = true;
@@ -652,7 +647,7 @@ export async function admitReplyTurn(
         return {
           status: "owned",
           operation,
-          databaseClaim,
+          databaseClaim: admittedDatabaseClaim,
           ...(admittedSessionEntry ? { sessionEntry: admittedSessionEntry } : {}),
         };
       } catch (error) {
