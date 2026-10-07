@@ -102,7 +102,10 @@ function terminalPublication(entry: SubagentRunRecord): readonly unknown[] {
 
 export class SubagentLifecycleController {
   readonly scheduledResumeTimers = new Set<ReturnType<typeof setTimeout>>();
-  readonly activeRequesterSettleWakes = new Map<string, { rearm?: SubagentRunRecord }>();
+  readonly activeRequesterSettleWakes = new Map<
+    string,
+    { rearm?: SubagentRunRecord; evaluated?: SubagentRunRecord }
+  >();
   private readonly terminalCompletionLocks = new Map<object, Promise<void>>();
   private readonly terminalGenerations = new WeakMap<object, number>();
   private readonly terminalPublications = new WeakMap<object, readonly unknown[]>();

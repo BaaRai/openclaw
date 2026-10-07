@@ -60,7 +60,6 @@ type GatewayResponse = {
 let lifecycleHandler: Parameters<typeof onAgentEvent>[0] | undefined;
 let agentCallGates = new Map<string, Promise<void>>();
 let releaseAgentCallGate: (() => void) | undefined;
-let agentCallObserved = createDeferred();
 let chatHistoryBySessionKey = new Map<string, Array<Record<string, unknown>>>();
 let sessionStore: Record<string, SessionStoreEntry> = {};
 let sessionStorePath: string;
@@ -98,8 +97,6 @@ const callGatewayMock = vi.fn(async (request: GatewayRequest): Promise<GatewayRe
     return { messages: chatHistoryBySessionKey.get(request.params?.sessionKey ?? "") ?? [] };
   }
   if (request.method === "agent") {
-    agentCallObserved.resolve();
-    agentCallObserved = createDeferred();
     const sourceSessionKey = request.params?.inputProvenance?.sourceSessionKey;
     const gate = sourceSessionKey ? agentCallGates.get(sourceSessionKey) : undefined;
     if (gate) {
@@ -241,7 +238,6 @@ describe("requester settle wake product flow", () => {
     });
     agentCallGates = new Map();
     requesterHistoryGate = undefined;
-    agentCallObserved = createDeferred();
     chatHistoryBySessionKey = new Map();
     rejectNextRequesterWake = false;
     rejectNextRequesterWakePersistence = false;
@@ -348,12 +344,6 @@ describe("requester settle wake product flow", () => {
     getAgentCalls().filter((request) =>
       request.params?.idempotencyKey?.startsWith("announce:requester-settle:"),
     );
-
-  const waitForAgentCallCount = async (expectedCount: number) => {
-    while (getAgentCalls().length < expectedCount) {
-      await agentCallObserved.promise;
-    }
-  };
 
   const spawnVisibleChild = async (params: {
     runId: string;

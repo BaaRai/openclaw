@@ -39,16 +39,14 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
           required: true,
           resultText: index === 0 ? "private marker" : "public sibling",
         },
-        requesterSettleWake: {
-          ...(yielded
-            ? {
-                afterRequesterYield: true,
-                requesterYieldBatch: true,
-                rearmGeneration: 1,
-                ...(marked ? { yieldedFinalDeliverable: true as const } : {}),
-              }
-            : {}),
-        },
+        requesterSettleWake: yielded
+          ? {
+              afterRequesterYield: true,
+              requesterYieldBatch: true,
+              rearmGeneration: 1,
+              ...(marked ? { yieldedFinalDeliverable: true as const } : {}),
+            }
+          : {},
       }),
     );
 

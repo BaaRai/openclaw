@@ -14,7 +14,6 @@ import {
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { closeOpenClawStateDatabaseForTest as closeSeedStateDatabase } from "../../../state/openclaw-state-db.js";
 import "./subagent-registry.mocks.shared.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import type { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
@@ -22,11 +21,9 @@ import { saveSubagentRegistryToSqlite } from "./subagent-registry-state.fixture.
 import { registerSubagentDismissedRetentionCases } from "./subagent-registry.persistence.retention.test-support.js";
 import {
   gateSubagentRequesterSettlement,
-  observeSubagentRequesterWake,
   settleSubagentRegistryPersistenceWork,
   withSubagentRegistryPersistenceState,
   createDeliveredWake,
-  createRestoredRequesterWakeRuns,
   createOrphanedRequiredDelivery,
   writeChildSession,
 } from "./subagent-registry.persistence.test-support.js";
@@ -34,7 +31,6 @@ import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type WakeRequester = typeof maybeWakeRequesterAfterAllChildrenSettled;
-type WakeParams = Parameters<WakeRequester>[0];
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let mod: typeof import("./subagent-registry.test-helpers.js");
@@ -45,10 +41,7 @@ let registryConfigModule: typeof import("../../../config/config.js");
 let registrySessionCleanupModule: typeof import("../../../test-utils/session-state-cleanup.js");
 let registryAgentDbTestModule: typeof import("../../../state/openclaw-agent-db.test-support.js");
 let registryStateDbModule: typeof import("../../../state/openclaw-state-db.js");
-let bindGatewayContextResolver: typeof import("../../../plugins/runtime/gateway-request-scope.js").bindGatewayContextResolver;
 let getGatewayContextResolver: typeof import("../../../plugins/runtime/gateway-request-scope.js").getGatewayContextResolver;
-let getGatewayToolCallerIdentity: typeof import("../../tools/gateway-caller-context.js").getGatewayToolCallerIdentity;
-let withGatewayToolCallerIdentity: typeof import("../../tools/gateway-caller-context.js").withGatewayToolCallerIdentity;
 let observeRootWork: typeof import("./subagent-registry.browser-cleanup.test-support.js").observeRootWork;
 let settleOwnedWork: ReturnType<typeof observeRootWork> | undefined;
 
@@ -57,10 +50,8 @@ const readPersistedRun = (runId: string) => loadSubagentRegistryFromSqlite().get
 describe("subagent registry persistence resume", () => {
   beforeAll(async () => {
     vi.resetModules();
-    ({ bindGatewayContextResolver, getGatewayContextResolver } =
+    ({ getGatewayContextResolver } =
       await import("../../../plugins/runtime/gateway-request-scope.js"));
-    ({ getGatewayToolCallerIdentity, withGatewayToolCallerIdentity } =
-      await import("../../tools/gateway-caller-context.js"));
     mod = await import("./subagent-registry.test-helpers.js");
     callGatewayModule = await import("../../../gateway/call.js");
     agentEventsModule = await import("../../../infra/agent-events.js");
@@ -385,14 +376,10 @@ describe("subagent registry persistence resume", () => {
           expect.objectContaining({ method: "agent.wait" }),
         );
 
-        const sweptWake = createDeferredCore<boolean>();
-        wakeRequester.mockImplementationOnce(() => {
-          sweptWake.resolve(false);
-          return sweptWake.promise;
-        });
-        await mod.testing.runSweeperTickForTests();
-        await sweptWake.promise;
         wakeRequester.mockClear();
+        // The sweeper cleans up; it never re-drives an owed requester wake.
+        await mod.testing.runSweeperTickForTests();
+        expect(wakeRequester).not.toHaveBeenCalled();
         expect(callGatewayModule.callGateway).toHaveBeenCalledTimes(1);
         expect(callGatewayModule.callGateway).toHaveBeenCalledWith(
           expect.objectContaining({

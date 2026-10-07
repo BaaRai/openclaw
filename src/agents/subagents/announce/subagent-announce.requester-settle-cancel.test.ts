@@ -199,9 +199,9 @@ it.each([
       pendingRpcDispatch = args;
       admitted.resolve();
       if (!sourceSignal.aborted) {
-        await new Promise<void>((resolve) =>
-          sourceSignal.addEventListener("abort", () => resolve(), { once: true }),
-        );
+        await new Promise<void>((resolve) => {
+          sourceSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
       }
       vi.mocked(completion.dispatch).mockResolvedValueOnce({
         runId,

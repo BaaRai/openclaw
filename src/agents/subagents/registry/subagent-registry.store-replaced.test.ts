@@ -127,7 +127,7 @@ it.each([false, true])(
       replacementWake = structuredClone(
         subagentRuns.get(replacement.subagent.runId)?.requesterSettleWake,
       );
-      expect(replacementWake).toMatchObject({ status: "pending" });
+      expect(replacementWake).toEqual({});
       vi.setSystemTime(now + 2_000);
     }
 

@@ -1,14 +1,8 @@
 // Requester settle wake tests cover the registry-less top-level requester.
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { matchesTranscriptEvent } from "../../../sessions/transcript-visible-record.js";
 import { buildAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
-import {
-  promoteRequesterFinalAttachment,
-  registerRequesterFinalAttachment,
-} from "../requester-final-attachment.js";
-import type { SubagentAnnounceDeliveryResult as Result } from "./subagent-announce-dispatch.js";
 import {
   sessionStore,
   setSessionStore,
@@ -19,7 +13,6 @@ import {
   wakeParams,
 } from "./subagent-announce.requester-settle-fixture.test-support.js";
 import {
-  REQUESTER,
   requesterSettleKey,
   deliverSpy,
   makeSettledChild,

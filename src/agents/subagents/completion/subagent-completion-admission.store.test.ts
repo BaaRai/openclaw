@@ -5,30 +5,20 @@ import {
   markSessionDeliverySettlement,
 } from "../../../infra/session-delivery-queue-storage.js";
 import { prepareClaimedSessionDelivery } from "../../../infra/session-delivery-queue.records.js";
-import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import type { SqliteWorkerOperationAdmission } from "../../../infra/sqlite-worker-operation-admission.js";
 import * as workerAdmission from "../../../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  openOpenClawStateDatabase,
-} from "../../../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { forbidMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
-import {
-  assertSubagentRegistryWriteOutcomeKnown,
-  mutateSubagentRuns,
-  restoreSubagentRunsFromDisk,
-} from "../registry/subagent-registry-persistence.js";
+import { mutateSubagentRuns } from "../registry/subagent-registry-persistence.js";
 import {
   loadSubagentRegistryFromSqlite,
   readSubagentRun,
 } from "../registry/subagent-registry.store.sqlite.js";
-import { getSubagentRunRuntimeKey } from "../registry/subagent-run-generation.js";
 import {
   admitSubagentCompletionDelivery,
   settleRequesterCompletionBatch,
@@ -40,8 +30,6 @@ import {
   records as requesterRecords,
   currentCompletionRun,
   armRequesterWake,
-  requesterWakeDriver,
-  advanceRequesterWakeTime,
 } from "./subagent-completion-admission.test-helpers.js";
 import {
   admitCorrelatedSubagentSessionDelivery,

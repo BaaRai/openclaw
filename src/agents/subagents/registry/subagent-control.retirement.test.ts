@@ -17,7 +17,6 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { resolveContextEngine } from "../../../context-engine/registry.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
-import * as workerAdmission from "../../../infra/sqlite-worker-operation-admission.js";
 import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";

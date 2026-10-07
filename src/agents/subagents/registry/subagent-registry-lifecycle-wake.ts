@@ -179,7 +179,7 @@ export function scheduleRequesterSettleWake(
     active.rearm = entry;
     return;
   }
-  const evaluation: { rearm?: SubagentRunRecord } = {};
+  const evaluation: { rearm?: SubagentRunRecord; evaluated?: SubagentRunRecord } = {};
   context.activeRequesterSettleWakes.set(scope, evaluation);
   const stateContext = originalContext ?? captureOpenClawStateWorkerContext();
   const admittedIdentity = captureRequesterSettleRunIdentity(entry);
@@ -224,13 +224,15 @@ export function scheduleRequesterSettleWake(
       .runRequesterSettleWake(
         entry,
         async () => {
-          // A finished requester whose message receipt is blocked must not execute again.
+          // Admission can wait; reread the row before a blocked receipt is executed again.
           if (
-            isCompletedRequesterDeliveryBlocked(entry) &&
-            entry.requesterSettleWake?.requesterYieldBatch !== true
+            !isSourceCurrent() ||
+            (isCompletedRequesterDeliveryBlocked(entry) &&
+              entry.requesterSettleWake?.requesterYieldBatch !== true)
           ) {
             return;
           }
+          evaluation.evaluated = entry;
           try {
             await params.maybeWakeRequesterAfterAllChildrenSettled({
               requesterSessionKey,
@@ -277,8 +279,9 @@ export function scheduleRequesterSettleWake(
       })
       .finally(() => {
         context.activeRequesterSettleWakes.delete(scope);
+        // A trigger carrying the very row this evaluation read adds nothing new.
         const rearm = evaluation.rearm;
-        if (rearm) {
+        if (rearm && rearm !== evaluation.evaluated) {
           scheduleRequesterSettleWake(context, rearm.runId, rearm, stateContext);
         }
       });

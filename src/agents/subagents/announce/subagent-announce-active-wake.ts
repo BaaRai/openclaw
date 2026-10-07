@@ -39,7 +39,13 @@ export async function resolveActiveWake(
         () => isAttemptAllowed?.() !== false && isSourceSessionAdmissionAllowed(),
       )
     : await queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, message, wakeOptions);
-  return isAttemptAllowed?.() === false ? SOURCE_OWNER_CHANGED : result;
+  if (
+    isAttemptAllowed?.() === false ||
+    (!result.queued && isSourceSessionAdmissionAllowed?.() === false)
+  ) {
+    return SOURCE_OWNER_CHANGED;
+  }
+  return result;
 }
 
 export async function maybeSteerSubagentAnnounce(params: {

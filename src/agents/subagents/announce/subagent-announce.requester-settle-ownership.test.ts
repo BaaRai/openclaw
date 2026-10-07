@@ -47,7 +47,6 @@ vi.mock("./subagent-announce-delivery.js", () => ({
   }),
 }));
 
-import type { RequesterSettleWakeBatchState } from "./subagent-announce.requester-settle-state.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
 
 const REQUESTER = "agent:main:main";
