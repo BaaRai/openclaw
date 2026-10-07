@@ -19,7 +19,7 @@ import {
 } from "../sessions/session-controller.rpc-sources.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
-import { createRestartSafeChatRequest } from "./server-methods/chat-restart-recovery.js";
+import * as chatRestartRecovery from "./server-methods/chat-restart-recovery.js";
 import { getGatewayRecoveryRuntime } from "./server-recovery-runtime-context.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
@@ -262,7 +262,7 @@ async function sameIdRetryJoinsPreparedResend(fixture: Fixture) {
       restartRecoveryDeliveryRunId: sourceRunId,
       restartRecoveryDeliverySourceRunId: sourceRunId,
       restartRecoveryDeliveryRequestFingerprint: (
-        await createRestartSafeChatRequest({
+        await chatRestartRecovery.createRestartSafeChatRequest({
           cfg: fixture.cfg,
           eligible: true,
           message: owed,
@@ -409,6 +409,52 @@ async function interruptEndsRunningResend(fixture: Fixture) {
   await waitForChatTurn(runId, user);
   expect(readEntry(fixture, sessionKey)?.mainRestartRecovery).toBeUndefined();
   await expect(runStartupRecovery(fixture)).resolves.toMatchObject({ started: 0, failed: 0 });
+  expect(resendTurns(owed)).toHaveLength(1);
+}
+
+async function interruptSurvivesInterruptedTurnCleanup(fixture: Fixture) {
+  const sessionKey = "agent:main:boundary-interrupt-cleanup";
+  const sessionId = "boundary-interrupt-cleanup-session";
+  const owed = "Cleanup-interrupt case: owed interrupted task.";
+  const user = "Cleanup-interrupt case: newest message.";
+  await seedInterruptedSession(fixture, { sessionKey, sessionId, message: owed });
+  const release = holdProvider(owed);
+  const recovery = runStartupRecovery(fixture);
+  await vi.waitFor(() => expect(resendTurns(owed)).toHaveLength(1), { timeout: 30_000 });
+  // Hold the message's placement check open until the interrupted resend has released
+  // its placement turn claim, so that cleanup always lands inside the check.
+  const placementCheck = vi
+    .spyOn(chatRestartRecovery, "withRestartSafeChatPlacement")
+    .mockImplementationOnce((service, id, consume) =>
+      chatRestartRecovery.withRestartSafeChatPlacement(service, id, async (prepared) => {
+        await vi.waitFor(() => expect(() => prepared.facts.assertCurrent()).toThrow(), {
+          timeout: 30_000,
+        });
+        await consume(prepared);
+      }),
+    );
+  const runId = "boundary-interrupt-cleanup-user";
+  try {
+    await expect(
+      fixture.client.request("chat.send", {
+        sessionKey,
+        sessionId,
+        message: user,
+        deliver: false,
+        queueMode: "interrupt",
+        idempotencyKey: runId,
+      }),
+    ).resolves.toMatchObject({ runId, status: "started", interruptedActiveRun: true });
+    expect(placementCheck).toHaveBeenCalledOnce();
+  } finally {
+    placementCheck.mockRestore();
+    release();
+  }
+  await expect(recovery).resolves.toMatchObject({ started: 1, failed: 0 });
+  await waitForChatTurn(runId, user);
+  await expect(runStartupRecovery(fixture)).resolves.toMatchObject({ started: 0, failed: 0 });
+  // The user's message ran exactly once and the interrupted resend is not replayed.
+  expect(promptTurns(user)).toHaveLength(1);
   expect(resendTurns(owed)).toHaveLength(1);
 }
 
@@ -565,6 +611,7 @@ it("orders, joins, and cancels restart resends through the session mailbox", asy
     await interruptWinsOverOwedResend(fixture);
     await interruptCancelsWaitingResend(fixture);
     await interruptEndsRunningResend(fixture);
+    await interruptSurvivesInterruptedTurnCleanup(fixture);
     await steerQueuesBehindRestartSafeResend(fixture);
   } finally {
     for (const gate of holds.values()) {

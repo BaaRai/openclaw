@@ -41,6 +41,8 @@ type ClaimChange = {
       facts?: WorkerSessionTurnClaimFacts;
       workspaceResult?: WorkspaceResultPostimage;
       workspacePlacement?: WorkerSessionPlacementRecord;
+      // Turn claim acquire/release writes only claim custody; the placement route is unchanged.
+      custody?: true;
     }
   | { kind: "workspace-result"; facts?: WorkspaceResultPostimage }
   | { kind: "journal"; uncertain?: true }
@@ -53,6 +55,7 @@ type WorkspaceResultPostimage = {
 type WorkspaceResultFacts = WorkspaceResultPostimage & {
   pendingResult: WorkerWorkspacePendingResult;
 };
+type PlacementObservation = { revoked: boolean; routeRevoked: boolean };
 type ToolAuthority = { claim: WorkerSessionTurnClaim; toolNames: readonly string[] };
 type RetainedClaim = {
   claim: WorkerSessionTurnClaim;
@@ -67,7 +70,7 @@ type PlacementAuthorityOwner = {
   identity: DatabasePathIdentity;
   active: boolean;
   claims: Map<string, Set<RetainedClaim>>;
-  observations: Map<string, Set<{ revoked: boolean }>>;
+  observations: Map<string, Set<PlacementObservation>>;
   pending: Set<ClaimChange>;
   sequence: number;
   published: Map<string, number>;
@@ -193,6 +196,7 @@ function commitChange(owner: PlacementAuthorityOwner, change: ClaimChange, seque
   }
   for (const observation of owner.observations.get(change.sessionId) ?? []) {
     observation.revoked = true;
+    observation.routeRevoked ||= !isTurnCustodyChange(change);
   }
   if (sequence > (owner.published.get(change.sessionId) ?? -1)) {
     const result =
@@ -271,29 +275,47 @@ function commitChange(owner: PlacementAuthorityOwner, change: ClaimChange, seque
   prunePublication(owner, change.sessionId);
 }
 
+function isTurnCustodyChange(change: ClaimChange): boolean {
+  return change.kind === "claim" && change.custody === true;
+}
+
 /** Retain placement custody across a read-worker wait and pending claim commits. */
 export function observePlacementAuthority(pathname: string, sessionId: string) {
   const context = captureOpenClawStateWorkerContext({ path: pathname });
   const owner = ownerFor(context.admission.identity);
-  const observation = { revoked: false };
-  const observations = owner.observations.get(sessionId) ?? new Set<{ revoked: boolean }>();
+  const observation: PlacementObservation = { revoked: false, routeRevoked: false };
+  const observations = owner.observations.get(sessionId) ?? new Set<PlacementObservation>();
   observations.add(observation);
   owner.observations.set(sessionId, observations);
   let released = false;
+  // A route check tolerates turn claims other turns acquire or release meanwhile.
+  const assertObservationCurrent = (routeOnly: boolean) => {
+    context.admission.assertCurrent();
+    if (
+      released ||
+      (routeOnly ? observation.routeRevoked : observation.revoked) ||
+      !owner.active ||
+      owners.get(owner.identity.key) !== owner ||
+      [...owner.pending].some(
+        (change) =>
+          change.kind !== "tools" &&
+          change.sessionId === sessionId &&
+          !(routeOnly && isTurnCustodyChange(change)),
+      )
+    ) {
+      throw new Error(`Session ${sessionId} placement authority changed`);
+    }
+  };
   return {
     assertCurrent(this: void) {
-      context.admission.assertCurrent();
-      if (
-        released ||
-        observation.revoked ||
-        !owner.active ||
-        owners.get(owner.identity.key) !== owner ||
-        [...owner.pending].some(
-          (change) => change.kind !== "tools" && change.sessionId === sessionId,
-        )
-      ) {
-        throw new Error(`Session ${sessionId} placement authority changed`);
-      }
+      assertObservationCurrent(false);
+    },
+    /**
+     * Placement state, mode, and owner are current. Turn claim custody may have changed,
+     * including the default local row a first claim adds; read `turnClaim` only after `assertCurrent`.
+     */
+    assertRouteCurrent(this: void) {
+      assertObservationCurrent(true);
     },
     release(this: void) {
       released = true;
@@ -342,12 +364,14 @@ export function stagePlacementTurnClaimWorkerPublication(
   identity: DatabasePathIdentity,
   facts: WorkerSessionTurnClaimFacts,
   workspaceResult?: WorkspaceResultPostimage,
+  custody?: true,
 ): { commit: () => void; rollback: () => void; invalidate: () => void } {
   return stageWorkerChange(identity, {
     kind: "claim",
     sessionId: facts.sessionId,
     facts: freezeJsonSnapshot(facts),
     workspaceResult: captureWorkspaceResultPostimage(facts.sessionId, workspaceResult),
+    ...(custody ? { custody } : {}),
   });
 }
 

@@ -185,12 +185,18 @@ export function createPlacementTurnClaimWorkerOps(runtime: {
           ) {
             throw new Error("Placement activation receipt has a different environment owner");
           }
+          // Claim and release write only turn custody columns (claim may add the default local row).
+          const turnCustody =
+            command.type === "placementTurns.claim" ||
+            command.type === "placementTurns.release" ||
+            command.type === "placementTurns.releaseIfOwned";
           const publication =
             facts.placement && !workspaceOnly
               ? stagePlacementTurnClaimWorkerPublication(
                   context.admission.identity,
                   facts.placement,
                   resultFacts,
+                  turnCustody || undefined,
                 )
               : stagePlacementWorkspaceResultWorkerPublication(
                   context.admission.identity,
