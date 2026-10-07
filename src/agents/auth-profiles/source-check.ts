@@ -194,7 +194,7 @@ export async function hasAnyAuthProfileStoreSourceAsync(
   };
   const result = await withAuthProfileCleanup(readSource, async (outcome) => {
     const cleanup = await Promise.allSettled(
-      [...readers.values()].map((reader) => reader.dispose()),
+      [...readers.values()].map((source) => source.dispose()),
     );
     const failures = cleanup.flatMap((entry) =>
       entry.status === "rejected" ? [entry.reason] : [],
@@ -214,8 +214,8 @@ export async function hasAnyAuthProfileStoreSourceAsync(
           );
     }
   });
-  for (const reader of usedReaders) {
-    reader.assertCurrent();
+  for (const source of usedReaders) {
+    source.assertCurrent();
   }
   if (usedCohort) {
     assertCohortCurrent();
