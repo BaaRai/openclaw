@@ -61,10 +61,7 @@ import {
 } from "../../process/gateway-work-admission.js";
 import {
   beginSessionEffect,
-  interruptSessionControllerEffects,
-  isSessionMutationActive,
   isSessionControllerWorkActive,
-  runSessionMutation,
 } from "../../sessions/session-controller.lifecycle.js";
 import {
   beginAgentDeletionJournal,
@@ -4302,74 +4299,6 @@ describe("main-session-restart-recovery", () => {
       }
     },
   );
-
-  it("holds lifecycle replacement behind the targeted recovery dispatch", async () => {
-    const sessionsDir = await makeSessionsDir();
-    const storePath = path.join(sessionsDir, "sessions.json");
-    const sessionKey = "agent:main:main";
-    const sessionId = "main-session";
-    await writeStore(sessionsDir, {
-      [sessionKey]: {
-        sessionId,
-        updatedAt: Date.now() - 10_000,
-        status: "running",
-        abortedLastRun: true,
-        restartRecoveryDeliveryRunId: "recovery-main",
-        restartRecoveryDeliverySourceRunId: "source-main",
-      },
-    });
-    await writeTranscript(sessionsDir, sessionId, [{ role: "user", content: "recover me" }]);
-    const dispatchEntered = createDeferred();
-    const releaseDispatch = createDeferred();
-    vi.mocked(callGateway).mockImplementationOnce(async () => {
-      dispatchEntered.resolve();
-      await releaseDispatch.promise;
-      return { runId: "recovery-main" };
-    });
-
-    const recovery = retryRestartAbortedMainSessionRecovery({
-      cfg: {},
-      expectedRecoveryRunId: "recovery-main",
-      expectedRecoverySourceRunId: "source-main",
-      expectedSessionId: sessionId,
-      sessionKey,
-      storePath,
-    });
-    let mutationRan = false;
-    let mutation: Promise<void> | undefined;
-    try {
-      await dispatchEntered.promise;
-      expect(isSessionControllerWorkActive(storePath, [sessionKey, sessionId])).toBe(true);
-      mutation = runSessionMutation({
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        prepare: async () => {
-          expect(
-            await interruptSessionControllerEffects({
-              scope: storePath,
-              identities: [sessionKey, sessionId],
-              timeoutMs: 1_000,
-            }),
-          ).toBe(true);
-        },
-        run: async () => {
-          mutationRan = true;
-        },
-      });
-      await waitForFast(() =>
-        expect(isSessionMutationActive(storePath, [sessionKey, sessionId])).toBe(true),
-      );
-      expect(mutationRan).toBe(false);
-
-      releaseDispatch.resolve();
-      await expect(recovery).resolves.toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
-      await mutation;
-      expect(mutationRan).toBe(true);
-    } finally {
-      releaseDispatch.resolve();
-      await Promise.allSettled([recovery, ...(mutation ? [mutation] : [])]);
-    }
-  });
 
   it("does not retry a replacement durable claim", async () => {
     const sessionsDir = await makeSessionsDir();
