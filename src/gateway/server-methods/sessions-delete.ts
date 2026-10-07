@@ -190,15 +190,10 @@ export async function deleteGatewaySession({
     try {
       const current = assertCurrent();
       try {
-        const { killSubagentRunAdmin } =
+        const { retireDeletedSubagentSession } =
           await import("../../agents/subagents/registry/subagent-control.js");
-        const retiredChild = await killSubagentRunAdmin(
-          {
-            cfg,
-            sessionKey: target.canonicalKey,
-            agentId: target.agentId,
-            suppressTaskDelivery: true,
-          },
+        const retiredChild = await retireDeletedSubagentSession(
+          { cfg, sessionKey: target.canonicalKey, agentId: target.agentId },
           {
             assertCurrent,
             requiredSessionId: current.entry?.sessionId,

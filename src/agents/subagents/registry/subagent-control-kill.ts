@@ -36,6 +36,7 @@ import {
   listSubagentRunsForRequester,
 } from "./subagent-registry-read.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { owesRequesterCompletion } from "./subagent-requester-settle-identity.js";
 
 async function killSubagentRun(
   params: Parameters<typeof mutateSubagentRunForKill>[0],
@@ -560,4 +561,19 @@ export async function killSubagentRunAdmin(
     control?.preparePublication,
     publish,
   );
+}
+
+/**
+ * Deleting a child session ends the completion it still owes its requester. Rows that
+ * owe nothing, such as a collector its own spawn is cleaning up, stay with their owner.
+ */
+export async function retireDeletedSubagentSession(
+  params: Omit<SubagentAdminKillParams, "suppressTaskDelivery">,
+  control: Parameters<typeof killSubagentRunAdmin>[1],
+): Promise<SubagentAdminKillResult> {
+  const entry = getLatestOwnedSubagentRun(params.sessionKey.trim(), params.agentId, params.cfg);
+  if (!entry || !owesRequesterCompletion(entry)) {
+    return { found: false, killed: false };
+  }
+  return await killSubagentRunAdmin({ ...params, suppressTaskDelivery: true }, control);
 }

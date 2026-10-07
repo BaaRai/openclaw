@@ -1,5 +1,9 @@
 /** Controller-authorized subagent list and kill operations. */
-export { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control-kill.js";
+export {
+  killAllControlledSubagentRuns,
+  killSubagentRunAdmin,
+  retireDeletedSubagentSession,
+} from "./subagent-control-kill.js";
 export {
   buildControlledSubagentRunsReadContext,
   DEFAULT_RECENT_MINUTES,
