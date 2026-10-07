@@ -19,7 +19,6 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../infra/sqlite-worker-identity.js";
-import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
@@ -32,7 +31,11 @@ import {
   type SessionSharingLookupCaches,
   type SessionMutationAuthorizationParams,
 } from "./session-sharing-authorization.js";
-import { captureIncognitoSessionMutationFacts } from "./session-sharing-incognito.js";
+import {
+  captureIncognitoSessionMutationFacts,
+  captureSessionSharingIncognitoBinding,
+  hasNativeIncognitoSessionSharingSource,
+} from "./session-sharing-incognito.js";
 import {
   authorizeOwnSessionMutation,
   type SessionSharingTarget,
@@ -203,27 +206,6 @@ export async function prepareSessionSharingSource(
     await releaseSessionSourceAuthorities([retained], [error]);
     throw error;
   }
-}
-
-function captureSessionSharingIncognitoBinding(target: AuthorizedSessionMutationTarget) {
-  return captureIncognitoSessionBinding({
-    agentId: target.agentId,
-    sessionKey: target.sessionKey,
-    storePath:
-      target.resolved?.readSource?.path ??
-      target.resolved?.storePath ??
-      target.absentTarget?.storePath,
-  });
-}
-
-/** Production incognito stays native until acquisition supplies its explicit binding. */
-export function hasNativeIncognitoSessionSharingSource(
-  targets: readonly AuthorizedSessionMutationTarget[],
-): boolean {
-  return targets.some(
-    (target) =>
-      isIncognitoSessionKey(target.sessionKey) && !captureSessionSharingIncognitoBinding(target),
-  );
 }
 
 /** Storage facts are prepared here; the sharing owner supplies every access decision. */

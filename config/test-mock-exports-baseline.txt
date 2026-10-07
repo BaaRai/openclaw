@@ -8699,7 +8699,6 @@
 ["src/infra/exec-approval-forwarder.test.ts","../logging/subsystem.js","05239ec9b9ad5860ee40d0f0bb429adc7bc6b3f0e5fda5aeb1b8b32fd335eab3",1]
 ["src/infra/exec-approval-reply.test.ts","./exec-approval-surface.js","24e09918bf2241bfc7cc5236225f63ee58e44468f315e552dc68575c50f3cf8e",1]
 ["src/infra/exec-approval-session-target.test.ts","../channels/plugins/session-conversation.js","4233b3c92a3d95626e551637edb2db3e69b30ffc7e789b986d59bffdbf5dc651",1]
-["src/infra/exec-approval-session-target.test.ts","./outbound/targets.js","6abac5542dccc2e385a715b42dd2dfa18ba4976a3b4784fae90f1d854a8c8bf1",1]
 ["src/infra/exec-approval-surface.test.ts","../utils/message-channel.js","e8d8f9fe389f66c412b39f5ea740e7b083346636448cb599511d6f40298c0384",1]
 ["src/infra/exec-approvals-store.read-worker.test.ts","../logging/subsystem.js","71cc680d067f1feb654e6cd97018aff599e7e56faa5fcf55f5d86f3e55a65a0b",1]
 ["src/infra/exec-approvals-store.test.ts","../logging/subsystem.js","e27a284c5f476e3829115c5ba75b36214131ce34338b1a3161e7dbdc174b18ac",1]

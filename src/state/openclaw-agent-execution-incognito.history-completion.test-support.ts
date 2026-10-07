@@ -3,8 +3,8 @@ import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { reconcileHarnessCompletionDelivery } from "../agents/agent-harness-completion-delivery.js";
 import { createHarnessCompletionSourceAssertion } from "../agents/agent-harness-completion-recovery.js";
-import { SessionManager } from "../agents/sessions/session-manager.js";
 import type { HarnessCompletionRecovery } from "../config/sessions/restart-recovery-types.js";
+import { deleteSessionEntryLifecycle } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
 import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import type { IncognitoEntryPatchResult } from "../config/sessions/session-incognito-entry-patch-contract.js";
 import {
@@ -73,7 +73,6 @@ export async function createIncognitoCompletionSource(
     },
   });
   assert(source.ok && source.value.append);
-  const sourceEntryId = source.value.append.messageId;
   const recovery = await owner.sessions.transcript(authority, {
     type: "session.message.append",
     input: {
@@ -98,7 +97,7 @@ export async function createIncognitoCompletionSource(
     { actor: owner, authority, target },
   );
   assert(anchor);
-  return { claim, session, target, scope, sourceEntryId, anchor };
+  return { claim, session, target, scope, anchor };
 }
 
 export function registerIncognitoCompletionTests(fixture: CompletionFixture) {
@@ -151,10 +150,7 @@ export function registerIncognitoCompletionTests(fixture: CompletionFixture) {
     async (change) => {
       const { actor } = fixture;
       const name = `completion-${change}`;
-      const { claim, target, scope, sourceEntryId, anchor } = await createIncognitoCompletionSource(
-        fixture,
-        name,
-      );
+      const { claim, target, anchor } = await createIncognitoCompletionSource(fixture, name);
       await withIncognitoSessionActor(actor, async () => {
         const assertion = createHarnessCompletionSourceAssertion({ claim, storePath: actor.path });
         const admission =
@@ -165,13 +161,36 @@ export function registerIncognitoCompletionTests(fixture: CompletionFixture) {
         const work = runWithSessionTranscriptReadFence(admission, () =>
           runWithSessionSourceScope(assertion, async () => {
             assertion();
-            if (change === "reset" || change === "branch") {
-              const manager = await SessionManager.openAsync(scope);
-              if (change === "reset") {
-                await manager.appendResetBoundaryAsync("reset");
-              } else {
-                await manager.branchAsync(sourceEntryId);
-              }
+            if (change === "reset") {
+              const current = await actor.sessions.read(authority, {
+                sessionKey: target.sessionKey,
+              });
+              assert(current.entry);
+              const reset = await deleteSessionEntryLifecycle({
+                kind: "incognito",
+                actor,
+                authority,
+                env: fixture.env,
+                target: { sessionKey: target.sessionKey, entry: current.entry },
+                reason: "reset",
+              });
+              expect(reset.deleted).toBe(true);
+            } else if (change === "branch") {
+              const branch = await actor.sessions.transcript(authority, {
+                type: "session.manager.transcript.branch",
+                input: {
+                  sessionKey: target.sessionKey,
+                  command: {
+                    type: "session.transcript.branch",
+                    input: {
+                      scope: { ...target, agentId: actor.agentId, storePath: actor.path },
+                      branch: { sessionId: `${name}-branch`, events: [] },
+                      expectedLifecycleRevision: target.lifecycleRevision,
+                    },
+                  },
+                },
+              });
+              expect(branch.ok).toBe(true);
             } else {
               const result = await actor.sessions.transcript(authority, {
                 type: "session.message.append",
