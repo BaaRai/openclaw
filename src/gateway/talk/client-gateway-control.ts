@@ -160,9 +160,10 @@ export function createTalkClientGatewayControlOwner(params: {
   const admitConsult = async (
     runner: ReusableTalkAgentConsult,
     args: unknown,
-    consultSignal: AbortSignal,
     sourceInput: SessionControllerInput,
   ) => {
+    // The reserved input's signal joins this call's controller and session Stop.
+    const consultSignal = sourceInput.abortSignal;
     assertActive();
     consultSignal.throwIfAborted();
     await params.flushTranscript();
@@ -247,15 +248,8 @@ export function createTalkClientGatewayControlOwner(params: {
     controller: AbortController,
     input: SessionControllerInput,
   ): Promise<void> => {
-    // The reserved input's signal joins this call's controller and session Stop.
-    const consultSignal = input.abortSignal;
     try {
-      const result = await admitConsult(
-        params.runToolAgentConsult,
-        event.args,
-        consultSignal,
-        input,
-      );
+      const result = await admitConsult(params.runToolAgentConsult, event.args, input);
       if (signal.aborted) {
         return;
       }
@@ -265,7 +259,7 @@ export function createTalkClientGatewayControlOwner(params: {
         return;
       }
       const result =
-        consultSignal.aborted || readErrorName(error) === "AbortError"
+        input.abortSignal.aborted || readErrorName(error) === "AbortError"
           ? buildRealtimeVoiceAgentCancelProviderResult()
           : { error: formatError(error) };
       await submit(event.callId, result);

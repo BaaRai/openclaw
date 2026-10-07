@@ -15,7 +15,7 @@ import {
 } from "../chat-abort.js";
 import { abortControlledSubagents } from "./chat-abort-descendants.js";
 
-export type ExactClientRunStopResult = {
+type ExactClientRunStopResult = {
   aborted: boolean;
   descendants?: Awaited<ReturnType<typeof abortControlledSubagents>>;
   failure?: { error: unknown };
