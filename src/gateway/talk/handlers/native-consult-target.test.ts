@@ -56,6 +56,7 @@ import {
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../../chat-abort.js";
+import { createChatRunState } from "../../server-chat-state.js";
 import { handleGatewayRequest } from "../../server-methods.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
@@ -115,6 +116,11 @@ const context = {
   getClientConnIds: () => new Set([client.connId]),
   broadcastToConnIds: vi.fn(),
   logGateway: { warn: vi.fn() },
+  chatRunState: createChatRunState(),
+  removeChatRun: vi.fn(),
+  agentRunSeq: new Map(),
+  broadcast: vi.fn(),
+  nodeSendToSession: vi.fn(),
 } as unknown as GatewayRequestContext;
 
 async function dispatch(

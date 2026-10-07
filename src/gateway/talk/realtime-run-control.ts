@@ -8,7 +8,6 @@ import {
   type RealtimeVoiceAgentControlResult,
 } from "../../talk/agent-run-control.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
-import { stopExactClientRun } from "../server-methods/chat-abort-exact-run.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 
 const REALTIME_CONTROL_MAX_PENDING = 8;
@@ -34,6 +33,8 @@ export function createTalkRunCancel(params: {
     if (!active) {
       return false;
     }
+    // Subagent cancellation stays off the Talk module graph until a cancel needs it.
+    const { stopExactClientRun } = await import("../server-methods/chat-abort-exact-run.js");
     const stopped = await stopExactClientRun({
       ops: createChatAbortOps(params.context),
       cfg: params.context.getRuntimeConfig(),

@@ -118,6 +118,18 @@ async function createOwnedTalkRunControllers(backend?: Parameters<typeof setActi
   indexRpcSourceForTest(ref);
 }
 
+/** Gateway context fields that exact-run Stop presentation reads. */
+function stopCapableContext() {
+  return {
+    getRuntimeConfig: () => ({}),
+    chatRunState: createChatRunState(),
+    removeChatRun: vi.fn(),
+    agentRunSeq: new Map(),
+    broadcast: vi.fn(),
+    nodeSendToSession: vi.fn(),
+  };
+}
+
 function ensureActiveRelayTurnId(relaySessionId: string): string {
   const relay = relaySessions.get(relaySessionId);
   if (!relay) {
@@ -1315,6 +1327,7 @@ describe("talk realtime gateway relay", () => {
       chatRunState,
       removeChatRun,
       agentRunSeq: new Map(),
+      getRuntimeConfig: () => ({}),
     } as never;
     const session = createTalkRealtimeRelaySession({
       context,
@@ -4576,8 +4589,8 @@ describe("talk realtime gateway relay", () => {
         },
         expectedOptions,
       );
-      expect(abortController.signal.aborted).toBe(false);
-      expect(broadcast).not.toHaveBeenCalledWith(
+      expect(abortController.signal.aborted).toBe(true);
+      expect(broadcast).toHaveBeenCalledWith(
         "chat",
         expect.objectContaining({ runId: "run-1", state: "aborted" }),
         expect.anything(),
@@ -4725,6 +4738,7 @@ describe("talk realtime gateway relay", () => {
     const events: Array<{ event: string; payload: unknown; connIds: string[] }> = [];
     await createOwnedTalkRunControllers(backend);
     const context = {
+      ...stopCapableContext(),
       broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
         events.push({ event, payload, connIds: [...connIds] });
       },
@@ -4950,6 +4964,7 @@ describe("talk realtime gateway relay", () => {
     await createOwnedTalkRunControllers(backend);
     const session = createTalkRealtimeRelaySession({
       context: {
+        ...stopCapableContext(),
         broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
           events.push({ event, payload, connIds: [...connIds] });
         },

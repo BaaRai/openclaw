@@ -3655,6 +3655,7 @@ describe("talk.client.create handler", () => {
       getToolAuthorityOverlay: expect.any(Function),
       text: "Use the safer plan",
       mode: "steer",
+      cancelRun: expect.any(Function),
     });
     expectRespondOk(steerRespond, { ok: true, mode: "steer" });
 

@@ -31,6 +31,7 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { loadBundledPluginFacade } from "../../../test-utils/bundled-plugin-public-surface.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { createChatRunState } from "../../server-chat-state.js";
 import { createResponse } from "../../server-http.test-harness.js";
 import { handleGatewayRequest } from "../../server-methods.js";
 import type {
@@ -254,6 +255,11 @@ export async function withNativePlugin(
           new Set(!filter || filter(client) ? [CONNECTION_ID] : []),
         broadcastToConnIds: broadcast,
         logGateway: { warn: vi.fn() },
+        chatRunState: createChatRunState(),
+        removeChatRun: vi.fn(),
+        agentRunSeq: new Map(),
+        broadcast: vi.fn(),
+        nodeSendToSession: vi.fn(),
       } as unknown as GatewayRequestContext;
       const voiceSessionIds: string[] = [];
       try {
