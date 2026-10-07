@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   sessionChanges,
   type SessionRowChange,
@@ -6,7 +5,6 @@ import {
 } from "../../sessions/session-row-changes.js";
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { invalidateOpenClawAgentWritableProjections } from "../../state/openclaw-agent-db-lifecycle.js";
@@ -15,6 +13,7 @@ import {
   applyPendingSessionEntryOwnerChanges,
   pendingSessionEntryPublications,
   preparedSharingReads,
+  preparedSharingChanges,
   publishRetainedSessionEntryChange,
   readCurrentSessionEntryProjection,
   recordCommittedSessionEntryPublication,
@@ -39,12 +38,10 @@ import {
   type CreationRecord,
   type PendingSessionEntryPublication,
   type PlaceholderReceipt,
-  type CreatedSessionEntryReceipt,
   type SessionEntryPublicationRecord,
   type PreparedSessionEntryChanges,
   type SessionEntryReplacementPublication,
   type SessionEntryCreationOperation,
-  type SessionEntryPlaceholder,
   type SessionTranscriptInitializationPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
@@ -70,15 +67,6 @@ export type {
   SessionEntryPublicationSource,
   SessionEntryReplacementPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
-
-const preparedSharingChanges = resolveGlobalSingleton(
-  Symbol.for("openclaw.preparedSessionSharingChanges"),
-  () => ({
-    changes: new WeakMap<object, SessionEntryPublicationRecord>(),
-    operations: new WeakMap<SessionEntryCreationOperation, CreationRecord>(),
-    current: new AsyncLocalStorage<CreationRecord>(),
-  }),
-);
 
 /** Private owner metadata follows the original event object without changing its public fields. */
 export function isPreparedSessionSharingChange(change: SessionRowChange): boolean {
@@ -252,51 +240,6 @@ export function assertSessionEntryCreationPublication(
   target: SessionEntryCreationTarget,
 ): void {
   assertSessionEntryCreationTarget(preparedSharingChanges.operations.get(operation), target);
-}
-
-function readSessionEntryCreationReceipt(
-  change: SessionRowChange,
-  operation: SessionEntryCreationOperation,
-): PlaceholderReceipt | CreatedSessionEntryReceipt | undefined {
-  const record = preparedSharingChanges.changes.get(change);
-  const receipt =
-    record?.kind === "placeholder"
-      ? record.receipt
-      : record?.kind === "metadata"
-        ? record.creation
-        : undefined;
-  const creation = preparedSharingChanges.operations.get(operation);
-  if (!creation) {
-    return undefined;
-  }
-  try {
-    assertSessionEntryCreationCurrent(creation);
-  } catch {
-    return undefined;
-  }
-  return receipt?.committed &&
-    receipt.creation === creation &&
-    receipt.databaseIdentity === readSessionEntryCreationIdentity(creation) &&
-    receipt.sessionKey === creation.sessionKey
-    ? receipt
-    : undefined;
-}
-
-export function readSessionEntryCreationTransition(
-  change: SessionRowChange,
-  operation: SessionEntryCreationOperation,
-): SessionEntryPlaceholder | undefined {
-  const receipt = readSessionEntryCreationReceipt(change, operation);
-  return receipt?.kind === "placeholder" ? receipt.placeholder : undefined;
-}
-
-/** Full-row creation is authoritative only from the bound writer's settled COMMIT receipt. */
-export function readSessionEntryCreatedEntry(
-  change: SessionRowChange,
-  operation: SessionEntryCreationOperation,
-) {
-  const receipt = readSessionEntryCreationReceipt(change, operation);
-  return receipt?.kind === "entry" ? receipt.entry : undefined;
 }
 
 /** Only the actual inserted-placeholder producer supplies these known row facts. */

@@ -18,10 +18,8 @@ import {
   registerOpenClawAgentDatabaseAsyncResource,
   registerOpenClawAgentDatabaseReadCandidateResource,
 } from "../../state/openclaw-agent-db-resources.js";
-import {
-  assertSessionEntryCreationPublication,
-  readSessionEntryCreatedEntry,
-} from "./session-accessor.sqlite-entry-cache-publication.js";
+import { readSessionEntryCreatedEntry } from "./session-accessor.sqlite-entry-cache-publication-state.js";
+import { assertSessionEntryCreationPublication } from "./session-accessor.sqlite-entry-cache-publication.js";
 import {
   isPreparedSessionSharingChange,
   projectSessionSharingEntry,

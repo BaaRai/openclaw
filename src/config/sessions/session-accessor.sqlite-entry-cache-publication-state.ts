@@ -1,12 +1,21 @@
-import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { SessionRowChange, SessionRowFacts } from "../../sessions/session-row-changes.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import type {
-  PendingSessionEntryPublication,
-  SessionEntryCacheDatabase,
-  SessionEntryReplacementPublication,
-  SessionSharingEntry,
+import {
+  assertSessionEntryCreationCurrent,
+  readSessionEntryCreationIdentity,
+  type CreatedSessionEntryReceipt,
+  type CreationRecord,
+  type PlaceholderReceipt,
+  type SessionEntryCreationOperation,
+  type SessionEntryPlaceholder,
+  type SessionEntryPublicationRecord,
+  type PendingSessionEntryPublication,
+  type SessionEntryCacheDatabase,
+  type SessionEntryReplacementPublication,
+  type SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { stageIncognitoSharingPublication } from "./session-accessor.sqlite-incognito-sharing.js";
 import {
@@ -21,6 +30,60 @@ import {
   type SessionSharingRetentionRequest,
 } from "./session-accessor.sqlite-sharing-acquisition.js";
 import type { SessionEntry } from "./types.js";
+
+export const preparedSharingChanges = resolveGlobalSingleton(
+  Symbol.for("openclaw.preparedSessionSharingChanges"),
+  () => ({
+    changes: new WeakMap<object, SessionEntryPublicationRecord>(),
+    operations: new WeakMap<SessionEntryCreationOperation, CreationRecord>(),
+    current: new AsyncLocalStorage<CreationRecord>(),
+  }),
+);
+
+function readSessionEntryCreationReceipt(
+  change: SessionRowChange,
+  operation: SessionEntryCreationOperation,
+): PlaceholderReceipt | CreatedSessionEntryReceipt | undefined {
+  const record = preparedSharingChanges.changes.get(change);
+  const receipt =
+    record?.kind === "placeholder"
+      ? record.receipt
+      : record?.kind === "metadata"
+        ? record.creation
+        : undefined;
+  const creation = preparedSharingChanges.operations.get(operation);
+  if (!creation) {
+    return undefined;
+  }
+  try {
+    assertSessionEntryCreationCurrent(creation);
+  } catch {
+    return undefined;
+  }
+  return receipt?.committed &&
+    receipt.creation === creation &&
+    receipt.databaseIdentity === readSessionEntryCreationIdentity(creation) &&
+    receipt.sessionKey === creation.sessionKey
+    ? receipt
+    : undefined;
+}
+
+export function readSessionEntryCreationTransition(
+  change: SessionRowChange,
+  operation: SessionEntryCreationOperation,
+): SessionEntryPlaceholder | undefined {
+  const receipt = readSessionEntryCreationReceipt(change, operation);
+  return receipt?.kind === "placeholder" ? receipt.placeholder : undefined;
+}
+
+/** Full-row creation is authoritative only from the bound writer's settled COMMIT receipt. */
+export function readSessionEntryCreatedEntry(
+  change: SessionRowChange,
+  operation: SessionEntryCreationOperation,
+) {
+  const receipt = readSessionEntryCreationReceipt(change, operation);
+  return receipt?.kind === "entry" ? receipt.entry : undefined;
+}
 
 export const preparedSharingReads = resolveGlobalSingleton(
   Symbol.for("openclaw.preparedSessionSharingReads"),
