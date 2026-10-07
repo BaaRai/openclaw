@@ -292,28 +292,28 @@ function retireKilledSubagentObligations(entry: SubagentRunRecord): Promise<void
   });
 }
 
-// Runs whose kill owner is still settling its claim; that owner confirms the kill when done.
-const settlingKillOwners = new Map<string, number>();
+// Runs whose kill owner is still settling its claim, and whether a confirmation waited on it.
+const settlingKillOwners = new Map<string, { owners: number; deferred: boolean }>();
 
 /**
- * Runs one kill owner's claim settlement. A provisional kill its run's settlement produces
- * meanwhile is confirmed only after the owner finishes publishing under that claim.
+ * Runs one kill owner's claim settlement. A kill confirmation that arrives meanwhile waits,
+ * and runs once the last owner finishes publishing under its claim.
  */
 export async function withSubagentKillOwner<T>(
   runId: string,
   settle: () => Promise<T>,
 ): Promise<T> {
-  settlingKillOwners.set(runId, (settlingKillOwners.get(runId) ?? 0) + 1);
+  const owner = settlingKillOwners.get(runId) ?? { owners: 0, deferred: false };
+  owner.owners += 1;
+  settlingKillOwners.set(runId, owner);
   try {
     return await settle();
   } finally {
-    const remaining = (settlingKillOwners.get(runId) ?? 1) - 1;
-    if (remaining > 0) {
-      settlingKillOwners.set(runId, remaining);
-    } else {
+    owner.owners -= 1;
+    if (owner.owners === 0) {
       settlingKillOwners.delete(runId);
       const current = subagentRuns.get(runId);
-      if (current?.killReconciliation) {
+      if (owner.deferred && current?.killReconciliation) {
         confirmProvisionalSubagentKill(current);
       }
     }
@@ -342,11 +342,12 @@ async function confirmAfterSettlements(
   await Promise.allSettled(settlements);
   await runWithGatewayDetachedWorkAdmission(async () => {
     const current = subagentRuns.get(entry.runId);
-    if (
-      !current?.killReconciliation ||
-      !isSameSubagentRunOwner(current, entry) ||
-      settlingKillOwners.has(current.runId)
-    ) {
+    if (!current?.killReconciliation || !isSameSubagentRunOwner(current, entry)) {
+      return;
+    }
+    const owner = settlingKillOwners.get(current.runId);
+    if (owner) {
+      owner.deferred = true;
       return;
     }
     await reconcileProvisionalSubagentKill({
