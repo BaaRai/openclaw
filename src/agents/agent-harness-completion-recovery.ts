@@ -231,7 +231,7 @@ export function createHarnessCompletionSourceAssertion(params: {
         retained.assertCurrent();
       },
       checks: [],
-      release: retained.release,
+      release: () => retained.release(),
     };
   };
   const prepareSnapshot = (

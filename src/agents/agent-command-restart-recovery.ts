@@ -40,6 +40,7 @@ export async function prepareCommandHarnessCompletionSource(opts: AgentCommandOp
     return undefined;
   }
   const assertion = bindPreparedSessionSourceAssertion(source, prepared);
+  const release = () => assertion.release();
   try {
     assertion();
     return {
@@ -49,10 +50,10 @@ export async function prepareCommandHarnessCompletionSource(opts: AgentCommandOp
           recoveryReference: source.recoveryReference,
         }),
       },
-      release: assertion.release,
+      release,
     };
   } catch (error) {
-    await releaseSessionSourceAuthorities([{ release: assertion.release }], [error]);
+    await releaseSessionSourceAuthorities([{ release }], [error]);
     throw error;
   }
 }

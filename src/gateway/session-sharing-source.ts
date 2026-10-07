@@ -85,7 +85,7 @@ export async function prepareSessionSharingSource(
     };
     assertCurrent();
     const done = createDeferredCore();
-    const ready = createDeferredCore<void>();
+    const ready = createDeferredCore();
     const work = actor.sessions.withSharedState(async () => {
       assertCurrent();
       ready.resolve();

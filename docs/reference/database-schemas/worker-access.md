@@ -958,15 +958,17 @@ later input does. The source follows the existing reset, branch, and rewrite
 predicates, rather than an actor-wide revision. CLI and context-engine preparation
 carry the exact fence through source acquisition and release, propagate authority
 failures, and join consumers before releasing custody. Accepted terminal writes
-settle before the command releases its retained completion source.
+settle before command cleanup releases its retained completion source. If release
+also fails, cleanup preserves the primary failure as the aggregate error's cause.
 
 Explicit private-store locators retain their physical root, including keyless
 targets. A conflicting explicit environment or enclosing actor is refused instead
 of selecting another root. Missing reads create no actor or durable discovery.
 Production acquisition remains host-owned until P12: an unbound caller continues
 using the native owner, while a retained ended actor cannot adopt a replacement.
-This prerequisite retires no incognito T1 sites and changes no schema, durability,
-retention, permissions, SDK contract, configuration, or update behavior.
+This prerequisite retires no incognito T1 sites, breaks no supported SDK contract,
+and changes no schema, durability, retention, permissions, configuration, or update
+behavior.
 
 ### Existing worker flows
 

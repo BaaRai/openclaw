@@ -47,8 +47,8 @@ describe("harness context engine source scopes", () => {
           ? { preparedRunAdmission: prepared }
           : { admittedRunContext: await prepared.admit("embedded") };
       source.mockClear();
-      const consumerStarted = createDeferred<void>();
-      const finishConsumer = createDeferred<void>();
+      const consumerStarted = createDeferred();
+      const finishConsumer = createDeferred();
       if (closedAt === "before") {
         prepared.close();
       }
@@ -275,10 +275,10 @@ describe("harness context engine source scopes", () => {
         logicalTurnId: "current-turn",
         role: "user" as const,
       };
-      const consumerStarted = createDeferred<void>();
-      const finishConsumer = createDeferred<void>();
-      const releaseStarted = createDeferred<void>();
-      const finishRelease = createDeferred<void>();
+      const consumerStarted = createDeferred();
+      const finishConsumer = createDeferred();
+      const releaseStarted = createDeferred();
+      const finishRelease = createDeferred();
       const events: string[] = [];
       const source = composeSessionSourceAssertion([
         Object.assign(

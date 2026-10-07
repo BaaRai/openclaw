@@ -592,7 +592,8 @@ async function agentCommandInternal(
       sessionWorkAdmission,
       cleanupInternalModelRunTargets,
       releaseForeground,
-    }).finally(() => completionSource?.release?.());
+      completionSource,
+    });
     if (maintenanceRequest) {
       scheduleSessionMaintenance(maintenanceRequest);
     }

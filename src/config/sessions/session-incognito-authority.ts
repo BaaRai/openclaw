@@ -301,7 +301,6 @@ export function bindIncognitoSessionHistory(owner: {
     onRead?: (value: IncognitoHistoryOperations[Key]["output"]) => void,
   ): Promise<IncognitoHistoryOperations[Key]["output"]>;
 }) {
-  const { assertOutsideGrant, assertBorrowed, assertActorCurrent, retain } = owner;
   return {
     retainCompletionSource(
       authority: IncognitoSessionAuthority,
@@ -311,8 +310,8 @@ export function bindIncognitoSessionHistory(owner: {
       >,
       signal?: AbortSignal,
     ): Promise<{ assertCurrent(): void; release(): Promise<void> }> {
-      assertOutsideGrant();
-      assertBorrowed();
+      owner.assertOutsideGrant();
+      owner.assertBorrowed();
       const input = { ...structuredClone(target), sourceId: randomUUID() };
       const done = createDeferredCore();
       const ready = createDeferredCore<{
@@ -320,7 +319,7 @@ export function bindIncognitoSessionHistory(owner: {
         release(): Promise<void>;
       }>();
       let active = true;
-      const work = retain(async () => {
+      const work = owner.retain(async () => {
         try {
           await owner.execute(
             authority,
@@ -329,7 +328,7 @@ export function bindIncognitoSessionHistory(owner: {
           );
           const assertCurrent = () => {
             authority.assertCurrent();
-            assertBorrowed();
+            owner.assertBorrowed();
             const facts = owner.current(input.sessionKey);
             if (
               !active ||
@@ -353,7 +352,7 @@ export function bindIncognitoSessionHistory(owner: {
         } finally {
           active = false;
           await owner.execute(
-            { assertCurrent: assertActorCurrent },
+            { assertCurrent: () => owner.assertActorCurrent() },
             { type: "session.history.completion-source.release", input },
             undefined,
             true,

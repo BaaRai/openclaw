@@ -320,8 +320,8 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
 
   it("keeps the admitted source in its exact transcript fence until bootstrap settles", async () => {
     const { admission, recorder } = createAdmittedCliRecorder("cli-scoped-user");
-    const enteredBootstrap = createDeferred<void>();
-    const finishBootstrap = createDeferred<void>();
+    const enteredBootstrap = createDeferred();
+    const finishBootstrap = createDeferred();
     const lifecycle: string[] = [];
     let requireScopedSource = false;
     const source = composeSessionSourceAssertion([

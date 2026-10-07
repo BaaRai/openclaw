@@ -15,7 +15,8 @@ import { prepareSessionSourceAuthority } from "../config/sessions/session-source
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import type { IncognitoAgentDatabaseExecution } from "../state/openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
-import type { GatewayRequestContext } from "./server-methods/types.js";
+import { createGatewayRequestContext } from "./server-request-context.js";
+import { makeContextParams } from "./server-request-context.test-support.js";
 import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
 import { prepareSessionSharingSource } from "./session-sharing-source.js";
 import { resolveSessionMutationAuthorization } from "./session-sharing.js";
@@ -27,7 +28,9 @@ let actor: IncognitoAgentDatabaseExecution;
 let foreignActor: IncognitoAgentDatabaseExecution;
 let env: NodeJS.ProcessEnv;
 const cfg = { agents: { entries: { main: {}, native: {} } } };
-const context = { getRuntimeConfig: () => cfg } as GatewayRequestContext;
+const context = createGatewayRequestContext(makeContextParams());
+context.getRuntimeConfig = () => cfg;
+context.getCommittedRuntimeConfig = () => cfg;
 
 beforeAll(async () => {
   env = { OPENCLAW_STATE_DIR: tempDirs.make("incognito-sharing-source-") };
@@ -220,13 +223,16 @@ it.each(["synchronous", "prepared"] as const)(
     });
     await withIncognitoSessionActor(actor, async () => {
       let storePath = actor.path;
+      const getRuntimeConfig = () => ({ ...cfg, session: { store: storePath } });
       const request = {
         client: sharingPolicyClient({ scopes: ["operator.admin"] }),
         method: "chat.send",
         requestParams: { sessionKey, agentId: "main" },
         context: {
-          getRuntimeConfig: () => ({ ...cfg, session: { store: storePath } }),
-        } as GatewayRequestContext,
+          ...context,
+          getRuntimeConfig,
+          getCommittedRuntimeConfig: getRuntimeConfig,
+        },
       };
       const resolve = () =>
         mode === "synchronous"
@@ -252,7 +258,7 @@ it("revokes a retained sharing source after session replacement", async () => {
   await withIncognitoSessionActor(actor, async () => {
     const prepared = await prepareSessionSharingSource(
       { agentId: "main", canonicalKey: sessionKey, storeKey: sessionKey, storePath: actor.path },
-      authority.assertCurrent,
+      () => authority.assertCurrent(),
     );
     try {
       expect(prepared.target?.entry.sessionId).toBe("original");
@@ -281,8 +287,13 @@ it("keeps ordinary unbound incognito authorization on the native owner", async (
     context,
   });
   expect(result.error).toBeNull();
-  expect(result.authorization!.assertCurrent.nativeSource).toBe(true);
-  expect(result.authorization!.admittedInputAuthority).toBeUndefined();
-  result.authorization!.assertCurrent();
+  const prepared = await prepareSessionSourceAuthority(result.authorization!.assertCurrent);
+  try {
+    expect(prepared.nativeSource).toBe(true);
+    expect(result.authorization!.admittedInputAuthority).toBeUndefined();
+    prepared.assertCurrent();
+  } finally {
+    await prepared.release?.();
+  }
   expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual(before);
 });
