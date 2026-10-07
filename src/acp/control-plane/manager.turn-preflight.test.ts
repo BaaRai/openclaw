@@ -1,10 +1,9 @@
-/** ACP preflight failures release their native turn without erasing successor liveness. */
+/** ACP preflight failures release their native turn liveness. */
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as sessionStateEvents from "../../sessions/session-state-events.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { getActiveAcpTurnCount, listActiveAcpSessionsForOwner } from "./active-turns.js";
-import { getAcpSessionResetControls } from "./manager.reset-controls.js";
 import {
   AcpSessionManager,
   baseCfg,
@@ -17,7 +16,7 @@ import {
 describe("AcpSessionManager", () => {
   installAcpSessionManagerTestLifecycle();
 
-  it.each(["signal failure", "abort", "actor replacement"] as const)(
+  it.each(["signal failure", "abort"] as const)(
     "releases only the current native turn when preflight ends with %s",
     async (reason) => {
       await withStateDirEnv("openclaw-acp-preflight-", async () => {
@@ -70,9 +69,6 @@ describe("AcpSessionManager", () => {
           () => ({ ok: true as const }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        const successorStarted = createDeferred();
-        const releaseSuccessor = createDeferred();
-        let successor: Promise<void> | undefined;
         try {
           expect(
             await Promise.race([
@@ -88,35 +84,14 @@ describe("AcpSessionManager", () => {
           expect(hoisted.upsertAcpSessionMetaMock).not.toHaveBeenCalled();
           if (reason === "abort") {
             controller.abort();
-          } else if (reason === "actor replacement") {
-            await getAcpSessionResetControls(manager).forceDiscardSessionRuntime({
-              cfg: baseCfg,
-              sessionKey,
-              reason: "session-reset",
-            });
-            runtime.runTurn.mockImplementationOnce(async function* () {
-              successorStarted.resolve();
-              await releaseSuccessor.promise;
-              yield { type: "done" as const };
-            });
-            successor = manager.runTurn(input);
-            void successor.catch(() => {});
-            await Promise.race([
-              successorStarted.promise,
-              successor.then(() => {
-                throw new Error("Successor settled before starting its stream");
-              }),
-            ]);
           }
           const metadataWrites = hoisted.upsertAcpSessionMetaMock.mock.calls.length;
           release.resolve();
           const settled = await outcome;
           expect(settled.ok).toBe(false);
           expect(hoisted.upsertAcpSessionMetaMock).toHaveBeenCalledTimes(metadataWrites);
-          expect(getActiveAcpTurnCount()).toBe(successor ? 1 : 0);
-          expect(listActiveAcpSessionsForOwner(parentSessionKey)).toEqual(
-            successor ? [sessionKey] : [],
-          );
+          expect(getActiveAcpTurnCount()).toBe(0);
+          expect(listActiveAcpSessionsForOwner(parentSessionKey)).toEqual([]);
           expect(
             (await sessionStateEvents.listSessionStateEventsSince(sessionKey, "codex", 0, 200))
               .events,
@@ -125,19 +100,9 @@ describe("AcpSessionManager", () => {
               ? [{ kind: "run_failed", runId: requestId, payload: { outcome: "error" } }]
               : [],
           );
-          if (successor) {
-            releaseSuccessor.resolve();
-            await successor;
-            expect(getActiveAcpTurnCount()).toBe(0);
-            expect(
-              (await sessionStateEvents.listSessionStateEventsSince(sessionKey, "codex", 0, 200))
-                .events,
-            ).toMatchObject([{ kind: "run_completed", runId: requestId }]);
-          }
         } finally {
           release.resolve();
-          releaseSuccessor.resolve();
-          await Promise.allSettled([pending, ...(successor ? [successor] : [])]);
+          await pending.catch(() => {});
           readSpy.mockRestore();
           signalSpy?.mockRestore();
         }

@@ -2,16 +2,14 @@ import type { AcpRuntime, AcpRuntimeHandle } from "@openclaw/acp-core/runtime/ty
 import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import { toErrorObject } from "../../infra/errors.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { recordSubagentTerminalState } from "../../sessions/subagent-terminal-state.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { AcpRuntimeError } from "../runtime/errors.js";
-import { runAcceptedManagerTurn, type AcceptedTurns } from "./manager.accepted-turns.js";
-import {
-  captureManagerCancellation,
-  cancelManagerAcceptedTurn,
-  runManagerCancelSession,
-} from "./manager.cancel-session.js";
+import { resolveSessionStorePathForAcp } from "../runtime/session-meta-store.js";
+import { runManagerCancelSession } from "./manager.cancel-session.js";
 import { runManagerCloseSession } from "./manager.close-session.js";
 import { reconcileManagerRuntimeSessionIdentifiers } from "./manager.identity-reconcile.js";
 import { runManagerInitializeSession } from "./manager.initialize-session.js";
@@ -71,8 +69,8 @@ export class AcpSessionManager {
   private readonly actorQueue = new SessionActorQueue();
   private readonly runtimeHandles = new ManagerRuntimeHandleCache();
   private readonly activeTurnBySession = new Map<string, ActiveTurnState>();
-  private readonly acceptedTurns: AcceptedTurns = new Map();
-  private stopping = false;
+  // Disposal aborts in-flight and later turns of this retired instance.
+  private readonly lifecycle = new AbortController();
   private readonly turnLatencyStats: TurnLatencyStats = {
     completed: 0,
     failed: 0,
@@ -85,15 +83,6 @@ export class AcpSessionManager {
   constructor(deps: AcpSessionManagerDeps = DEFAULT_DEPS) {
     this.deps = deps;
     registerAcpSessionResetControls(this, {
-      captureCancellation: () =>
-        captureManagerCancellation({
-          acceptedTurns: this.acceptedTurns,
-          runtimeHandles: this.runtimeHandles,
-          actorQueue: this.actorQueue,
-          resolveTarget: resolveAcpSessionTarget,
-          resolveSession: this.resolveSessionAsync.bind(this),
-          cancel: (params) => this.#cancelSession(params),
-        }),
       captureSessionRuntimeOwnership: (params) => {
         const ownership = this.actorQueue.capture(
           acpSessionActorKey(resolveAcpSessionTarget(params)),
@@ -103,24 +92,8 @@ export class AcpSessionManager {
       forceDiscardSessionRuntime: (params) => this.#forceDiscardSessionRuntime(params),
     });
     registerAcpSessionManagerDisposer(this, async (reason) => {
-      this.stopping = true;
-      const acceptedTurns = [];
-      for (const turns of this.acceptedTurns.values()) {
-        for (const turn of turns) {
-          acceptedTurns.push(turn);
-        }
-      }
-      await Promise.all(
-        acceptedTurns.map(async (acceptedTurn) => {
-          try {
-            await cancelManagerAcceptedTurn({ acceptedTurn, reason });
-          } catch (error) {
-            logVerbose(
-              `acp-manager: active runtime cancel failed for ${acceptedTurn.requestId}: ${String(error)}`,
-            );
-          }
-        }),
-      );
+      this.lifecycle.abort();
+      // Each close waits in its actor lane, so aborted turns settle before their handle closes.
       await this.runtimeHandles.closeAll({ actorQueue: this.actorQueue, reason });
       this.activeTurnBySession.clear();
     });
@@ -337,104 +310,106 @@ export class AcpSessionManager {
     });
   }
 
+  /**
+   * Runs one ACP turn as a session-controller turn on its target session.
+   * A same-session caller's turn is inherited; any other caller waits in the target's mailbox.
+   */
   async runTurn(input: AcpRunTurnInput): Promise<void> {
     const target = resolveAcpSessionTarget(input);
+    const { storePath } = resolveSessionStorePathForAcp({ cfg: input.cfg, ...target });
     const startedAt = Date.now();
-    await runAcceptedManagerTurn({
-      input,
-      ...target,
-      stopping: this.stopping,
-      turns: this.acceptedTurns,
-      captureSessionActor: () => this.actorQueue.capture(acpSessionActorKey(target)),
-      withSessionActor: this.withSessionActor.bind(this),
-      onQueuedCancellation: async (assertCurrent, acpControl, revalidateCancel) => {
-        assertCurrent();
-        const firstAccepted = [...(this.acceptedTurns.get(acpSessionActorKey(target)) ?? [])].find(
-          (turn) => turn.requestId === input.requestId,
-        );
-        // The signal is keyed by run id; an earlier accepted instance still owns it.
-        if (
-          input.mode === "prompt" &&
-          firstAccepted?.instanceId === input.admittedRunContext.operationalRunInstance.instanceId
-        ) {
-          const entry = (
-            await this.deps.loadSessionEntryAsync({
-              cfg: input.cfg,
-              ...target,
-              assertCurrent,
-            })
-          )?.entry;
-          assertCurrent();
-          const requesterSessionKey =
-            normalizeText(entry?.spawnedBy) ?? normalizeText(entry?.parentSessionKey);
-          if (requesterSessionKey) {
-            await recordSubagentTerminalState(
-              {
-                childSessionKey: target.sessionKey,
-                runId: input.requestId,
-                requesterSessionKey,
-                outcomeStatus: "cancelled",
-              },
-              assertCurrent,
-              acpControl,
-            );
-            assertCurrent();
-          }
-        }
-        // Signal persistence is best effort; revalidate delivery even when its write was refused.
-        await revalidateCancel?.("publication");
-        assertCurrent();
-        await emitCancelledAcpTurn(input.onEvent);
-        this.recordTurnCompletion({ startedAt });
-      },
-      run: async (acceptedInput, acceptedTurn, isCurrentActor) =>
-        await runManagerTurn({
-          input: acceptedInput,
-          acceptedTurn,
+    let started = false;
+    let turnSignal: AbortSignal | undefined;
+    try {
+      // The mailbox reservation is synchronous here, so turns keep their arrival order.
+      await withSessionTurn(
+        {
           ...target,
-          runtimeHandles: this.runtimeHandles,
-          activeTurnBySession: this.activeTurnBySession,
-          resolveSession: this.resolveSessionAsync.bind(this),
-          ensureRuntimeHandle: this.ensureRuntimeHandle.bind(this),
-          setSessionState: this.setSessionState.bind(this),
-          recordTurnCompletion: this.recordTurnCompletion.bind(this),
-          reconcileRuntimeSessionIdentifiers: this.reconcileRuntimeSessionIdentifiers.bind(this),
-          writeSessionMeta: this.writeSessionMeta.bind(this),
-          isCurrentActor,
-        }),
-    });
+          storePath,
+          abortSignal: input.signal
+            ? AbortSignal.any([input.signal, this.lifecycle.signal])
+            : this.lifecycle.signal,
+        },
+        async (_operation, signal) => {
+          turnSignal = signal;
+          await this.withSessionActor(
+            target,
+            async (isCurrentActor) => {
+              started = true;
+              await runManagerTurn({
+                input: { ...input, signal },
+                ...target,
+                runtimeHandles: this.runtimeHandles,
+                activeTurnBySession: this.activeTurnBySession,
+                resolveSession: this.resolveSessionAsync.bind(this),
+                ensureRuntimeHandle: this.ensureRuntimeHandle.bind(this),
+                setSessionState: this.setSessionState.bind(this),
+                recordTurnCompletion: this.recordTurnCompletion.bind(this),
+                reconcileRuntimeSessionIdentifiers:
+                  this.reconcileRuntimeSessionIdentifiers.bind(this),
+                writeSessionMeta: this.writeSessionMeta.bind(this),
+                isCurrentActor,
+              });
+            },
+            signal,
+          );
+        },
+      );
+    } catch (error) {
+      // Stop rejects a waiting turn with its reason, which need not be an Error.
+      const cancelled =
+        turnSignal?.aborted ||
+        input.signal?.aborted ||
+        this.lifecycle.signal.aborted ||
+        isAbortError(error) ||
+        !(error instanceof Error);
+      if (started || !cancelled) {
+        throw error;
+      }
+      await this.publishCancelledBeforeStart(input, target);
+      this.recordTurnCompletion({ startedAt });
+    }
   }
 
+  /** A turn cancelled before it ran still reports a terminal outcome to its ACP requester. */
+  private async publishCancelledBeforeStart(
+    input: AcpRunTurnInput,
+    target: AcpSessionTarget,
+  ): Promise<void> {
+    if (input.mode === "prompt") {
+      const entry = (await this.deps.loadSessionEntryAsync({ cfg: input.cfg, ...target }))?.entry;
+      const requesterSessionKey =
+        normalizeText(entry?.spawnedBy) ?? normalizeText(entry?.parentSessionKey);
+      if (requesterSessionKey) {
+        // The terminal record is deduplicated by run ID across repeated submissions.
+        await recordSubagentTerminalState(
+          {
+            childSessionKey: target.sessionKey,
+            runId: input.requestId,
+            requesterSessionKey,
+            outcomeStatus: "cancelled",
+          },
+          () => {},
+        );
+      }
+    }
+    await emitCancelledAcpTurn(input.onEvent);
+  }
+
+  /** Sends ACP cancel to an idle backend; controller turns are cancelled through Stop. */
   async cancelSession(params: {
     assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
     reason?: string;
-    expectedRunId?: string;
-    expectedInstanceId?: string;
-    expectedOwnerKey?: string;
   }): Promise<void> {
-    await this.#cancelSession(params);
-  }
-
-  async #cancelSession(
-    params: Parameters<AcpSessionManager["cancelSession"]>[0] & {
-      captured?: Parameters<typeof runManagerCancelSession>[0]["captured"];
-    },
-  ): Promise<void> {
     const target = resolveAcpSessionTarget(params);
     await runManagerCancelSession({
-      captured: params.captured,
       assertActive: params.assertActive,
       cfg: params.cfg,
       ...target,
       reason: params.reason,
-      expectedRunId: params.expectedRunId,
-      expectedInstanceId: params.expectedInstanceId,
-      expectedOwnerKey: params.expectedOwnerKey,
-      acceptedTurns: this.acceptedTurns,
-      activeTurnBySession: this.activeTurnBySession,
       withSessionActor: this.withSessionActor.bind(this),
       resolveSession: this.resolveSessionAsync.bind(this),
       prepareSessionControlRead: this.deps.prepareSessionControlRead,
@@ -461,12 +436,6 @@ export class AcpSessionManager {
     const { sessionKey } = target;
     const actorKey = acpSessionActorKey(target);
     this.actorQueue.rotate(actorKey);
-    const accepted = this.acceptedTurns.get(actorKey);
-    this.acceptedTurns.delete(actorKey);
-    for (const turn of accepted ?? []) {
-      turn.abortController.abort();
-    }
-
     const activeTurn = this.activeTurnBySession.get(actorKey);
     if (activeTurn) {
       activeTurn.abortController.abort();

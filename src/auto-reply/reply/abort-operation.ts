@@ -1,7 +1,5 @@
 // Handles abort requests and active reply run cancellation.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { getAcpSessionManager } from "../../acp/control-plane/manager.js";
-import { getAcpSessionResetControls } from "../../acp/control-plane/manager.reset-controls.js";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-manager-api.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { killAllControlledSubagentRuns } from "../../agents/subagents/registry/subagent-control.js";
@@ -383,11 +381,8 @@ export async function executeFastAbortRequest(
       aliases: candidate.aliases,
       channel: captureChannelStopResources(candidate.capture),
     }));
-    const acpCapture = getAcpSessionResetControls(getAcpSessionManager()).captureCancellation();
-    const acpCancellations: Promise<void>[] = [];
-    let acpAborted = false;
+    const retirements: Promise<void>[] = [];
     let selectedCapture: ChannelStopCapture | undefined;
-    let abortTargetKeys: string[] = [];
     const abortCutoff = shouldPersistAbortCutoff({
       commandSessionKey,
       targetSessionKey: resolvedTargetKey,
@@ -402,7 +397,7 @@ export async function executeFastAbortRequest(
         return selectedCapture;
       },
       assertCurrent,
-      retirements: acpCancellations,
+      retirements,
       hookContext: {
         sessionKey: resolvedTargetKey,
         sessionEntry: resolvedAbortTarget?.entry,
@@ -411,28 +406,6 @@ export async function executeFastAbortRequest(
         senderId: ctx.SenderId,
       },
       messageIdentity: abortCutoff,
-      afterQueued: () => {
-        const cancellation = (async () => {
-          for (const acpTargetKey of abortTargetKeys) {
-            assertCurrent();
-            try {
-              acpAborted =
-                (await acpCapture.cancel({
-                  cfg,
-                  sessionKey: acpTargetKey,
-                  agentId: acpTargetKey === resolvedTargetKey ? agentId : undefined,
-                  assertActive: assertCurrent,
-                  reason: "fast-abort",
-                })) || acpAborted;
-            } catch (error) {
-              logVerbose(
-                `abort: ACP cancel failed for ${acpTargetKey}: ${formatErrorMessage(error)}`,
-              );
-            }
-          }
-        })();
-        acpCancellations.push(cancellation);
-      },
       recordAbortTarget: async ({ recordCutoff }) => {
         let persistedAbortTarget: SessionAbortTargetResult | null = null;
         try {
@@ -484,7 +457,7 @@ export async function executeFastAbortRequest(
               ? conversationBoundAcpTargetKey
               : undefined;
             const captures = [mainCapture];
-            abortTargetKeys = [resolvedTargetKey];
+            const abortTargetKeys = [resolvedTargetKey];
             if (boundAcpTargetKey && boundAcpTargetKey !== resolvedTargetKey) {
               const boundAgentId = resolveSessionAgentId({
                 config: cfg,
@@ -532,9 +505,8 @@ export async function executeFastAbortRequest(
       };
     } finally {
       // Bound acknowledgment without releasing the exact producer or retirement custody.
-      const settled = Promise.allSettled(acpCancellations);
+      const settled = Promise.allSettled(retirements);
       const settledInTime = await settlesWithin(settled, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
-      acpCapture.release();
       retirementFailure = settledInTime
         ? (await settled).find((outcome) => outcome.status === "rejected")
         : {
@@ -548,9 +520,6 @@ export async function executeFastAbortRequest(
     // failed retirement, and both paths above join every captured producer.
     if (retirementFailure) {
       throw retirementFailure.reason;
-    }
-    if (acpAborted) {
-      result.aborted = true;
     }
     return result;
   }

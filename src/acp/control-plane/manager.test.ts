@@ -247,16 +247,12 @@ describe("AcpSessionManager", () => {
           events.push(event);
         },
       });
-      expect(f.manager.getObservabilitySnapshot().turns.queueDepth).toBe(2);
       abortController.abort();
       await second;
-      expect(f.manager.getObservabilitySnapshot().turns.queueDepth).toBe(2);
       expect(events).toEqual([{ type: "done", status: "cancelled", stopReason: "cancel" }]);
       expect(f.runtimeState.runTurn).toHaveBeenCalledOnce();
       releaseFirstTurn.resolve();
       await first;
-      await f.manager.getSessionStatus(target);
-      expect(f.manager.getObservabilitySnapshot().turns.queueDepth).toBe(0);
     } finally {
       abortController.abort();
       releaseFirstTurn.resolve();
@@ -319,7 +315,6 @@ describe("AcpSessionManager", () => {
         const second = f.run("second", "r2", { cfg });
         await flushMicrotasks();
         expect(f.runtimeState.runTurn).toHaveBeenCalledOnce();
-        expect(f.manager.getObservabilitySnapshot().turns.queueDepth).toBe(2);
         await vi.advanceTimersByTimeAsync(3_500);
         await expectRejectedRecord(first, {
           code: "ACP_TURN_FAILED",
@@ -333,7 +328,7 @@ describe("AcpSessionManager", () => {
         const snapshot = f.manager.getObservabilitySnapshot();
         expect(snapshot.runtimeCache.activeSessions).toBe(1);
         expect(snapshot.errorsByCode.ACP_TURN_FAILED).toBe(1);
-        expectRecordFields(snapshot.turns, { active: 0, queueDepth: 0, completed: 1, failed: 1 });
+        expectRecordFields(snapshot.turns, { active: 0, completed: 1, failed: 1 });
         const states = extractStatesFromUpserts();
         expect(states).toContain("error");
         expect(states.at(-1)).toBe("idle");

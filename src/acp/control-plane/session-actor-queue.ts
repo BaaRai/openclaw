@@ -66,38 +66,6 @@ export class SessionActorQueue {
     }
   }
 
-  /** Retain existing lanes while an async selector discovers its target. */
-  captureSelection(keys: Iterable<string>) {
-    const captured = new Map(
-      [...new Set([...this.lanes.keys(), ...keys])].map((key) => [key, this.capture(key)]),
-    );
-    let released = false;
-    return {
-      select: (key: string) => {
-        if (released) {
-          throw new Error("ACP actor selection was released.");
-        }
-        let actor = captured.get(key);
-        if (!actor) {
-          // Open an uncached idle session, but never adopt work admitted during routing.
-          if (this.lanes.has(key)) {
-            throw new Error("ACP session actor changed during selection.");
-          }
-          actor = this.capture(key);
-          captured.set(key, actor);
-        }
-        return actor;
-      },
-      release: () => {
-        released = true;
-        for (const actor of captured.values()) {
-          actor.release();
-        }
-        captured.clear();
-      },
-    };
-  }
-
   /** Fresh work bypasses a stuck lane; only outstanding operations retain the retired token. */
   rotate(actorKey: string): void {
     const lane = this.lanes.get(actorKey);

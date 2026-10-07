@@ -14,7 +14,6 @@ import { recordSessionHumanDirectMessage } from "../../sessions/session-state-ev
 import { recordSubagentTerminalState } from "../../sessions/subagent-terminal-state.js";
 import { AcpRuntimeError, formatAcpErrorChain, toAcpRuntimeError } from "../runtime/errors.js";
 import { markAcpTurnActive } from "./active-turns.js";
-import type { AcceptedTurnState } from "./manager.accepted-turns.js";
 import {
   isFailoverWorthyBackendError,
   resolveBackendCandidatePlan,
@@ -52,7 +51,6 @@ const ACP_TURN_TIMEOUT_GRACE_MS = 1_000;
 
 export async function runManagerTurn(params: {
   input: AcpRunTurnInput;
-  acceptedTurn: AcceptedTurnState;
   sessionKey: string;
   agentId: string;
   runtimeHandles: ManagerRuntimeHandleCache;
@@ -87,24 +85,18 @@ export async function runManagerTurn(params: {
   }
   const turnStartedAt = Date.now();
   const actorKey = acpSessionActorKey(params);
-  const assertSignalAdmission = resolveAdmittedRunActiveAssertion(
-    input.admittedRunContext,
-    input.signal,
-  );
+  // Model revocation and handle discard abort this turn beside its caller's signal.
+  const abortController = new AbortController();
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, abortController.signal])
+    : abortController.signal;
+  const assertSignalAdmission = resolveAdmittedRunActiveAssertion(input.admittedRunContext, signal);
   const assertActorCurrent = () => {
     assertCurrentAcpActor(params.isCurrentActor(), sessionKey);
   };
-  const assertCancellationCurrent = () => {
-    assertActorCurrent();
-    params.acceptedTurn.assertCancelCurrent?.();
-  };
-  const assertCancellationPublicationCurrent = () => {
-    assertActorCurrent();
-    params.acceptedTurn.assertCancelCurrent?.("publication");
-  };
   const assertSignalCurrent = () => {
     assertActorCurrent();
-    input.signal?.throwIfAborted();
+    signal.throwIfAborted();
     assertSignalAdmission?.();
   };
   assertSignalCurrent();
@@ -147,7 +139,7 @@ export async function runManagerTurn(params: {
       );
       assertSignalCurrent();
     } catch (error) {
-      const cancelled = input.signal?.aborted === true;
+      const cancelled = signal.aborted;
       const acpError = toAcpRuntimeError({
         error,
         fallbackCode: cancelled ? "ACP_TURN_FAILED" : "ACP_SESSION_INIT_FAILED",
@@ -160,10 +152,6 @@ export async function runManagerTurn(params: {
         ...(cancelled ? {} : { errorCode: acpError.code }),
       });
       if (spawnedByWatcher && params.isCurrentActor()) {
-        if (cancelled) {
-          await params.acceptedTurn.revalidateCancel?.("publication");
-          assertCancellationPublicationCurrent();
-        }
         await recordSubagentTerminalState(
           {
             childSessionKey: sessionKey,
@@ -175,8 +163,7 @@ export async function runManagerTurn(params: {
                 ? "timeout"
                 : "error",
           },
-          cancelled ? assertCancellationPublicationCurrent : assertActorCurrent,
-          cancelled ? params.acceptedTurn.cancelConstraint : undefined,
+          assertActorCurrent,
         );
       }
       throw acpError;
@@ -204,11 +191,6 @@ export async function runManagerTurn(params: {
         startedAt: turnStartedAt,
         errorCode: errorToRecord.code,
       });
-      const cancelling = params.acceptedTurn.abortController.signal.aborted;
-      if (cancelling) {
-        await params.acceptedTurn.revalidateCancel?.("publication");
-        assertCancellationPublicationCurrent();
-      }
       if (spawnedByWatcher) {
         await recordSubagentTerminalState(
           {
@@ -218,8 +200,7 @@ export async function runManagerTurn(params: {
             outcomeStatus:
               errorToRecord.detailCode === ACP_TURN_TIMEOUT_DETAIL_CODE ? "timeout" : "error",
           },
-          cancelling ? assertCancellationPublicationCurrent : assertActorCurrent,
-          cancelling ? params.acceptedTurn.cancelConstraint : undefined,
+          assertActorCurrent,
         );
         assertActorCurrent();
       }
@@ -230,12 +211,6 @@ export async function runManagerTurn(params: {
         isCurrentActor: params.isCurrentActor,
         state: "error",
         lastError: formatAcpErrorChain(errorToRecord),
-        ...(cancelling
-          ? {
-              assertCurrent: assertCancellationPublicationCurrent,
-              acpControl: params.acceptedTurn.cancelConstraint,
-            }
-          : {}),
       });
       throw errorToRecord;
     };
@@ -280,14 +255,10 @@ export async function runManagerTurn(params: {
         let retryFreshHandle = false;
         let skipPostTurnCleanup = false;
         let modelExecution: ReturnType<typeof bindOperatorModelExecution>;
-        const onModelRevoked = () =>
-          params.acceptedTurn.abortController.abort(modelExecution?.signal.reason);
+        const onModelRevoked = () => abortController.abort(modelExecution?.signal.reason);
+        let onTurnAborted: (() => void) | undefined;
         try {
           const ensured = await params.ensureRuntimeHandle({
-            readAcpControl: () => params.acceptedTurn.cancelConstraint,
-            assertMetadataCommitAllowed: (locator) => {
-              params.acceptedTurn.assertCancelCurrent?.("publication", locator);
-            },
             cfg: input.cfg,
             sessionKey,
             agentId,
@@ -298,8 +269,6 @@ export async function runManagerTurn(params: {
           assertActorCurrent();
           runtime = ensured.runtime;
           handle = ensured.handle;
-          // Retain the actual handle through policy failure and final identity publication.
-          params.acceptedTurn.runtimeHandle = handle;
           meta = ensured.meta;
           let appliedModel = handle.appliedModel
             ? handle.appliedModel.kind === "applied"
@@ -312,13 +281,12 @@ export async function runManagerTurn(params: {
             instanceId: input.admittedRunContext.operationalRunInstance.instanceId,
             runtime,
             handle,
-            abortController: params.acceptedTurn.abortController,
+            abortController,
           };
-          // Publish custody before controls or state persistence can yield. A setup
-          // cancellation must cancel this exact late handle before reporting done.
-          params.acceptedTurn.activeTurn = activeTurn;
+          // Publish custody before controls or state persistence can yield, so a
+          // forced discard reaches this exact late handle.
           params.activeTurnBySession.set(actorKey, activeTurn);
-          if (!input.signal?.aborted) {
+          if (!signal.aborted) {
             await applyManagerRuntimeControls({
               sessionKey,
               runtime,
@@ -351,7 +319,7 @@ export async function runManagerTurn(params: {
           modelExecution?.signal.addEventListener("abort", onModelRevoked, { once: true });
           modelExecution?.assertCurrent();
 
-          if (!input.signal?.aborted) {
+          if (!signal.aborted) {
             await params.setSessionState({
               cfg: input.cfg,
               sessionKey,
@@ -365,6 +333,19 @@ export async function runManagerTurn(params: {
           assertActorCurrent();
           activeTurnStarted = true;
           const turnToCancel = activeTurn;
+          const cancelTurn = () =>
+            cancelManagerActiveTurn({
+              activeTurn: turnToCancel,
+              assertCurrent: assertActorCurrent,
+            });
+          // A caller Stop after submission reaches the backend here; before it, the stream cancels.
+          // Internal aborts (timeout, model revocation, discard) own their backend cleanup.
+          onTurnAborted = () => {
+            cancelTurn().catch((error: unknown) => {
+              logVerbose(`acp-manager: runtime cancel failed for ${sessionKey}: ${String(error)}`);
+            });
+          };
+          input.signal?.addEventListener("abort", onTurnAborted, { once: true });
           const eventGate = { open: true };
           const turnPromise = consumeAcpTurnStream({
             runtime,
@@ -374,7 +355,7 @@ export async function runManagerTurn(params: {
               attachments: input.attachments,
               mode: input.mode,
               requestId: input.requestId,
-              signal: input.signal,
+              signal,
               onElicitation: input.onElicitation,
             },
             eventGate,
@@ -382,13 +363,7 @@ export async function runManagerTurn(params: {
               await input.onBeforePrompt?.();
               modelExecution?.assertCurrent();
             },
-            onCancellation: () =>
-              cancelManagerActiveTurn({
-                activeTurn: turnToCancel,
-                reason: params.acceptedTurn.cancelReason,
-                revalidate: params.acceptedTurn.revalidateCancel,
-                assertCurrent: assertCancellationCurrent,
-              }),
+            onCancellation: cancelTurn,
             onPromptStarted: async ({ authoritative }) => {
               if (!params.isCurrentActor()) {
                 return;
@@ -471,11 +446,6 @@ export async function runManagerTurn(params: {
             startedAt: turnStartedAt,
           });
           const cancelled = turnOutcome.terminalStatus === "cancelled";
-          const cancelling = cancelled || params.acceptedTurn.abortController.signal.aborted;
-          if (cancelling) {
-            await params.acceptedTurn.revalidateCancel?.("publication");
-            assertCancellationPublicationCurrent();
-          }
           if (spawnedByWatcher) {
             await recordSubagentTerminalState(
               {
@@ -484,8 +454,7 @@ export async function runManagerTurn(params: {
                 requesterSessionKey: spawnedByWatcher,
                 outcomeStatus: cancelled ? "cancelled" : "ok",
               },
-              cancelling ? assertCancellationPublicationCurrent : assertActorCurrent,
-              cancelling ? params.acceptedTurn.cancelConstraint : undefined,
+              assertActorCurrent,
             );
             assertActorCurrent();
           }
@@ -496,12 +465,6 @@ export async function runManagerTurn(params: {
             isCurrentActor: params.isCurrentActor,
             state: "idle",
             clearLastError: true,
-            ...(cancelling
-              ? {
-                  assertCurrent: assertCancellationPublicationCurrent,
-                  acpControl: params.acceptedTurn.cancelConstraint,
-                }
-              : {}),
           });
           return;
         } catch (error) {
@@ -549,13 +512,13 @@ export async function runManagerTurn(params: {
           }
           break;
         } finally {
+          if (onTurnAborted) {
+            input.signal?.removeEventListener("abort", onTurnAborted);
+          }
           // A producer terminal does not release actor custody while cancellation is still active.
           await activeTurn?.cancelPromise?.catch(() => {});
           modelExecution?.signal.removeEventListener("abort", onModelRevoked);
           modelExecution?.release();
-          if (params.acceptedTurn.activeTurn === activeTurn) {
-            params.acceptedTurn.activeTurn = undefined;
-          }
           if (activeTurn && params.activeTurnBySession.get(actorKey) === activeTurn) {
             params.activeTurnBySession.delete(actorKey);
           }
@@ -576,8 +539,6 @@ export async function runManagerTurn(params: {
               meta,
               failOnStatusError: false,
               isCurrentActor: params.isCurrentActor,
-              revalidateControl: () => params.acceptedTurn.revalidateCancel?.("publication"),
-              assertCurrent: () => params.acceptedTurn.assertCancelCurrent?.("publication"),
             }));
           }
           if (

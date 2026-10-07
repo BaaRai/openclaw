@@ -181,16 +181,7 @@ const acpManagerMocks = vi.hoisted(() => ({
   closeSession: vi.fn(async () => {}),
   forceDiscardSessionRuntime: vi.fn(async () => {}),
 }));
-registerAcpSessionResetControls(acpManagerMocks, {
-  ...acpManagerMocks,
-  captureCancellation: () => ({
-    cancel: async () => {
-      await acpManagerMocks.cancelSession();
-      return true;
-    },
-    release: () => {},
-  }),
-});
+registerAcpSessionResetControls(acpManagerMocks, acpManagerMocks);
 const browserSessionTabMocks = vi.hoisted(() => ({
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
 }));

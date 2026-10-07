@@ -1,5 +1,4 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { AcpSessionCancellationCapture } from "./manager.cancel-session.js";
 
 type AcpResetTarget = {
   cfg: OpenClawConfig;
@@ -9,7 +8,6 @@ type AcpResetTarget = {
 
 type AcpSessionResetControls = {
   /** Core-only lifecycle custody, kept off the plugin-facing session manager. */
-  captureCancellation: () => AcpSessionCancellationCapture;
   captureSessionRuntimeOwnership: (target: AcpResetTarget) => {
     isCurrent: () => boolean;
     release: () => void;

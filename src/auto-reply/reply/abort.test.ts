@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { isSubagentRegistryWriteCommand } from "../../agents/subagent-test-fixtures.test-helpers.js";
-import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { rowToSubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.store.codec.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -50,15 +49,6 @@ vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
 }));
 
 const acpManagerMocks = vi.hoisted(() => ({
-  resolveSession: vi.fn<
-    () =>
-      | { kind: "none" }
-      | {
-          kind: "ready";
-          sessionKey: string;
-          meta: unknown;
-        }
-  >(() => ({ kind: "none" })),
   cancelSession: vi.fn(async (_params?: unknown) => {}),
 }));
 
@@ -85,27 +75,8 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../acp/control-plane/manager.reset-controls.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../acp/control-plane/manager.reset-controls.js")>()),
-  getAcpSessionResetControls: () => ({
-    captureCancellation: () => ({
-      cancel: async (params: unknown) => {
-        if (acpManagerMocks.resolveSession().kind !== "none") {
-          await acpManagerMocks.cancelSession(params);
-          return true;
-        }
-        return false;
-      },
-      release: () => {},
-    }),
-  }),
-}));
-
 vi.mock("../../acp/control-plane/manager.js", () => ({
-  getAcpSessionManager: () => ({
-    resolveSession: acpManagerMocks.resolveSession,
-    cancelSession: acpManagerMocks.cancelSession,
-  }),
+  getAcpSessionManager: () => ({ cancelSession: acpManagerMocks.cancelSession }),
 }));
 
 const abortFixture = useChatAbortRegistryFixture();
@@ -254,7 +225,6 @@ describe("abort detection", () => {
     vi.mocked(markSessionAbortTarget).mockReset();
     vi.mocked(resolveSessionAbortTarget).mockReset();
     resetSessionControllerStateForTest();
-    acpManagerMocks.resolveSession.mockReset().mockReturnValue({ kind: "none" });
     acpManagerMocks.cancelSession.mockReset().mockResolvedValue(undefined);
     runtimeAbortMocks.abortEmbeddedAgentRun.mockReset().mockReturnValue(true);
   });
@@ -592,17 +562,12 @@ describe("abort detection", () => {
     });
   });
 
-  it("plain-language stop on ACP-bound session triggers ACP cancel", async () => {
+  it("plain-language stop leaves an idle ACP backend to /acp cancel", async () => {
     const sessionKey = "agent:codex:acp:test-1";
     const sessionId = "session-123";
     const { cfg } = await createAbortConfig({
       sessionIdsByKey: { [sessionKey]: sessionId },
     });
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -612,40 +577,8 @@ describe("abort detection", () => {
       targetSessionKey: sessionKey,
     });
 
-    expect(result.handled).toBe(true);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg,
-        sessionKey,
-        reason: "fast-abort",
-      }),
-    );
-  });
-
-  it("ACP cancel failures do not skip captured queue cleanup", async () => {
-    const sessionKey = "agent:codex:acp:test-2";
-    const sessionId = "session-456";
-    const { root, cfg } = await createAbortConfig({
-      sessionIdsByKey: { [sessionKey]: sessionId },
-    });
-    enqueueQueuedFollowupRun({ root, cfg, sessionId, sessionKey });
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey,
-      meta: {} as never,
-    });
-    acpManagerMocks.cancelSession.mockRejectedValueOnce(new Error("cancel failed"));
-
-    const result = await runStopCommand({
-      cfg,
-      sessionKey,
-      from: "telegram:123",
-      to: "telegram:123",
-      targetSessionKey: sessionKey,
-    });
-
-    expect(result.handled).toBe(true);
-    expect(getFollowupQueueDepth(sessionKey)).toBe(0);
+    expect(result).toMatchObject({ handled: true, aborted: false });
+    expect(acpManagerMocks.cancelSession).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
@@ -701,88 +634,6 @@ describe("abort detection", () => {
     },
   );
 
-  it("signals the native parent before deferred ACP cancellation and never retargets its replacement", async () => {
-    const sessionKey = "agent:main:discord:channel:deferred-acp";
-    const acpKey = "agent:main:acp:deferred-acp";
-    const { root, cfg } = await createAbortConfig({
-      sessionIdsByKey: { [sessionKey]: "native-session", [acpKey]: "acp-session" },
-    });
-    const native = createReplyOperation({
-      sessionKey,
-      sessionId: "native-session",
-      resetTriggered: false,
-    });
-    native.attachBackend({
-      kind: "embedded",
-      cancel: () => queueMicrotask(() => native.complete()),
-      isStreaming: () => true,
-    });
-    const queued = enqueueQueuedFollowupRun({ root, cfg, sessionId: "native-session", sessionKey });
-    bindAcpSessionForTest(acpKey);
-    acpManagerMocks.resolveSession.mockReturnValue({ kind: "ready", sessionKey: acpKey, meta: {} });
-    const entered = createDeferred();
-    const proceed = createDeferred();
-    acpManagerMocks.cancelSession.mockImplementationOnce(async () => {
-      entered.resolve();
-      await proceed.promise;
-    });
-    const pending = runStopCommand({
-      cfg,
-      sessionKey,
-      from: "discord:deferred-acp",
-      to: "discord:deferred-acp",
-    });
-    let replacement: ReturnType<typeof createReplyOperation> | undefined;
-    try {
-      await entered.promise;
-      const signaledBeforeAcpWait = native.abortSignal.aborted;
-      if (!signaledBeforeAcpWait) {
-        // This is still-live parent work, not a post-closure registration claim.
-        await registerSubagentRun({
-          runId: "during-acp-wait",
-          childSessionKey: "agent:main:subagent:during-acp-wait",
-          requesterSessionKey: sessionKey,
-          requesterAgentId: "main",
-          requesterDisplayKey: sessionKey,
-          task: "registered before native parent was signaled",
-          cleanup: "keep",
-          collect: true,
-          queued: true,
-        });
-      }
-      const queueClearedBeforeAcpWait = getFollowupQueueDepth(sessionKey) === 0;
-      native.complete();
-      // The later turn may start only after the cancelled input's actual cleanup.
-      if (!queued.controllerInput) {
-        throw new Error("Queued fixture did not reserve its source");
-      }
-      await Promise.all([native.ownerSettlement, queued.controllerInput.settlement.promise]);
-      replacement = createReplyOperation({
-        sessionKey,
-        sessionId: "replacement-session",
-        resetTriggered: false,
-      });
-      replacement.attachBackend({ kind: "embedded", cancel: () => {}, isStreaming: () => true });
-      proceed.resolve();
-      await pending;
-      expect(
-        signaledBeforeAcpWait,
-        "native parent must be signaled before the independent ACP await",
-      ).toBe(true);
-      expect(queueClearedBeforeAcpWait).toBe(true);
-      expect(
-        replacement.abortSignal.aborted,
-        "do not rediscover a replacement parent after ACP settles",
-      ).toBe(false);
-      expect(getSubagentRunByChildSessionKey("agent:main:subagent:during-acp-wait")).toBeNull();
-    } finally {
-      proceed.resolve();
-      await pending;
-      native.complete();
-      replacement?.complete();
-    }
-  });
-
   it.each([undefined, "agent:main:main"])(
     "propagates a zero-child callback failure for requester %s",
     async (requesterSessionKey) => {
@@ -823,11 +674,6 @@ describe("abort detection", () => {
       sessionKey: acpSessionKey,
     });
     bindAcpSessionForTest(acpSessionKey);
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey: acpSessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -843,13 +689,7 @@ describe("abort detection", () => {
     expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(false);
     expect(getFollowupQueueDepth(sourceSessionKey)).toBe(0);
     expect(getFollowupQueueDepth(acpSessionKey)).toBe(0);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg,
-        sessionKey: acpSessionKey,
-        reason: "fast-abort",
-      }),
-    );
+    expect(acpManagerMocks.cancelSession).not.toHaveBeenCalled();
   });
 
   it("does not report /stop success after the active backend freezes its outcome", async () => {
@@ -933,11 +773,6 @@ describe("abort detection", () => {
       sessionKey: acpSessionKey,
     });
     bindAcpSessionForTest(acpSessionKey);
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey: acpSessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -966,11 +801,6 @@ describe("abort detection", () => {
       sourceSessionKey,
       "source-active-session",
     );
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey: acpSessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -984,13 +814,7 @@ describe("abort detection", () => {
     expect(result.handled).toBe(true);
     expect(sourceOperation.result).toBeNull();
     expect(isSessionRunActiveForKey(sourceSessionKey)).toBe(true);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg,
-        sessionKey: acpSessionKey,
-        reason: "fast-abort",
-      }),
-    );
+    expect(acpManagerMocks.cancelSession).not.toHaveBeenCalled();
     sourceOperation.complete();
   });
 
@@ -1008,11 +832,6 @@ describe("abort detection", () => {
       "source-active-session",
     );
     bindAcpSessionForTest(acpSessionKey);
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey: acpSessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -1058,11 +877,6 @@ describe("abort detection", () => {
       sessionKey: acpSessionKey,
     });
     bindAcpSessionForTest(acpSessionKey);
-    acpManagerMocks.resolveSession.mockReturnValue({
-      kind: "ready",
-      sessionKey: acpSessionKey,
-      meta: {} as never,
-    });
 
     const result = await runStopCommand({
       cfg,
@@ -1080,13 +894,7 @@ describe("abort detection", () => {
     expect(isSessionRunActiveForKey(acpSessionKey)).toBe(false);
     expect(getFollowupQueueDepth(sourceSessionKey)).toBe(0);
     expect(getFollowupQueueDepth(acpSessionKey)).toBe(0);
-    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg,
-        sessionKey: acpSessionKey,
-        reason: "fast-abort",
-      }),
-    );
+    expect(acpManagerMocks.cancelSession).not.toHaveBeenCalled();
     const sourceEntry = readAbortSessionEntry(storePath, sourceSessionKey);
     const acpEntry = readAbortSessionEntry(storePath, acpSessionKey);
     expect(sourceEntry?.abortCutoffMessageSid).toBe("77");
