@@ -85,7 +85,11 @@ export async function runReplyQuestionInput(
   let consumed = false;
   try {
     if (injection && !(await injection.admit())) {
-      return { handled: true, payload: undefined };
+      // Only a cancelled source is finished here; one whose steer was declined stays queued input.
+      const source = followupRun.controllerInput;
+      return source?.retirementRequested || source?.abortSignal.aborted
+        ? { handled: true, payload: undefined }
+        : { handled: false };
     }
     let outcome: { status: "answered" } | { status: "indeterminate"; errorMessage: string };
     try {

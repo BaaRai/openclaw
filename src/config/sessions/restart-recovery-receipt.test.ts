@@ -223,6 +223,21 @@ describe("restart recovery steering block reasons", () => {
     ).toBe("unknown-source-with-terminal-history");
   });
 
+  it("treats the claim's own delivery run as its source turn", () => {
+    // A restart resend runs under a new run id and continues the claim's source turn.
+    const resend = entry({
+      status: "running",
+      restartRecoveryDeliveryRunId: "recovery-1",
+      restartRecoveryDeliverySourceRunId: "source-1",
+    });
+    expect(resolveRestartRecoverySteeringBlockReason(resend, "session-1", "recovery-1")).toBe(
+      undefined,
+    );
+    expect(resolveRestartRecoverySteeringBlockReason(resend, "session-1", "other-run")).toBe(
+      "stale-claim",
+    );
+  });
+
   it("is fail-closed for a stale claim", () => {
     expect(
       resolveRestartRecoverySteeringBlockReason(
