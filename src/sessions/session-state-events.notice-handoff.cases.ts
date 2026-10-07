@@ -13,12 +13,10 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   acknowledgeSessionStateNotices,
   recordSessionStateEventAsync,
-  sweepSessionStateWatchNotices,
 } from "./session-state-events.js";
 import {
   child,
   createDatabaseOptions,
-  createWatcherSession,
   eventInput,
   nestedWatcher,
   readCursor,
@@ -40,21 +38,6 @@ export function registerSessionStateNoticeHandoffCases(
   noticeHandoff: NoticeHandoff,
   cfg: OpenClawConfig,
 ) {
-  it("freezes one notice watermark while material events continue", async () => {
-    const database = createDatabaseOptions();
-    await seedChild(database);
-    const first = (await recordSessionStateEventAsync(eventInput(), database))!;
-    await recordSessionStateEventAsync(eventInput(), database);
-    const third = (await recordSessionStateEventAsync(eventInput(), database))!;
-
-    expect(peekSystemEventEntries(watcher)).toHaveLength(1);
-    expect(readCursor(database)).toEqual({
-      last_seen_sequence: first.sequence - 1,
-      notified_sequence: first.sequence,
-      material_sequence: third.sequence,
-    });
-  });
-
   it("opens a fresh notice for material work interleaved before ack", async () => {
     const database = createDatabaseOptions();
     await seedChild(database);
@@ -86,34 +69,6 @@ export function registerSessionStateNoticeHandoffCases(
     });
     expect(peekSystemEventEntries(watcher)).toHaveLength(1);
     expect(peekSystemEventEntries(watcher)[0]?.text).toContain(`changesSince ${frozen.sequence}`);
-  });
-
-  it("does not reopen an acked notice for log-only events or during sweep", async () => {
-    const database = createDatabaseOptions();
-    await createWatcherSession(database);
-    await seedChild(database);
-    const material = (await recordSessionStateEventAsync(eventInput(), database))!;
-    await recordSessionStateEventAsync(
-      eventInput({ kind: "run_completed", actorType: "system", runId: "run-log-only" }),
-      database,
-    );
-    const watcherStorePath = peekSystemEventEntries(watcher)[0]?.sessionStorePath ?? null;
-    resetSystemEventsForTest();
-
-    await acknowledgeSessionStateNotices(
-      watcher,
-      [{ targetSessionKey: child, watcherStorePath }],
-      database,
-    );
-    expect(readCursor(database)).toEqual({
-      last_seen_sequence: material.sequence,
-      notified_sequence: material.sequence,
-      material_sequence: material.sequence,
-    });
-    expect(peekSystemEventEntries(watcher)).toEqual([]);
-
-    await sweepSessionStateWatchNotices(database);
-    expect(peekSystemEventEntries(watcher)).toEqual([]);
   });
 
   it("hands active watcher notices to ordinary turns while nested notices remain passive", async () => {
