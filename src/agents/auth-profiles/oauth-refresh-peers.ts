@@ -33,10 +33,18 @@ export function mergeOAuthRefreshPeerClaims(
   existing: readonly OAuthRefreshPeerClaim[],
   discovered: readonly OAuthRefreshPeerClaim[],
 ): OAuthRefreshPeerClaim[] {
-  const claims = new Map(existing.map((claim) => [claim.candidate.databasePath, claim]));
+  const keyOf = ({ candidate }: OAuthRefreshPeerClaim) =>
+    JSON.stringify([
+      candidate.databasePath,
+      candidate.databaseIdentity.key,
+      candidate.databaseIdentity.birthtime,
+    ]);
+  // Rediscovery can fence a replacement file at a path whose old claim still needs settlement.
+  const claims = new Map(existing.map((claim) => [keyOf(claim), claim]));
   for (const claim of discovered) {
-    const current = claims.get(claim.candidate.databasePath);
-    claims.set(claim.candidate.databasePath, current?.original ? current : claim);
+    const key = keyOf(claim);
+    const current = claims.get(key);
+    claims.set(key, current?.original ? current : claim);
   }
   return [...claims.values()].toSorted((left, right) =>
     left.candidate.databasePath.localeCompare(right.candidate.databasePath),

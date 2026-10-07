@@ -619,6 +619,7 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
       return choices.length === 0 && unknown ? undefined : choices;
     },
     authMaterializations: params.preparedRuntimeAuthMaterializations,
+    cliRuntimeBindings,
     pluginRegistry: params.pluginRegistry,
     isCurrent,
     observationConfig: params.observationConfig,

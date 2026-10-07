@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { resetFileLockStateForTest } from "../../plugin-sdk/file-lock.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { captureEnv } from "../../test-utils/env.js";
 import "./oauth-external-auth-passthrough.test-support.js";
 import { getOAuthProviderRuntimeMocks } from "./oauth-common-mocks.test-support.js";
@@ -31,7 +32,7 @@ import {
 import { loadPersistedAuthProfileStore } from "./persisted.js";
 import { removeAuthProfilesAcrossOwnerStores } from "./profiles.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./runtime-snapshots.js";
-import { resolveAuthProfileDatabasePath } from "./sqlite.js";
+import { closeAuthProfileReadPool, resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./store-runtime.js";
 import { persistAuthProfileBatch } from "./upsert-with-lock.js";
 
@@ -103,6 +104,47 @@ afterEach(async () => {
 });
 
 describe("OAuth refresh peer settlement", () => {
+  it("settles a replaced peer database discovered after provider refresh", async () => {
+    const peerAgentDir = path.join(tempRoot, "agents", "peer-a", "agent");
+    await fs.mkdir(peerAgentDir, { recursive: true });
+    const original = createExpiredOauthStore({ profileId, provider, accountId: "acct-a" });
+    saveAuthProfileStore(original, peerAgentDir);
+    const peerPath = resolveAuthProfileDatabasePath(peerAgentDir);
+    const backupPath = path.join(tempRoot, "peer-before-refresh.sqlite");
+    closeAuthProfileReadPool({ kind: "database", databasePath: peerPath });
+    await closeOpenClawAgentDatabaseByPathAsync(peerPath);
+    await fs.copyFile(peerPath, backupPath);
+    const originalIdentity = readDatabasePathIdentitySync(peerPath);
+    saveAuthProfileStore(original, mainAgentDir);
+    const replacement = {
+      type: "oauth" as const,
+      provider,
+      access: "rotated-access",
+      refresh: "rotated-refresh",
+      expires: Date.now() + 60 * 60 * 1000,
+      accountId: "acct-a",
+    };
+    refreshProviderOAuthCredentialWithPluginMock.mockImplementation(async () => {
+      const fenced = read(peerAgentDir);
+      expect(fenced?.type === "oauth" && isPendingOAuthRefreshFence(fenced)).toBe(true);
+      closeAuthProfileReadPool({ kind: "database", databasePath: peerPath });
+      await closeOpenClawAgentDatabaseByPathAsync(peerPath);
+      await fs.rename(backupPath, peerPath);
+      expect(readDatabasePathIdentitySync(peerPath).key).not.toBe(originalIdentity.key);
+      return replacement;
+    });
+
+    await expect(resolveFrom(mainAgentDir)).resolves.toEqual(
+      expect.objectContaining({ apiKey: replacement.access }),
+    );
+    expect(read(mainAgentDir)).toMatchObject(replacement);
+    expect(read(peerAgentDir)).toBeUndefined();
+    await expect(resolveFrom(peerAgentDir)).resolves.toEqual(
+      expect.objectContaining({ apiKey: replacement.access }),
+    );
+    expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledOnce();
+  });
+
   it.each([["failed", createFailedOAuthRefreshFence]])(
     "does not replace a different %s fence for the same refresh generation",
     async (_, build) => {
