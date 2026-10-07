@@ -112,11 +112,12 @@ describe("realtime voice agent talkback queue", () => {
     expect(queue.isIdle()).toBe(true);
   });
 
-  it("drops questions beyond the in-flight cap with a warning", async () => {
+  it("speaks the fallback and warns for questions beyond the in-flight cap", async () => {
     vi.useFakeTimers();
     const logger = makeLogger();
+    const deliver = vi.fn();
     const consult = vi.fn(() => new Promise<{ text: string }>(() => {}));
-    const queue = createQueue({ logger, consult });
+    const queue = createQueue({ logger, consult, deliver });
 
     for (let index = 0; index < 9; index += 1) {
       queue.enqueue(`question-${index}`);
@@ -127,6 +128,7 @@ describe("realtime voice agent talkback queue", () => {
     expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
       "[test] consult dropped: inFlight=8 droppedChars=10",
     );
+    expect(deliver).toHaveBeenCalledExactlyOnceWith("fallback");
   });
 
   it("delivers fallback text when consult fails", async () => {

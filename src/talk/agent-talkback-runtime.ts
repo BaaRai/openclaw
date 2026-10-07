@@ -7,7 +7,7 @@
  */
 import type { RuntimeLogger } from "../plugins/runtime/types-core.js";
 
-/** Overflow policy: questions beyond this many in-flight consults are dropped with a warning. */
+/** Overflow policy: questions beyond this many in-flight consults are dropped with a warning and spoken fallback. */
 const MAX_IN_FLIGHT_CONSULTS = 8;
 
 export type RealtimeVoiceAgentTalkbackResult = {
@@ -101,6 +101,7 @@ export function createRealtimeVoiceAgentTalkbackQueue(
       params.logger.warn(
         `${params.logPrefix} consult dropped: inFlight=${inFlight.size} droppedChars=${pending.question.length}`,
       );
+      params.deliver(params.fallbackText);
       return;
     }
     const controller = new AbortController();
