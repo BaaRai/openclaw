@@ -9641,7 +9641,6 @@
 ["src/plugins/web-provider-resolution-candidates.test.ts","./plugin-registry.js","f282b00673ebd20f0bdf9111b30f987f75332e2782f87f785c13dc3f5d64ee7f",1]
 ["src/plugins/web-provider-runtime-shared.test.ts","./loader.js","8e584d264b7170e3f86647416d9f3349f97bba430b8185a3024b71be9cf2858c",1]
 ["src/plugins/web-provider-runtime-shared.test.ts","./runtime.js","509c6a1ba2ffeeff8d9480213e2fdd289fcd4fb87b15bf7ccf55c3da7f971be6",1]
-["src/plugins/web-provider-runtime-shared.test.ts","./runtime/load-context.js","9357987610fe409bfbe3cd61112f3f299a0ee7494629c2cc9ea7120a32aff150",1]
 ["src/plugins/wired-hooks-after-tool-call.e2e.test.ts","../infra/agent-events.js","5d64ca88850e72e5466c2c98ea13ba15d581dc72da0bcaa24c952fd3258806f5",1]
 ["src/plugins/wired-hooks-after-tool-call.e2e.test.ts","../plugins/hook-runner-global.js","6d9823e1f3c0ba539024acbfa6778307c43992be6b2b53cdf5aa0f585d74d084",1]
 ["src/plugins/wired-hooks-compaction.test.ts","../infra/agent-events.js","40f503b73546879041867c9975af80e082af495b2b8e15f003b76bd7585ba938",1]
