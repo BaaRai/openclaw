@@ -312,6 +312,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/agent-runner-compaction-fallback.test.ts",
   "src/auto-reply/reply/abort.acp-boundary.test.ts",
   "src/auto-reply/reply/commands-acp.controller.test.ts",
+  "src/gateway/session-reset-acp.controller.test.ts",
   "src/auto-reply/reply/abort.test.ts",
   "src/auto-reply/reply/dispatch-from-config.pending-restart.test.ts",
   "src/auto-reply/reply/session.acp-reset-routing.test.ts",
