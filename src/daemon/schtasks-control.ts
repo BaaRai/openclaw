@@ -241,6 +241,46 @@ export function setScheduledTaskXmlEnabled(xml: string, enabled: boolean): strin
   );
 }
 
+/** Only Settings.Enabled belongs to the native owner's stop/start policy transition. */
+function scheduledTaskDefinitionPolicy(xml: string): string {
+  if (parseScheduledTaskXmlEnabled(xml) === null) {
+    throw new Error("Scheduled Task enabled state could not be inspected.");
+  }
+  return xml.replace(
+    /(<Settings(?:\s[^>]*)?>)([\s\S]*?)(<\/Settings>)/iu,
+    (_match, open: string, body: string, close: string) => {
+      // Native exports omit default true and place false at their own schema position.
+      // Retain the preceding newline; an inline field must not consume the next line.
+      const line = /(\r*\n)[ \t]*<Enabled>\s*(true|false)\s*<\/Enabled>[ \t]*\r*\n/iu;
+      const remaining = line.test(body)
+        ? body.replace(line, "$1")
+        : body.replace(/<Enabled>\s*(true|false)\s*<\/Enabled>/iu, "");
+      return `${open}${remaining}${close}`;
+    },
+  );
+}
+
+export function matchesScheduledTaskDefinition(
+  current: string | null,
+  expected: string | null,
+  ignoreEnabled = false,
+): boolean {
+  if (current === expected) {
+    return true;
+  }
+  if (current === null || expected === null) {
+    return false;
+  }
+  const enabled = parseScheduledTaskXmlEnabled(current);
+  const expectedEnabled = parseScheduledTaskXmlEnabled(expected);
+  return (
+    enabled !== null &&
+    expectedEnabled !== null &&
+    (ignoreEnabled || enabled === expectedEnabled) &&
+    scheduledTaskDefinitionPolicy(current) === scheduledTaskDefinitionPolicy(expected)
+  );
+}
+
 export async function readScheduledTaskDefinition(env: GatewayServiceEnv): Promise<string> {
   const result = await execSchtasks(["/Query", "/TN", resolveTaskName(env), "/XML"]);
   const xml = result.stdout.replace(/^\uFEFF/u, "").replaceAll(String.fromCharCode(0), "");

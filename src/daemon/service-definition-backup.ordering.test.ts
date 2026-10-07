@@ -9,7 +9,11 @@ import { installLaunchAgent } from "./launchd-install.js";
 import * as scheduledControl from "./schtasks-control.js";
 import * as scheduledRuntime from "./schtasks-runtime.js";
 import * as scheduledProbe from "./schtasks-state-probe.js";
-import { restoreGatewayServiceDefinitionBackup } from "./service-definition-backup.js";
+import {
+  captureGatewayServiceDefinitionBackup,
+  restoreGatewayServiceDefinitionBackup,
+  verifyGatewayServiceDefinitionBackup,
+} from "./service-definition-backup.js";
 import { fixture, native, readRetainedReceipt } from "./service-definition-backup.test-support.js";
 import { withGatewayServiceOperationLock } from "./service-operation-lock.js";
 import {
@@ -47,6 +51,28 @@ function taskReference(xml: string): string {
   }
   return command;
 }
+
+it("keeps Enabled equivalence bound to live XML without changing persisted receipt digests", async () => {
+  const f = await fixture("win32");
+  const original = f.originalTask.replace("\n    <Enabled>true</Enabled>", "");
+  f.setTask(original);
+  const capture = await captureGatewayServiceDefinitionBackup(f);
+  const recorded = await readRetainedReceipt(capture.backupPaths);
+  const disabled = original.replace(
+    "</StopIfGoingOnBatteries>",
+    "</StopIfGoingOnBatteries>\n    <Enabled>false</Enabled>",
+  );
+  f.setTask(disabled);
+  await capture.hooks.beforeWrite();
+  expect(await capture.finish()).toEqual(recorded);
+  await expect(verifyGatewayServiceDefinitionBackup({ ...f, receipt: recorded })).rejects.toThrow(
+    "Scheduled Task changed",
+  );
+  const foreign = disabled.replace("<Count>0</Count>", "<Count>7</Count>");
+  f.setTask(foreign);
+  await expect(capture.hooks.beforeWrite()).rejects.toThrow("Scheduled Task changed");
+  expect(f.task()).toBe(foreign);
+});
 
 it.each(
   [
@@ -487,14 +513,29 @@ it("preserves typed pre-publication authority failure during central inspection"
   expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
 });
 
-it.each([
-  { running: false, phase: "publication" },
-  { running: true, phase: "publication" },
-  { running: true, phase: "activation" },
-])(
-  "preserves original Windows runtime liveness after $phase failure (running=$running)",
-  async ({ running, phase }) => {
+it.each(
+  ["\n", "\r\n", "\r\r\n"].flatMap((newline) => [
+    { running: false, phase: "publication", newline, ending: JSON.stringify(newline) },
+    { running: true, phase: "publication", newline, ending: JSON.stringify(newline) },
+    { running: true, phase: "activation", newline, ending: JSON.stringify(newline) },
+  ]),
+)(
+  "preserves original Windows runtime liveness after $phase failure (running=$running, newline=$ending)",
+  async ({ running, phase, newline }) => {
     const f = await fixture("win32");
+    // Native Scheduler omits default true and inserts false at this schema position.
+    // Keep this independent from the product's Settings.Enabled normalization.
+    const exported = (xml: string, enabled: boolean) =>
+      xml
+        .replace(/\r*\n/gu, newline)
+        .replace(/(<Settings>)([\s\S]*?)(<\/Settings>)/u, (_match, open, body: string, close) => {
+          const withoutEnabled = body.startsWith("<Enabled>")
+            ? body.replace(/^<Enabled>(true|false)<\/Enabled>/u, "")
+            : body.replace(/^[ \t]*<Enabled>(true|false)<\/Enabled>\r*\n/gmu, "");
+          return `${open}${enabled ? withoutEnabled : withoutEnabled.replace("</StopIfGoingOnBatteries>", `</StopIfGoingOnBatteries>${newline}    <Enabled>false</Enabled>`)}${close}`;
+        });
+    const originalTask = exported(f.originalTask.replaceAll("\n", newline), true);
+    f.setTask(originalTask);
     native.taskState = running ? 4 : 3;
     let enabled = true;
     vi.spyOn(scheduledProbe, "probeScheduledTaskState").mockImplementation(() => ({
@@ -521,9 +562,13 @@ it.each([
     native.task.mockImplementation(async (args: string[]) => {
       if (args.includes("/DISABLE") || args.includes("/ENABLE")) {
         enabled = args.includes("/ENABLE");
-        f.setTask(scheduledControl.setScheduledTaskXmlEnabled(f.task(), enabled));
+        f.setTask(exported(f.task(), enabled));
       }
-      return execute(args);
+      const result = await execute(args);
+      if (args[0] === "/Create") {
+        f.setTask(exported(f.task(), enabled));
+      }
+      return result;
     });
     const rename = fs.rename.bind(fs);
     let rejected = false;
@@ -557,7 +602,7 @@ it.each([
     ).rejects.toThrow(`Injected native ${phase}`);
     expect(rejected).toBe(true);
     expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
-    expect(f.task()).toBe(f.originalTask);
+    expect(f.task()).toBe(originalTask);
     expect(native.taskState).toBe(running ? 4 : 3);
     expect(stop).toHaveBeenCalledTimes(running ? 1 : 0);
     expect(native.task.mock.calls.filter(([args]) => args[0] === "/Run")).toHaveLength(

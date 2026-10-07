@@ -3,6 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { sha256Hex } from "../infra/crypto-digest.js";
 import {
+  matchesScheduledTaskDefinition,
   readScheduledTaskDefinition,
   restoreScheduledTaskDefinition,
   resumeScheduledTaskAutoStartAfterUpdate,
@@ -93,15 +94,9 @@ export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scri
   let changed = false;
   let unsettled = false;
   let stoppedProcess = false;
-  // Disabling is our only allowed registration change during settlement.
-  const withoutEnabled = (xml: string | null) =>
-    xml === null ? null : setScheduledTaskXmlEnabled(xml, false);
   const assertReceipt = async (disabled = false) => {
     const current = unsettled ? null : await readXml();
-    if (
-      unsettled ||
-      (disabled ? withoutEnabled(current) !== withoutEnabled(receipt) : current !== receipt)
-    ) {
+    if (unsettled || !matchesScheduledTaskDefinition(current, receipt, disabled)) {
       throw new Error(`Scheduled Task ${taskName} registration ownership could not be verified.`);
     }
   };
@@ -172,7 +167,7 @@ export async function backupScheduledTaskDefinition(env: GatewayServiceEnv, scri
         if (files.restoresRegistration) {
           // Central compensation already restored the admitted files and task XML.
           const restored = await readXml();
-          if (withoutEnabled(restored) !== withoutEnabled(original)) {
+          if (!matchesScheduledTaskDefinition(restored, original, true)) {
             throw new Error(`Scheduled Task ${taskName} original registration was not restored.`);
           }
           receipt = restored;

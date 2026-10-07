@@ -211,7 +211,9 @@ def exercise(app, Atspi, GLib, *, remote_only, local_start_failure, inline_fixtu
         setup = ["browser", "extension", "setup", "--action", "install", "--json", "--wait-ms", "1000"]
         if calls().count(setup) != 1:
             raise RuntimeError(f"Expected one automatic local Chrome setup, observed {calls()!r}")
-        allowed = [["--version"], setup, ["gateway", "status", "--json"],
+        allowed = [["--version"], setup, ["config", "file", "--json"],
+                   ["config", "get", "desktop.host.enabled", "--json"],
+                   ["gateway", "status", "--json"],
                    ["gateway", "status", "--deep", "--json", "--no-probe"]]
         if any(args not in allowed and args[:2] != ["gateway", "install"] for args in calls()):
             raise RuntimeError(f"Unexpected CLI action: {calls()!r}")
@@ -508,6 +510,11 @@ def main():
                 "    print('OpenClaw fixture')\n"
                 "elif command == 'browser extension setup --action install --json --wait-ms 1000':\n"
                 "    print(json.dumps({'action': 'install', 'target': {'kind': 'local-host', 'platform': 'linux', 'hostname': 'fixture', 'profile': 'chrome', 'relayPort': 18799}, 'phase': 'needs_browser_action', 'reason': 'extension_missing', 'installation': {'nativeHostRegistered': True, 'installRequested': False, 'installedProfiles': 0, 'discoveredProfiles': 0, 'awaitingApproval': False, 'automaticBootstrapSupported': True}, 'connection': {'state': 'not_checked'}, 'nextAction': 'install_from_store'}))\n"
+                "elif command == 'config file --json':\n"
+                "    print(json.dumps({'path': str(Path.home() / '.openclaw/openclaw.json')}))\n"
+                "elif command == 'config get desktop.host.enabled --json':\n"
+                "    print(json.dumps({'ok': False, 'error': {'message': 'Config path is valid but unset: desktop.host.enabled.'}}))\n"
+                "    sys.exit(1)\n"
                 "elif command == 'gateway status --json':\n"
                 "    print(json.dumps({'service': {'loaded': False}, 'rpc': {'ok': False}}))\n"
                 "elif command == 'gateway status --deep --json --no-probe':\n"
