@@ -615,8 +615,16 @@ Startup resends run one at a time: the next interrupted session is resent only
 after the previous recovered turn settles, which keeps a cold start with many
 interrupted sessions responsive. An owed resend runs before a message that
 arrives on the same session during startup; later messages queue behind it in
-arrival order. While a recovered turn runs, new messages follow the session's
-normal [queue mode](/concepts/queue#queue-modes).
+arrival order.
+
+While a recovered turn runs, an interrupt ends it like any active turn. A message
+sent in steer mode is not steered into the recovered turn: it waits and runs as its
+own turn afterward. Other messages follow the session's normal
+[queue mode](/concepts/queue#queue-modes).
+
+Stopping or interrupting a resend before it starts ends that recovery. The resend
+is recorded as a stopped run, is not sent again (including after a later restart),
+and does not use one of the automatic attempts described below.
 
 The restart does not cancel the user's task. The agent checks the current state,
 reconciles tool results whose outcomes are unknown, and continues without asking
@@ -679,7 +687,9 @@ model selection instead direct you to **Resume in new session** in WebChat.
 Every retry reuses one durable dispatch identifier, so an ambiguous connection
 failure cannot start the same recovery twice. Completed Control UI turns also
 retain bounded durable idempotency tombstones, allowing a reconnecting outbox
-to retire them without re-executing the request.
+to retire them without re-executing the request. When the outbox resubmits an
+interrupted turn whose resend is already queued, the Gateway acknowledges it
+without starting a second run.
 
 Message-tool-only replies use a second durable correlation. Before a terminal
 same-conversation send reaches the channel, the gateway records an unresolved
