@@ -458,13 +458,18 @@ export async function admitReplyTurn(
                   admittedSessionEntry.restartRecoveryRuns !== undefined))) ||
               admittedSessionEntry.mainRestartRecovery?.tombstone !== undefined) &&
             isMainRestartRecoveryCandidate(admittedSessionEntry, params.sessionKey);
+          if (shouldClaimRecoveryOwner && params.kind === "heartbeat") {
+            // The interrupted turn's resend is owed work before its mailbox input
+            // exists (startup delay and scan); a heartbeat claim would take it over.
+            admission?.release();
+            return { status: "skipped", reason: "active-run" };
+          }
           const gatewayContext = resolveGatewayContext?.();
           const recoveryRuntime = gatewayContext?.recoveryRuntime;
           if (
             shouldClaimRecoveryOwner &&
             admittedSessionEntry?.abortedLastRun === true &&
             !admittedSessionEntry.mainRestartRecovery?.tombstone &&
-            params.kind !== "heartbeat" &&
             gatewayContext &&
             recoveryRuntime
           ) {

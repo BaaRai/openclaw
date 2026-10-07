@@ -678,22 +678,7 @@ function createSessionEventWakeRuntime() {
     if (attempt) {
       attempt.signal.throwIfAborted();
       attempt.wake.workStarted = true;
-      attempt.terminalPollDisposition = false;
     }
-  }
-
-  function deferSessionEventWakePoll(): boolean {
-    const attempt = attempts.getStore();
-    if (
-      !attempt ||
-      attempt.signal.aborted ||
-      !attempt.wake.pureNativePoll ||
-      attempt.wake.workStarted
-    ) {
-      return false;
-    }
-    attempt.terminalPollDisposition = true;
-    return true;
   }
 
   // A turn refused by mailbox admission had no effects, even after this attempt's preparation.
@@ -715,7 +700,6 @@ function createSessionEventWakeRuntime() {
     requestSessionEventWakeAndWait,
     getSessionEventWakeAbortSignal: () => attempts.getStore()?.signal,
     markSessionEventWakeWorkStarted,
-    deferSessionEventWakePoll,
     retireRefusedSessionEventWakePoll,
     isSessionEventWakePollDeferred: () => isTerminalPollAttempt(attempts.getStore()),
     areSessionEventWakesEnabled: () => enabled,
@@ -732,7 +716,6 @@ export const {
   requestSessionEventWakeAndWait,
   getSessionEventWakeAbortSignal,
   markSessionEventWakeWorkStarted,
-  deferSessionEventWakePoll,
   retireRefusedSessionEventWakePoll,
   isSessionEventWakePollDeferred,
   areSessionEventWakesEnabled,

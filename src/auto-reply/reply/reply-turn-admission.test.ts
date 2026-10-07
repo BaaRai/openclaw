@@ -287,51 +287,31 @@ describe("reply turn admission", () => {
     });
   });
 
-  it("fences restart recovery from heartbeat admission until the operation clears", async () => {
-    const kind = "heartbeat";
-    const sessionKey = `agent:main:telegram:topic:recovery-race:${kind}`;
+  it("drops a heartbeat without claiming an owed restart-recovery resend", async () => {
+    const sessionKey = "agent:main:telegram:topic:recovery-race:heartbeat";
     const sessionId = "interrupted-session";
-    const storePath = createSessionStore({
-      [sessionKey]: {
+    const entry = {
+      sessionId,
+      updatedAt: 100,
+      status: "running" as const,
+      abortedLastRun: true,
+      mainRestartRecovery: { cycleId: "cycle-1", revision: 1, chargedAttempts: 0 },
+    };
+    const storePath = createSessionStore({ [sessionKey]: entry });
+
+    await expect(
+      admitTestReplyTurn({
+        sessionKey,
         sessionId,
-        updatedAt: 100,
-        status: "running",
-        abortedLastRun: true,
-        mainRestartRecovery: {
-          cycleId: "cycle-1",
-          revision: 1,
-          chargedAttempts: 2,
-        },
-      },
-    });
-    const admission = await admitTestReplyTurn({
-      sessionKey,
-      sessionId,
-      expectedSessionId: sessionId,
-      storePath,
-      kind,
-    });
-    expect(admission.status).toBe("owned");
-    if (admission.status !== "owned") {
-      return;
-    }
-
-    const claimedEntry = await readSessionEntry(storePath, sessionKey);
-    admission.operation.complete();
-    await vi.waitFor(async () => {
-      const entry = await readSessionEntry(storePath, sessionKey);
-      expect(entry?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
-    });
-
-    expect(claimedEntry?.mainRestartRecovery).toMatchObject({
-      foregroundClaims: {
-        tokens: [expect.any(String)],
-      },
-    });
-    await expect(readSessionEntry(storePath, sessionKey)).resolves.toMatchObject({
-      sessionId,
-      status: "running",
-    });
+        expectedSessionId: sessionId,
+        storePath,
+        kind: "heartbeat",
+      }),
+    ).resolves.toEqual({ status: "skipped", reason: "active-run" });
+    await expect(readSessionEntry(storePath, sessionKey)).resolves.toMatchObject(entry);
+    expect(
+      (await readSessionEntry(storePath, sessionKey))?.mainRestartRecovery?.foregroundClaims,
+    ).toBeUndefined();
   });
 
   it.each(["visible", "queued_followup"] as const)(

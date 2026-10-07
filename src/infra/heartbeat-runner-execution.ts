@@ -1,7 +1,4 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { clearBootstrapSnapshotOnSessionRollover } from "../agents/bootstrap-cache.js";
-import { transitionMainSessionRecovery } from "../agents/main-session-recovery/main-session-recovery-state.js";
-import { isHeartbeatAcknowledgementText } from "../auto-reply/heartbeat.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.public.js";
 import { createReplyPrefixContext } from "../channels/reply-prefix.js";
 import { getRuntimeConfig } from "../config/config.js";
@@ -18,7 +15,6 @@ import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.j
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveActiveSessionRunId } from "../sessions/session-controller.queries.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
-import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
@@ -27,15 +23,8 @@ import { isExecCompletionEvent, isRestartContinuationEvent } from "./heartbeat-e
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.js";
-import {
-  resolveHeartbeatPreflight,
-  resolveHeartbeatRunPrompt,
-  shouldPreflightWakeBeforeBusy,
-} from "./heartbeat-runner-prompt.js";
-import {
-  resolveHeartbeatSession,
-  resolveStaleHeartbeatIsolatedSessionKey,
-} from "./heartbeat-runner-session.js";
+import { resolveHeartbeatPreflight, resolveHeartbeatRunPrompt } from "./heartbeat-runner-prompt.js";
+import { resolveStaleHeartbeatIsolatedSessionKey } from "./heartbeat-runner-session.js";
 import { isHeartbeatEnabledForAgent, resolveHeartbeatIntervalMs } from "./heartbeat-summary.js";
 import { resolveHeartbeatVisibility } from "./heartbeat-visibility.js";
 import {
@@ -55,7 +44,6 @@ import {
   resolveHeartbeatDeliveryTargetWithSessionRoute,
   resolveHeartbeatSenderContext,
 } from "./outbound/targets.js";
-import { deferSessionEventWakePoll } from "./session-event-wake.js";
 
 export type HeartbeatDeps = OutboundSendDeps &
   ChannelHeartbeatDeps & {
@@ -133,95 +121,15 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     return skippedHeartbeatStage("quiet-hours", startedAt);
   }
 
-  const shouldPreflightBeforeBusy = shouldPreflightWakeBeforeBusy(
-    wakeSource,
-    opts.scheduledEveryMs,
-    scheduledTasks.length,
-  );
-  const resolvePreflight = () =>
-    resolveHeartbeatPreflight({
-      ...opts,
-      cfg,
-      agentId,
-      heartbeat,
-      source: wakeSource,
-      scheduledTasks,
-    });
-  let preflight = shouldPreflightBeforeBusy ? await resolvePreflight() : undefined;
-  if (preflight?.skipReason) {
-    return skippedHeartbeatStage(preflight.skipReason, startedAt);
-  }
-
-  const skippedBusyStage = (reason: string) => {
-    // Only pre-execution guards can retire an event-free monitor occurrence.
-    // Missing preflight, coalesced work, and previously admitted turns retain their retry.
-    if (preflight?.pendingEventEntries.length === 0 && scheduledTasks.length === 0) {
-      deferSessionEventWakePoll();
-    }
-    return skippedHeartbeatStage(reason, startedAt);
-  };
-
-  // Phase 2: Stronger heartbeat deferral while a final delivery replay is pending.
-  // Plain `updatedAt` changes are normal for heartbeat sessions and should not
-  // suppress heartbeat runs; only defer when final delivery recovery is active.
-  const { sessionKey: recentSessionKey, entry: recentSessionEntry } = resolveHeartbeatSession(
+  // Preflight centralizes trigger classification, event inspection, and monitor-scratch gating.
+  const preflight = await resolveHeartbeatPreflight({
+    ...opts,
     cfg,
     agentId,
     heartbeat,
-    opts.sessionKey,
-  );
-  // Recovery can already have admitted its owner and cleared the abort flag;
-  // automatic and sentinel wakes must honor that canonical lifecycle fence.
-  const lifecycleGeneration = getAgentEventLifecycleGeneration();
-  const mainSessionRecovery =
-    opts.intent !== "manual" && recentSessionEntry
-      ? transitionMainSessionRecovery(recentSessionEntry, {
-          kind: "inspect",
-          lifecycleGeneration,
-          sessionKey: recentSessionKey,
-        })
-      : undefined;
-  const activeRestartRecoveryRunId = normalizeOptionalString(
-    recentSessionEntry?.restartRecoveryDeliveryRunId,
-  );
-  // Delivery ownership can outlive the recovery aggregate. Only the matching
-  // run from this gateway generation may defer an automatic heartbeat.
-  const hasCurrentRestartRecoveryDelivery =
-    opts.intent !== "manual" &&
-    activeRestartRecoveryRunId !== undefined &&
-    recentSessionEntry?.restartRecoveryRuns?.some(
-      (run) =>
-        run.runId === activeRestartRecoveryRunId && run.lifecycleGeneration === lifecycleGeneration,
-    ) === true;
-  if (
-    (mainSessionRecovery?.kind === "observed" &&
-      (mainSessionRecovery.view.status === "blocked" ||
-        mainSessionRecovery.view.status === "recoverable")) ||
-    hasCurrentRestartRecoveryDelivery
-  ) {
-    return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
-  }
-  const HEARTBEAT_DEFER_WINDOW_MS = 30_000;
-  const pendingFinalDeliveryText =
-    recentSessionEntry?.pendingFinalDelivery?.kind === "replayable"
-      ? recentSessionEntry.pendingFinalDelivery.text
-      : undefined;
-  const pendingFinalDeliveryIsHeartbeatAck =
-    typeof pendingFinalDeliveryText === "string" &&
-    isHeartbeatAcknowledgementText(pendingFinalDeliveryText);
-  if (
-    recentSessionEntry?.pendingFinalDelivery !== undefined &&
-    !pendingFinalDeliveryIsHeartbeatAck &&
-    recentSessionEntry?.updatedAt &&
-    startedAt - recentSessionEntry.updatedAt < HEARTBEAT_DEFER_WINDOW_MS
-  ) {
-    return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
-  }
-
-  // Preflight centralizes trigger classification, event inspection, and monitor-scratch gating.
-  if (!preflight) {
-    preflight = await resolvePreflight();
-  }
+    source: wakeSource,
+    scheduledTasks,
+  });
   if (preflight.skipReason) {
     return skippedHeartbeatStage(preflight.skipReason, startedAt);
   }

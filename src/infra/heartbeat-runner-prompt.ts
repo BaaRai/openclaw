@@ -58,27 +58,6 @@ type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
   heartbeatScratchContent?: string;
 };
 
-/**
- * Terminal no-op preflight (empty scratch, consumed exec events) must resolve
- * before retryable busy guards; wakes carrying heartbeat tasks keep deferral.
- */
-export function shouldPreflightWakeBeforeBusy(
-  source: HeartbeatWakeSource | undefined,
-  scheduledEveryMs: number | undefined,
-  scheduledTaskCount: number,
-): boolean {
-  return (
-    scheduledTaskCount === 0 &&
-    (source === "interval" ||
-      (source === "exec-event" &&
-        !(
-          typeof scheduledEveryMs === "number" &&
-          Number.isSafeInteger(scheduledEveryMs) &&
-          scheduledEveryMs > 0
-        )))
-  );
-}
-
 export async function resolveHeartbeatPreflight(params: {
   cfg: OpenClawConfig;
   agentId: string;
