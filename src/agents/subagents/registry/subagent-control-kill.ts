@@ -35,10 +35,18 @@ import {
   listSubagentRunsForController,
   listSubagentRunsForRequester,
 } from "./subagent-registry-read.js";
+import { withSubagentKillOwner } from "./subagent-registry.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { owesRequesterCompletion } from "./subagent-requester-settle-identity.js";
 
-async function killSubagentRun(
+function killSubagentRun(
+  params: Parameters<typeof mutateSubagentRunForKill>[0],
+): ReturnType<typeof mutateSubagentRunForKill> {
+  return withSubagentKillOwner(params.entry.runId, () => settleSubagentKill(params));
+}
+
+// Claims, stops, and settles one run's kill, then joins its execution's settlement.
+async function settleSubagentKill(
   params: Parameters<typeof mutateSubagentRunForKill>[0],
 ): ReturnType<typeof mutateSubagentRunForKill> {
   let captured = captureSubagentExecution(params);

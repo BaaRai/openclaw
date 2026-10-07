@@ -292,10 +292,39 @@ function retireKilledSubagentObligations(entry: SubagentRunRecord): Promise<void
   });
 }
 
+// Runs whose kill owner is still settling its claim; that owner confirms the kill when done.
+const settlingKillOwners = new Map<string, number>();
+
+/**
+ * Runs one kill owner's claim settlement. A provisional kill its run's settlement produces
+ * meanwhile is confirmed only after the owner finishes publishing under that claim.
+ */
+export async function withSubagentKillOwner<T>(
+  runId: string,
+  settle: () => Promise<T>,
+): Promise<T> {
+  settlingKillOwners.set(runId, (settlingKillOwners.get(runId) ?? 0) + 1);
+  try {
+    return await settle();
+  } finally {
+    const remaining = (settlingKillOwners.get(runId) ?? 1) - 1;
+    if (remaining > 0) {
+      settlingKillOwners.set(runId, remaining);
+    } else {
+      settlingKillOwners.delete(runId);
+      const current = subagentRuns.get(runId);
+      if (current?.killReconciliation) {
+        confirmProvisionalSubagentKill(current);
+      }
+    }
+  }
+}
+
 /**
  * Confirms a provisional kill once the killed run's controller operation settles, when its
  * canonical outcome is final, and once a live requester turn that claims the row has
- * transferred its children. Without such operations the kill confirms immediately.
+ * transferred its children. Without such operations the kill confirms immediately; a kill
+ * owner still settling its claim confirms it itself when done.
  */
 function confirmProvisionalSubagentKill(entry: SubagentRunRecord): void {
   const settlements = [entry.runId, entry.requesterTurnRunId].flatMap((runId) => {
@@ -313,7 +342,11 @@ async function confirmAfterSettlements(
   await Promise.allSettled(settlements);
   await runWithGatewayDetachedWorkAdmission(async () => {
     const current = subagentRuns.get(entry.runId);
-    if (!current?.killReconciliation || !isSameSubagentRunOwner(current, entry)) {
+    if (
+      !current?.killReconciliation ||
+      !isSameSubagentRunOwner(current, entry) ||
+      settlingKillOwners.has(current.runId)
+    ) {
       return;
     }
     await reconcileProvisionalSubagentKill({
