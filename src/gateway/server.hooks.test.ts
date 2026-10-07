@@ -8,17 +8,14 @@ import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
 import { resolveDefaultSessionStorePath } from "../config/sessions/paths.js";
 import type { HooksConfig } from "../config/types.hooks.js";
-import { saveCronJobsStore } from "../cron/store.js";
 import {
   drainSystemEvents,
   enqueueSystemEvent,
   peekSystemEventEntries,
   peekSystemEvents,
-  prepareAutomationSystemEvents,
 } from "../infra/system-events.js";
 import { CommandLane } from "../process/lanes.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
-import { withEnvAsync } from "../test-utils/env.js";
 import {
   agentMapping,
   HOOK_TOKEN,
@@ -27,6 +24,11 @@ import {
   requireNonEmptyString,
   writeHookTransformModule,
 } from "./hooks-test-helpers.js";
+import {
+  consumeScheduledHookNotices,
+  HOOKS_MAIN_SESSION_KEY,
+  withScheduledHookReceivers,
+} from "./server.hooks-scheduled.test-support.js";
 import {
   connectWebchatClient,
   cronIsolatedRun,
@@ -44,7 +46,6 @@ installGatewayTestHooks({ scope: "suite" });
 await import("./server.js");
 
 const resolveMainKey = () => resolveMainSessionKeyFromConfig();
-const HOOKS_MAIN_SESSION_KEY = "agent:hooks:main";
 const enqueueSessionEvent = vi.fn<typeof sessionEvents.enqueueSessionEventForHost>();
 let handoffObserved = createDeferred();
 
@@ -89,62 +90,6 @@ function setHookAgentRoster(explicitSole = false): void {
     : { ownership: "explicit", entries: { main: {}, hooks: {} } };
   if (!explicitSole) {
     testState.agentConfig = { ...testState.agentConfig, systemAgent: { agentId: "main" } };
-  }
-}
-
-async function withScheduledHookReceivers(
-  run: Parameters<typeof withGatewayServer>[0],
-): Promise<void> {
-  const storePath = path.join(
-    requireNonEmptyString(process.env.OPENCLAW_STATE_DIR, "OPENCLAW_STATE_DIR"),
-    "cron",
-    "hook-receivers.json",
-  );
-  const now = Date.now();
-  const nextRunAtMs = now + 86_400_000;
-  const previousStore = testState.cronStorePath;
-  const previousEnabled = testState.cronEnabled;
-  testState.cronStorePath = storePath;
-  testState.cronEnabled = true;
-  try {
-    await saveCronJobsStore(storePath, {
-      version: 1,
-      jobs: ["main", "hooks"].map((agentId) => ({
-        id: `hook-receiver-${agentId}`,
-        agentId,
-        name: `Scheduled ${agentId} notices`,
-        enabled: true,
-        createdAtMs: now,
-        updatedAtMs: now,
-        schedule: { kind: "at", at: new Date(nextRunAtMs).toISOString() },
-        sessionTarget: "main",
-        wakeMode: "now",
-        payload: { kind: "agentTurn", message: "Review pending notices." },
-        delivery: { mode: "none" },
-        state: { nextRunAtMs },
-      })),
-    });
-    await withEnvAsync({ OPENCLAW_SKIP_CRON: "0" }, () => withGatewayServer(run));
-  } finally {
-    testState.cronStorePath = previousStore;
-    testState.cronEnabled = previousEnabled;
-    drainSystemEvents(HOOKS_MAIN_SESSION_KEY);
-  }
-}
-
-async function consumeScheduledHookNotices(sessionKey: string, agentId: string, texts: string[]) {
-  const unrelated = await prepareAutomationSystemEvents(sessionKey, "another-automation");
-  try {
-    expect(unrelated.events).toEqual([]);
-  } finally {
-    unrelated.release();
-  }
-  const scheduled = await prepareAutomationSystemEvents(sessionKey, `hook-receiver-${agentId}`);
-  try {
-    expect(scheduled.events.map((event) => event.text)).toEqual(texts);
-    scheduled.start();
-  } finally {
-    scheduled.release();
   }
 }
 
