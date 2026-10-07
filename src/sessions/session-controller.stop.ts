@@ -158,6 +158,7 @@ export type SessionStopSource =
   | "channel-user"
   | "client-session"
   | "client-run"
+  | "talk"
   | "mutation"
   | "interrupt"
   | "restart"
@@ -188,6 +189,7 @@ const SESSION_STOP_POLICY = {
   "channel-user": { ...commandStop, recordMessageCutoff: true },
   "client-session": commandStop,
   "client-run": commandStop,
+  talk: { ...commandStop, cancelQueued: false },
   mutation: ownerStop,
   interrupt: ownerStop,
   restart: { ...ownerStop, cancelQueued: true },

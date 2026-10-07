@@ -169,15 +169,16 @@ One stop operation receives an authorized, synchronously captured target. The
 entry point resolves authority and renders the result; the operation owns this
 policy table:
 
-| Source                                              | Active run                         | Waiting inputs of the session    | Controlled subagents                         | Abort cutoff                            | `command:stop` hook |
-| --------------------------------------------------- | ---------------------------------- | -------------------------------- | -------------------------------------------- | --------------------------------------- | ------------------- |
-| `channel-user` (fast path, `/stop`, bare stop word) | Abort                              | Cancel all                       | Stop                                         | Record when the message has an identity | Fire once           |
-| `client-session` (`chat.abort`/`sessions.abort`)    | Abort                              | Cancel all                       | Stop; preserve `cascadeDescendants` behavior | Skip                                    | Fire once           |
-| `client-run` (client abort with one run ID)         | Abort only when that run is active | Cancel only that input if queued | Stop that turn's subagents                   | Skip                                    | Fire once           |
-| `mutation`                                          | Per mutation                       | Per mutation                     | Per mutation                                 | Skip                                    | No                  |
-| `interrupt`                                         | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
-| `restart`, `operator-revocation`                    | Abort                              | Cancel captured inputs           | Keep                                         | Skip                                    | No                  |
-| `watchdog`, `supersede`                             | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
+| Source                                                         | Active run                         | Waiting inputs of the session    | Controlled subagents                         | Abort cutoff                            | `command:stop` hook |
+| -------------------------------------------------------------- | ---------------------------------- | -------------------------------- | -------------------------------------------- | --------------------------------------- | ------------------- |
+| `channel-user` (fast path, `/stop`, bare stop word)            | Abort                              | Cancel all                       | Stop                                         | Record when the message has an identity | Fire once           |
+| `client-session` (`chat.abort`/`sessions.abort`/`/acp cancel`) | Abort                              | Cancel all                       | Stop; preserve `cascadeDescendants` behavior | Skip                                    | Fire once           |
+| `client-run` (client abort with one run ID)                    | Abort only when that run is active | Cancel only that input if queued | Stop that turn's subagents                   | Skip                                    | Fire once           |
+| `talk` (key-only Talk voice cancel)                            | Abort                              | Keep                             | Stop that turn's subagents                   | Skip                                    | Fire once           |
+| `mutation`                                                     | Per mutation                       | Per mutation                     | Per mutation                                 | Skip                                    | No                  |
+| `interrupt`                                                    | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
+| `restart`, `operator-revocation`                               | Abort                              | Cancel captured inputs           | Keep                                         | Skip                                    | No                  |
+| `watchdog`, `supersede`                                        | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
 
 A Stop that targets a subagent session with no running turn, but with a paused
 (`sessions_yield`) or queued registry row, kills that exact row. The kill retires
