@@ -79,6 +79,45 @@ describe("ACP terminal state signals", () => {
     });
   });
 
+  it("leaves a same-id predecessor's terminal outcome to it when a queued duplicate is cancelled", async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
+      const childSessionKey = "agent:main:acp:same-id-duplicate";
+      const { runtimeState, manager, input } = setupParentedTurn(childSessionKey);
+      const entered = createDeferred();
+      const release = createDeferred();
+      runtimeState.runTurn.mockImplementationOnce(async function* () {
+        entered.resolve();
+        await release.promise;
+        yield { type: "done" as const, stopReason: "end_turn" };
+      });
+      const predecessor = manager.runTurn({ ...input, requestId: "same-id" });
+      const abortDuplicate = new AbortController();
+      let duplicate: Promise<void> | undefined;
+      try {
+        await Promise.race([entered.promise, predecessor]);
+        duplicate = manager.runTurn({
+          ...input,
+          requestId: "same-id",
+          signal: abortDuplicate.signal,
+        });
+        abortDuplicate.abort();
+        await duplicate;
+        expect((await listSessionStateEventsSince(childSessionKey, "main", 0, 200)).events).toEqual(
+          [],
+        );
+        release.resolve();
+        await predecessor;
+      } finally {
+        release.resolve();
+        await Promise.allSettled([predecessor, duplicate]);
+      }
+      expect(runtimeState.runTurn).toHaveBeenCalledOnce();
+      expect(
+        (await listSessionStateEventsSince(childSessionKey, "main", 0, 200)).events,
+      ).toMatchObject([{ kind: "run_completed", runId: "same-id" }]);
+    });
+  });
+
   it("keeps ACP completion joined without blocking the event loop on terminal signal contention", async () => {
     await withStateDirEnv("openclaw-acp-manager-", async () => {
       const childSessionKey = "agent:main:acp:contended-terminal";

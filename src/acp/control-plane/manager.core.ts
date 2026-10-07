@@ -69,6 +69,9 @@ export class AcpSessionManager {
   private readonly actorQueue = new SessionActorQueue();
   private readonly runtimeHandles = new ManagerRuntimeHandleCache();
   private readonly activeTurnBySession = new Map<string, ActiveTurnState>();
+  // Live runTurn instances per actor and request ID; the run ID's terminal signal belongs to
+  // whichever same-ID instance actually reaches a terminal state, never to a cancelled duplicate.
+  private readonly liveTurnRequests = new Map<string, number>();
   // Disposal aborts in-flight and later turns of this retired instance.
   private readonly lifecycle = new AbortController();
   private readonly turnLatencyStats: TurnLatencyStats = {
@@ -318,6 +321,22 @@ export class AcpSessionManager {
     const target = resolveAcpSessionTarget(input);
     const { storePath } = resolveSessionStorePathForAcp({ cfg: input.cfg, ...target });
     const startedAt = Date.now();
+    const requestKey = `${acpSessionActorKey(target)}\u0000${input.requestId}`;
+    this.liveTurnRequests.set(requestKey, (this.liveTurnRequests.get(requestKey) ?? 0) + 1);
+    let live = true;
+    // Leaves the live set synchronously; true when no other same-ID instance remains.
+    const leave = (): boolean => {
+      if (live) {
+        live = false;
+        const remaining = (this.liveTurnRequests.get(requestKey) ?? 1) - 1;
+        if (remaining > 0) {
+          this.liveTurnRequests.set(requestKey, remaining);
+        } else {
+          this.liveTurnRequests.delete(requestKey);
+        }
+      }
+      return !this.liveTurnRequests.has(requestKey);
+    };
     let started = false;
     let turnSignal: AbortSignal | undefined;
     try {
@@ -366,22 +385,27 @@ export class AcpSessionManager {
       if (started || !cancelled) {
         throw error;
       }
-      await this.publishCancelledBeforeStart(input, target);
+      await this.publishCancelledBeforeStart(input, target, leave());
       this.recordTurnCompletion({ startedAt });
+    } finally {
+      leave();
     }
   }
 
-  /** A turn cancelled before it ran still reports a terminal outcome to its ACP requester. */
+  /**
+   * A turn cancelled before it ran still reports a terminal outcome to its ACP requester.
+   * The run-ID signal is recorded only when no other same-ID instance is still live to own it.
+   */
   private async publishCancelledBeforeStart(
     input: AcpRunTurnInput,
     target: AcpSessionTarget,
+    ownsRunTerminal: boolean,
   ): Promise<void> {
-    if (input.mode === "prompt") {
+    if (input.mode === "prompt" && ownsRunTerminal) {
       const entry = (await this.deps.loadSessionEntryAsync({ cfg: input.cfg, ...target }))?.entry;
       const requesterSessionKey =
         normalizeText(entry?.spawnedBy) ?? normalizeText(entry?.parentSessionKey);
       if (requesterSessionKey) {
-        // The terminal record is deduplicated by run ID across repeated submissions.
         await recordSubagentTerminalState(
           {
             childSessionKey: target.sessionKey,
