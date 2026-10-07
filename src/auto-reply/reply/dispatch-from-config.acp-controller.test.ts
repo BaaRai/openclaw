@@ -39,8 +39,8 @@ const cfg = {
 /** Runtime turns block until the test releases them by prompt text. */
 function createGatedRuntime() {
   const started: string[] = [];
-  const entered = new Map<string, ReturnType<typeof createDeferred>>();
-  const released = new Map<string, ReturnType<typeof createDeferred>>();
+  const entered = new Map<string, ReturnType<typeof createDeferred<void>>>();
+  const released = new Map<string, ReturnType<typeof createDeferred<void>>>();
   const gate = (map: typeof entered, text: string) => {
     const deferred = map.get(text) ?? createDeferred();
     map.set(text, deferred);
