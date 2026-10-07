@@ -36,6 +36,7 @@ import {
 import {
   captureOpenClawAgentDatabaseAdmissionPublication,
   getOpenClawAgentDatabaseValidationForTransfer,
+  invalidateOpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
 import { cleanupRetiredAgentDatabaseLease } from "./openclaw-agent-execution-cleanup.js";
 import type {
@@ -367,6 +368,19 @@ export function createAgentDatabaseNativeGeneration(
     source.assertCurrent();
     assertCallerCurrent?.();
     opening ??= (async () => {
+      if (expectedIdentity) {
+        const retainedValidation = getOpenClawAgentDatabaseValidationForTransfer({
+          agentId,
+          path: pathname,
+        });
+        if (
+          retainedValidation &&
+          retainedValidation.identity !== expectedIdentity.physicalIdentity
+        ) {
+          // Retire the replaced file's proof before capturing this opening's revocation guard.
+          invalidateOpenClawAgentDatabaseValidation(pathname, retainedValidation.identity);
+        }
+      }
       const registration = createIfMissing
         ? captureOpenClawAgentDatabaseRegistration({
             agentId,
