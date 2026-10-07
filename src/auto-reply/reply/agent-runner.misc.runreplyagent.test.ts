@@ -62,7 +62,7 @@ import {
   createTestTemplateContext,
 } from "./agent-runner.test-fixtures.js";
 import { clearPendingFinalDeliveryAfterSuccess } from "./dispatch-from-config.pending-final.js";
-import { scheduleFollowupDrain } from "./queue.js";
+import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { REPLY_OPERATION_RUN_STATE } from "./reply-operation-run-state.js";
 import { createMockTypingController } from "./test-helpers.js";
 
@@ -217,7 +217,7 @@ const { runReplyAgent } = await import("./agent-runner.js");
 setupAgentRunnerTestHooks();
 
 describe("runReplyAgent pending operator input", () => {
-  it("refuses an unbound question without falling through to active-run queueing", async () => {
+  it("queues input an unbound question refuses instead of steering it", async () => {
     const gatewayCall = vi.fn(async () => ({ status: "answered" }));
     const reservation = registerPendingAgentQuestion({
       questionId: "ask_direct_cli_answer",
@@ -248,11 +248,14 @@ describe("runReplyAgent pending operator input", () => {
       },
     });
 
+    vi.mocked(enqueueFollowupRun).mockReturnValueOnce(true);
     try {
       await expect(testRun.run()).resolves.toEqual({
-        text: expect.stringContaining("pending question has no prepared creator authority"),
-        isError: true,
+        text: expect.stringContaining(
+          "(pending question has no prepared creator authority). It was queued",
+        ),
       });
+      expect(enqueueFollowupRun).toHaveBeenCalledOnce();
       expect(gatewayCall).not.toHaveBeenCalled();
       expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
       expect(runCliAgentMock).not.toHaveBeenCalled();
