@@ -54,8 +54,6 @@ export const recordAnnounceDeliveryResult = (
   if (!delivery.delivered && delivery.disposition !== "intentional_non_delivery") {
     if (delivery.reason === "message_tool_delivery_missing") {
       deliveryState.lastDropReason = "message_tool_delivery_missing";
-    } else if (delivery.reason === "steer_dropped") {
-      deliveryState.lastDropReason = "steer_dropped";
     } else if (delivery.path === "none") {
       deliveryState.lastDropReason = "sink_unavailable";
     }

@@ -50,7 +50,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled results", () => {
     expect(call.targetRequesterSessionKey).toBe(REQUESTER);
     expect(call.requesterIsSubagent).toBe(false);
     expect(call.expectsCompletionMessage).toBe(false);
-    expect(call.requireDirectDelivery).toBe(true);
     expect(call.requireVisibleReply).toBeUndefined();
     expect(call.directIdempotencyKey).toBe(requesterSettleKey("run-a,run-b,run-quiet"));
     expect(quietChild.requesterTurnRunId).toBe("quiet-cancellation-owner");

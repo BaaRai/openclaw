@@ -2,7 +2,6 @@
 // outcomes, requester lookup, delivery, and cleanup.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeSessionDeliveryState } from "../../../utils/delivery-context.shared.js";
-import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { createSubagentAnnounceDeliveryRuntimeMock } from "./subagent-announce.test-support.js";
 
@@ -29,14 +28,6 @@ const resolveAgentIdFromSessionKeyMock = vi.fn<
 const resolveStorePathMock = vi.fn((_store: unknown, _options: unknown) => "/tmp/sessions.json");
 const resolveMainSessionKeyMock = vi.fn((_cfg: unknown) => "agent:main:main");
 const isEmbeddedAgentRunActiveMock = vi.fn((_sessionId: string) => false);
-const queueEmbeddedAgentMessageWithOutcomeMock = vi.fn(
-  (sessionId: string, _text: string, _options?: unknown): EmbeddedAgentQueueMessageOutcome => ({
-    queued: false,
-    sessionId,
-    reason: "not_streaming" as const,
-    gatewayHealth: "live" as const,
-  }),
-);
 const waitForEmbeddedAgentRunEndMock = vi.fn(
   async (_sessionId: string, _timeoutMs?: number) => true,
 );
@@ -94,8 +85,6 @@ vi.mock("./subagent-announce-delivery.runtime.js", () =>
     resolveSessionStorePathCore: (store: unknown, options: unknown) =>
       resolveStorePathMock(store, options),
     isSessionRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
-    queueEmbeddedAgentMessageWithOutcome: (sessionId: string, text: string, options?: unknown) =>
-      queueEmbeddedAgentMessageWithOutcomeMock(sessionId, text, options),
   }),
 );
 
@@ -221,14 +210,6 @@ describe("subagent announce seam flow", () => {
     resolveStorePathMock.mockReset().mockImplementation(() => "/tmp/sessions.json");
     resolveMainSessionKeyMock.mockReset().mockImplementation(() => "agent:main:main");
     isEmbeddedAgentRunActiveMock.mockReset().mockReturnValue(false);
-    queueEmbeddedAgentMessageWithOutcomeMock
-      .mockReset()
-      .mockImplementation((sessionId: string) => ({
-        queued: false,
-        sessionId,
-        reason: "not_streaming",
-        gatewayHealth: "live",
-      }));
     waitForEmbeddedAgentRunEndMock.mockReset().mockResolvedValue(true);
     mockConfig = {
       session: {

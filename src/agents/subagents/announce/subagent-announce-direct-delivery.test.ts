@@ -7,7 +7,6 @@ import type { dispatchGatewayMethodInProcess } from "../../../gateway/server-plu
 import { registerGatewayRecoveryRuntime } from "../../../gateway/server-recovery-runtime-context.js";
 import type { sendMessage } from "../../../infra/outbound/message.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 import { deliverSubagentAnnouncement, testing } from "./subagent-announce-delivery.test-support.js";
 
 const sentDeliveryStatus = { status: "sent", resultCount: 1 } as const;
@@ -88,12 +87,6 @@ describe("late exact requester recovery", () => {
       mediaUrl: null,
       result: { messageId: "unexpected-replay" },
     });
-    const steer = vi.fn((sessionId: string): EmbeddedAgentQueueMessageOutcome => ({
-      queued: false,
-      sessionId,
-      reason: "not_streaming",
-      gatewayHealth: "live",
-    }));
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
       loadRequesterSessionEntry: (key) => ({
@@ -106,7 +99,6 @@ describe("late exact requester recovery", () => {
       getRequesterSessionActivity: () => ({ sessionId: initialEntry.sessionId, isActive: false }),
       dispatchGatewayMethodInProcess: dispatch,
       sendMessage: send,
-      queueEmbeddedAgentMessageWithOutcome: steer,
     });
     const params: Parameters<typeof deliverSubagentAnnouncement>[0] = {
       requesterSessionKey: sessionKey,
@@ -117,7 +109,6 @@ describe("late exact requester recovery", () => {
       sourceTool: "subagent_settle",
       requesterIsSubagent: false,
       expectsCompletionMessage: false,
-      requireDirectDelivery: true,
       requireVisibleReply: true,
       directIdempotencyKey: sourceRunId,
       isSourceSessionEffectsAllowed: () => state.allowed,
@@ -143,7 +134,6 @@ describe("late exact requester recovery", () => {
       readEntered,
       readDone,
       send,
-      steer,
     };
   }
 
@@ -325,7 +315,6 @@ describe("late exact requester recovery", () => {
     expect(result.disposition).toBe(outcome.disposition);
     expect(fixture.dispatch).toHaveBeenCalledOnce();
     expect(fixture.send).not.toHaveBeenCalled();
-    expect(fixture.steer).not.toHaveBeenCalled();
   });
 
   it.each([

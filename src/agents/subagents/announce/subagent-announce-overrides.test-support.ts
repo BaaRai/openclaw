@@ -38,12 +38,6 @@ export type SubagentAnnounceDeliveryTestDeps = AnnounceTestDeps & {
   loadSessionEntry: typeof sessionAccessor.loadSessionEntryReadOnly;
   loadSessionEntryByKey: typeof deliveryRuntime.loadSessionEntryByKey;
   loadRequesterSessionEntry: typeof deliveryRuntime.loadRequesterSessionEntry;
-  queueEmbeddedAgentMessageWithOutcome: (
-    ...args: Parameters<typeof embeddedRuns.queueEmbeddedAgentMessageWithOutcomeAsync>
-  ) =>
-    | embeddedRuns.EmbeddedAgentQueueMessageOutcome
-    | Promise<embeddedRuns.EmbeddedAgentQueueMessageOutcome>;
-  queueGuardedEmbeddedAgentMessageWithOutcome: typeof embeddedRuns.queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
   sendMessage: typeof deliveryRuntime.sendSubagentAnnounceMessage;
 };
 
@@ -255,21 +249,6 @@ function replaceOverrides(scope: Scope, overrides?: Overrides) {
       embeddedRuns.resolveEmbeddedRunAbandonment,
       () => vi.spyOn(embeddedRuns, "resolveEmbeddedRunAbandonment"),
       current.resolveRequesterSessionAbandonment,
-    );
-  }
-  const queue = current.queueEmbeddedAgentMessageWithOutcome;
-  if (queue) {
-    install(
-      embeddedRuns.queueEmbeddedAgentMessageWithOutcomeAsync,
-      () => vi.spyOn(embeddedRuns, "queueEmbeddedAgentMessageWithOutcomeAsync"),
-      async (...args) => await queue(...args),
-    );
-  }
-  if (current.queueGuardedEmbeddedAgentMessageWithOutcome) {
-    install(
-      embeddedRuns.queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
-      () => vi.spyOn(embeddedRuns, "queueGuardedEmbeddedAgentMessageWithOutcomeAsync"),
-      current.queueGuardedEmbeddedAgentMessageWithOutcome,
     );
   }
   if (current.sendMessage) {

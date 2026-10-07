@@ -28,13 +28,9 @@ import {
   resolveAcpPromptBody,
   type AgentInternalEvent,
 } from "../../internal-events.js";
-import {
-  RUNTIME_EVENT_USER_PROMPT,
-  projectRuntimeContextFragments,
-} from "../../internal-runtime-context.js";
+import { RUNTIME_EVENT_USER_PROMPT } from "../../internal-runtime-context.js";
 import { admitCorrelatedSubagentSessionDelivery } from "../completion/subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
-import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
 import {
   resolveSubagentAnnounceTimeoutMs,
   summarizeDeliveryError,
@@ -49,7 +45,6 @@ import {
   type SubagentAnnounceDirectParams,
 } from "./subagent-announce-direct-delivery.js";
 import {
-  runSubagentAnnounceDispatch,
   sourceOwnerChangedResult,
   type SubagentAnnounceDeliveryResult,
 } from "./subagent-announce-dispatch.js";
@@ -93,15 +88,9 @@ function createCompletionUserTurnTranscriptRecorderFactory(params: {
     sourceChannel: INTERNAL_PROVENANCE_SOURCE_CHANNEL,
     sourceTool: params.sourceTool ?? "subagent_announce",
   };
-  const recorders = new Map<string, UserTurnTranscriptRecorder>();
-  return (sessionId) => {
-    const existing = recorders.get(sessionId);
-    if (existing) {
-      return existing;
-    }
-    // Retries targeting one session share a recorder. A successor session gets
-    // its own target guard while the logical idempotency key remains stable.
-    const recorder = createUserTurnTranscriptRecorder({
+  // The recorder guards the exact requester session the completion steers into.
+  return (sessionId) =>
+    createUserTurnTranscriptRecorder({
       input: {
         text: params.transcriptMessage,
         idempotencyKey: `${params.directIdempotencyKey}:active-wake`,
@@ -127,15 +116,11 @@ function createCompletionUserTurnTranscriptRecorderFactory(params: {
       },
       errorContext: "active requester completion transcript",
     });
-    recorders.set(sessionId, recorder);
-    return recorder;
-  };
 }
 
 export async function deliverSubagentAnnouncement(
   params: Omit<SubagentAnnounceDirectParams, "createUserTurnTranscriptRecorder"> & {
     sourceRunId?: string;
-    requireDirectDelivery?: boolean;
     preparedRequester?: { binding: SessionDeliveryRequesterBinding; entry: SessionEntry };
   },
 ): Promise<SubagentAnnounceDeliveryResult> {
@@ -292,43 +277,12 @@ export async function deliverSubagentAnnouncement(
           : params.triggerMessage,
       })
     : undefined;
-  const delivery = await runSubagentAnnounceDispatch({
-    expectsCompletionMessage: params.expectsCompletionMessage,
-    requireDirectDelivery: params.requireDirectDelivery || params.completionTarget === "parent",
-    signal: params.signal,
-    steer: async () => {
-      if (sourceOwnerChanged()) {
-        return { status: "source_owner_changed" };
-      }
-      return await maybeSteerSubagentAnnounce({
-        deliveryTimeoutMs: resolveSubagentAnnounceTimeoutMs(getSubagentAnnounceRuntimeConfig()),
-        requesterSessionKey: params.requesterSessionKey,
-        requesterAgentId: params.requesterAgentId,
-        steerMessage: runtimeContextFragments.length
-          ? RUNTIME_EVENT_USER_PROMPT
-          : params.triggerMessage,
-        ...(runtimeContextFragments.length
-          ? {
-              currentInboundContext: {
-                text: projectRuntimeContextFragments(runtimeContextFragments),
-                fragments: runtimeContextFragments,
-              },
-            }
-          : {}),
-        signal: params.signal,
-        isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
-        isSourceSessionAdmissionAllowed: params.isSourceSessionAdmissionAllowed,
-      });
-    },
-    direct: async () => {
-      if (sourceOwnerChanged()) {
-        return sourceOwnerChangedResult();
-      }
-      return await sendSubagentAnnounceDirectly({
-        ...params,
-        createUserTurnTranscriptRecorder: createCompletionUserTurnTranscriptRecorder,
-      });
-    },
+  if (sourceOwnerChanged()) {
+    return sourceOwnerChangedResult();
+  }
+  const delivery = await sendSubagentAnnounceDirectly({
+    ...params,
+    createUserTurnTranscriptRecorder: createCompletionUserTurnTranscriptRecorder,
   });
   const failedDirect =
     (params.expectsCompletionMessage || params.sourceTool === "subagent_announce") &&

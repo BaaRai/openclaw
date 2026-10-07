@@ -6,8 +6,6 @@ import { expect } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { callGateway } from "../../../gateway/call.js";
 import type { dispatchGatewayMethodInProcess } from "../../../gateway/server-plugins.js";
-import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
-import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runner/runs.js";
 
 type DeliveryRuntimeMockOptions = {
   callGateway: (request: unknown) => Promise<unknown>;
@@ -17,11 +15,6 @@ type DeliveryRuntimeMockOptions = {
   resolveMainSessionKey: (cfg: unknown) => string;
   resolveSessionStorePathCore: (store: unknown, options: unknown) => string;
   isSessionRunActive: (sessionId: string) => boolean;
-  queueEmbeddedAgentMessageWithOutcome: (
-    sessionId: string,
-    text: string,
-    options?: EmbeddedAgentQueueMessageOptions,
-  ) => EmbeddedAgentQueueMessageOutcome;
   hasHooks?: () => boolean;
 };
 
@@ -82,11 +75,6 @@ export function createSubagentAnnounceDeliveryRuntimeMock(options: DeliveryRunti
     resolveMainSessionKey: options.resolveMainSessionKey,
     resolveSessionStorePathCore: options.resolveSessionStorePathCore,
     isSessionRunActive: options.isSessionRunActive,
-    queueEmbeddedAgentMessageWithOutcome: options.queueEmbeddedAgentMessageWithOutcome,
-    formatEmbeddedAgentQueueFailureSummary: (outcome: { reason?: string; sessionId?: string }) =>
-      outcome.reason && outcome.sessionId
-        ? `queue_message_failed reason=${outcome.reason} sessionId=${outcome.sessionId} gatewayHealth=live`
-        : undefined,
     getGlobalHookRunner: () => ({ hasHooks: () => options.hasHooks?.() ?? false }),
     createBoundDeliveryRouter: () => ({
       resolveDestination: () => ({ mode: "none" }),

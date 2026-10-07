@@ -39,7 +39,6 @@ import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
 } from "../../announce-idempotency.js";
-import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
 import { buildAgentInternalEventContext, type AgentInternalEvent } from "../../internal-events.js";
 import {
   projectRuntimeContextFragments,
@@ -50,7 +49,6 @@ import { textAssistant } from "../../test-helpers/sparse-transcript.test-support
 import { immutableSubagentRun, subagentRuns } from "../registry/subagent-registry-memory.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { testing as subagentAnnounceDeliveryTesting } from "./subagent-announce-delivery.test-support.js";
-import { runSubagentAnnounceDispatch } from "./subagent-announce-dispatch.js";
 import { testing as subagentAnnounceOutputTesting } from "./subagent-announce-output.test-support.js";
 import { announceTesting as subagentAnnounceTesting } from "./subagent-announce-overrides.test-support.js";
 import {
@@ -129,29 +127,16 @@ const resolveMainSessionKeySpy = vi.spyOn(configSessions, "resolveMainSessionKey
 const callGatewaySpy = vi.spyOn(gatewayCall, "callGateway");
 const getGlobalHookRunnerSpy = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner");
 const isEmbeddedAgentRunActiveSpy = vi.spyOn(sessionQueries, "isSessionRunActive");
-const queueEmbeddedAgentMessageWithOutcomeSpy = vi.spyOn(
-  embeddedRuns,
-  "queueEmbeddedAgentMessageWithOutcome",
-);
 const waitForEmbeddedAgentRunEndSpy = vi.spyOn(sessionNativeRuntime, "waitForSessionRunEnd");
 const readLatestAssistantReplyMock = vi.fn(
   async (_sessionKey?: string): Promise<string | undefined> => "raw subagent reply",
 );
 const embeddedAgentRunActiveMock = vi.fn<typeof sessionQueries.isSessionRunActive>(() => false);
-const queueEmbeddedAgentMessageWithOutcomeMock = vi.fn<
-  typeof embeddedRuns.queueEmbeddedAgentMessageWithOutcome
->((sessionId: string) => ({
-  queued: false,
-  sessionId,
-  reason: "not_streaming",
-  gatewayHealth: "live",
-}));
 const waitForEmbeddedAgentRunEndMock = vi.fn<typeof sessionNativeRuntime.waitForSessionRunEnd>(
   async (_sessionId: string, _timeoutMs?: number | null) => true,
 );
 const embeddedRunMock = {
   isSessionRunActive: embeddedAgentRunActiveMock,
-  queueEmbeddedAgentMessageWithOutcome: queueEmbeddedAgentMessageWithOutcomeMock,
   waitForSessionRunEnd: waitForEmbeddedAgentRunEndMock,
 };
 const { subagentRegistryMock } = vi.hoisted(() => ({
@@ -489,8 +474,6 @@ describe("subagent announce formatting", () => {
           isActive: Boolean(sessionId && embeddedRunMock.isSessionRunActive(sessionId)),
         };
       },
-      queueEmbeddedAgentMessageWithOutcome: (sessionId, text, options) =>
-        embeddedRunMock.queueEmbeddedAgentMessageWithOutcome(sessionId, text, options),
     });
     subagentAnnounceTesting.setDepsForTest({
       callGateway: async <T = Record<string, unknown>>(
@@ -525,11 +508,6 @@ describe("subagent announce formatting", () => {
     isEmbeddedAgentRunActiveSpy
       .mockReset()
       .mockImplementation((sessionId) => embeddedRunMock.isSessionRunActive(sessionId));
-    queueEmbeddedAgentMessageWithOutcomeSpy
-      .mockReset()
-      .mockImplementation((sessionId, text, options) =>
-        embeddedRunMock.queueEmbeddedAgentMessageWithOutcome(sessionId, text, options),
-      );
     waitForEmbeddedAgentRunEndSpy
       .mockReset()
       .mockImplementation(
@@ -537,14 +515,6 @@ describe("subagent announce formatting", () => {
           await embeddedRunMock.waitForSessionRunEnd(sessionId, timeoutMs),
       );
     embeddedRunMock.isSessionRunActive.mockClear().mockReturnValue(false);
-    embeddedRunMock.queueEmbeddedAgentMessageWithOutcome
-      .mockClear()
-      .mockImplementation((sessionId) => ({
-        queued: false,
-        sessionId,
-        reason: "not_streaming",
-        gatewayHealth: "live",
-      }));
     embeddedRunMock.waitForSessionRunEnd.mockClear().mockResolvedValue(true);
     subagentRegistryMock.isSubagentSessionRunActive.mockClear().mockReturnValue(true);
     subagentRegistryMock.shouldIgnorePostCompletionAnnounceForSession
@@ -1791,33 +1761,6 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.channel).toBe("discord");
     expect(call?.params?.to).toBe("channel:12345");
     expect(call?.params?.threadId).toBeUndefined();
-  });
-
-  it("steers announcements into an active run", async () => {
-    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
-    const delivery = await runSubagentAnnounceDispatch({
-      expectsCompletionMessage: false,
-      steer: async () => ({ status: "steered" }),
-      direct,
-    });
-
-    expect(delivery.delivered).toBe(true);
-    expect(delivery.path).toBe("steered");
-    expect(direct).not.toHaveBeenCalled();
-  });
-
-  it("does not fall through to direct delivery when active steering drops a new item", async () => {
-    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
-    const delivery = await runSubagentAnnounceDispatch({
-      expectsCompletionMessage: false,
-      steer: async () => ({ status: "dropped" }),
-      direct,
-    });
-
-    expect(delivery.delivered).toBe(false);
-    expect(delivery.reason).toBe("steer_dropped");
-    expect(delivery.terminal).toBeUndefined();
-    expect(direct).not.toHaveBeenCalled();
   });
 
   it("keeps direct announce idempotency unique for same-ms distinct child runs", async () => {

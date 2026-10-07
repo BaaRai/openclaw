@@ -1,9 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import {
-  runSubagentAnnounceDispatch,
-  type SubagentAnnounceDeliveryResult,
-} from "../announce/subagent-announce-dispatch.js";
+import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import {
   readLifecycleRun,
   type LifecycleControllerFixtureOptions,
@@ -85,16 +82,6 @@ export function registerLifecycleDeliveryReceiptCases({
   });
 
   it.each([
-    {
-      name: "persists steer_dropped when announce mapping preserves a live-queue refusal",
-      delivery: {
-        delivered: false as const,
-        path: "none" as const,
-        reason: "steer_dropped" as const,
-      },
-      lastDropReason: "steer_dropped",
-      lastError: "steer_dropped",
-    },
     {
       name: "persists sink_unavailable when announce mapping reports no viable requester",
       delivery: {
@@ -178,16 +165,12 @@ export function registerLifecycleDeliveryReceiptCases({
     });
     const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
       async (announceParams) => {
-        const delivery = await runSubagentAnnounceDispatch({
-          expectsCompletionMessage: true,
-          steer: async () => ({ status: "dropped" }),
-          direct: async () => ({
-            delivered: false,
-            path: "direct",
-            error: "failed",
-            reason: "visible_reply_missing",
-          }),
-        });
+        const delivery: SubagentAnnounceDeliveryResult = {
+          delivered: false,
+          path: "direct",
+          error: "failed",
+          reason: "visible_reply_missing",
+        };
         persist.mockClear();
         try {
           await announceParams.onDeliveryResult?.(delivery);

@@ -64,7 +64,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled private batches", () => {
     const call = deliveredCallArg();
     expect(call).toMatchObject({
       completionRequesterSessionId: "sess-main",
-      requireDirectDelivery: true,
     });
     // The conversation's reply policy decides whether a visible update is owed.
     expect(call.requireVisibleReply).toBeUndefined();

@@ -9,8 +9,11 @@ import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
 } from "../../../sessions/input-provenance.js";
-import { beginSessionControllerSourceInjection } from "../../../sessions/session-controller.mailbox.js";
 import type { SessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
+import {
+  submitSessionControllerSteer,
+  type SessionControllerSteerResult,
+} from "../../../sessions/session-controller.steer.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { isIncognitoSessionKey } from "../../../shared/incognito-session-key.js";
@@ -24,11 +27,7 @@ import {
   buildAgentRunTerminalOutcomeFromWaitResult,
   classifyAgentRunTerminalOutcome,
 } from "../../agent-run-terminal-outcome.js";
-import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
-import {
-  formatEmbeddedAgentQueueFailureSummary,
-  resolveEmbeddedRunAbandonment,
-} from "../../embedded-agent-runner/runs.js";
+import { resolveEmbeddedRunAbandonment } from "../../embedded-agent-runner/runs.js";
 import {
   hasFailedSubagentNoOutputCompletion,
   hasVisibleCompletionResult,
@@ -39,11 +38,6 @@ import {
   projectRuntimeContextFragments,
 } from "../../internal-runtime-context.js";
 import type { GatewayToolCallerReceiptAdmission } from "../../tools/gateway-caller-receipt.types.js";
-import {
-  SOURCE_OWNER_CHANGED,
-  resolveActiveWake,
-  resolveRequesterSessionActivity,
-} from "./subagent-announce-active-wake.js";
 import {
   deliverCompletionDirect,
   isDirectMessageDeliveryTarget,
@@ -60,6 +54,7 @@ import {
 } from "./subagent-announce-delivery-retry.js";
 import {
   getSubagentAnnounceRuntimeConfig,
+  getSubagentRequesterSessionActivity as resolveRequesterSessionActivity,
   loadRequesterSessionEntry,
   resolveExternalBestEffortDeliveryTarget,
   resolveQueueSettings,
@@ -306,23 +301,23 @@ export async function sendSubagentAnnounceDirectly(
         params.directOrigin?.channel,
       sessionEntry: requesterEntry,
     });
-    if (
-      !parentOnly &&
-      params.expectsCompletionMessage &&
-      requesterActivity.sessionId &&
-      requesterActivity.isActive &&
-      params.controllerInput
-    ) {
-      const injection = beginSessionControllerSourceInjection(params.controllerInput);
-      if (await injection.admit()) {
-        let finished = false;
-        try {
-          const wakeOptions: EmbeddedAgentQueueMessageOptions = {
+    // A public completion steers once into the requester's running turn. A definite
+    // rejection, including compaction, leaves its input queued for the dispatch below.
+    if (!parentOnly && params.expectsCompletionMessage && params.controllerInput) {
+      let steer: SessionControllerSteerResult;
+      try {
+        steer = await submitSessionControllerSteer({
+          input: params.controllerInput,
+          text: turnMessage,
+          // A completion must never abort its requester over an unconfirmed commit.
+          abortOnUnconfirmedTranscript: false,
+          options: {
             deliveryTimeoutMs: announceTimeoutMs,
             steeringMode: "all",
             ...(completionSourceReplyDeliveryMode
               ? { sourceReplyDeliveryMode: completionSourceReplyDeliveryMode }
               : {}),
+            // Subagent inputs ignore the session queue mode except its debounce.
             ...(requesterQueueSettings.debounceMs !== undefined
               ? { debounceMs: requesterQueueSettings.debounceMs }
               : {}),
@@ -335,46 +330,40 @@ export async function sendSubagentAnnounceDirectly(
                   },
                 }
               : {}),
-            ...(params.createUserTurnTranscriptRecorder
+            ...(params.createUserTurnTranscriptRecorder && requesterActivity.sessionId
               ? {
                   userTurnTranscriptRecorder: params.createUserTurnTranscriptRecorder(
                     requesterActivity.sessionId,
                   ),
                 }
               : {}),
-          };
-          const wakeOutcome = await resolveActiveWake(
-            requesterActivity.sessionId,
-            turnMessage,
-            wakeOptions,
-            isCompletionDeliveryAllowed,
-            isCompletionAdmissionAllowed,
-          );
-          if (wakeOutcome === SOURCE_OWNER_CHANGED) {
-            injection.finish(false);
-            finished = true;
-            return sourceOwnerChangedResult();
-          }
-          injection.accepted(wakeOutcome.queued);
-          injection.finish(wakeOutcome.queued);
-          finished = true;
-          if (wakeOutcome.queued) {
-            return {
-              delivered: true,
-              deliveredAt: wakeOutcome.deliveredAtMs,
-              enqueuedAt: wakeOutcome.enqueuedAtMs,
-              path: "steered",
-            };
-          }
-          const wakeFailure = formatEmbeddedAgentQueueFailureSummary(wakeOutcome);
-          defaultRuntime.log(
-            `[warn] Active requester session could not be woken for subagent completion; falling back to requester-agent handoff: active requester session could not be woken${wakeFailure ? `: ${wakeFailure}` : ""}`,
-          );
-        } finally {
-          if (!finished) {
-            injection.finish(false);
-          }
+            assertCurrent: () => {
+              if (!isCompletionAdmissionAllowed()) {
+                throw new SourceOwnerChangedError();
+              }
+            },
+          },
+        });
+      } catch (error) {
+        if (error instanceof SourceOwnerChangedError) {
+          return sourceOwnerChangedResult();
         }
+        throw error;
+      }
+      if (steer.status === "accepted") {
+        return { delivered: true, path: "steered" };
+      }
+      if (steer.status === "indeterminate") {
+        // The input was consumed without a confirmed commit; it is never replayed.
+        return {
+          delivered: false,
+          path: "steered",
+          error: steer.errorMessage,
+          disposition: "ambiguous",
+        };
+      }
+      if (!isCompletionAdmissionAllowed()) {
+        return sourceOwnerChangedResult();
       }
     }
     if (

@@ -177,7 +177,6 @@ describe("yielded private settle outcomes", () => {
       sourceTool: "subagent_settle",
       requesterIsSubagent: false,
       expectsCompletionMessage: false,
-      requireDirectDelivery: true,
       ...("public" in testCase
         ? { requireVisibleReply: true }
         : { completionRequesterSessionId: "requester-session-dm" }),

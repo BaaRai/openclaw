@@ -259,17 +259,5 @@ export function isDurableAgentHarnessCompletionDelivery(
   if (!delivery.delivered) {
     return false;
   }
-  if (delivery.path === "steered") {
-    return true;
-  }
-  if (delivery.path !== "direct") {
-    return false;
-  }
-  const phases = Array.isArray(delivery.phases) ? delivery.phases : undefined;
-  if (!phases) {
-    return true;
-  }
-  return phases.some(
-    (phase) => phase.phase === "direct-primary" && phase.delivered && phase.path === "direct",
-  );
+  return delivery.path === "steered" || delivery.path === "direct";
 }

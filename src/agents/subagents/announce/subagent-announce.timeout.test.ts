@@ -101,12 +101,6 @@ vi.mock("./subagent-announce-delivery.runtime.js", () =>
     resolveMainSessionKey: () => "agent:main:main",
     resolveSessionStorePathCore: () => "/tmp/sessions-main.json",
     isSessionRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
-    queueEmbeddedAgentMessageWithOutcome: (sessionId: string) => ({
-      queued: false,
-      sessionId,
-      reason: "not_streaming",
-      gatewayHealth: "live",
-    }),
   }),
 );
 vi.mock("./subagent-announce-delivery.js", () => ({

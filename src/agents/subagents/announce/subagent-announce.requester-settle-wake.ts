@@ -509,7 +509,6 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
           targetRequesterSessionKey: requesterSessionKey,
           requesterIsSubagent: requesterDepth >= 1,
           expectsCompletionMessage: false,
-          requireDirectDelivery: true,
           ...privateBinding,
           ...(!pauseNotice && requireVisibleReply ? { requireVisibleReply } : {}),
           directIdempotencyKey,
