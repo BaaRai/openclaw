@@ -208,3 +208,16 @@ it("splits measured full-release hosted rows without losing their execution cont
     fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
   }
 });
+
+it("keeps measured long whole owners split under the hosted job cap", async () => {
+  const { createNodeTestShardBundles } = await import("../../scripts/lib/ci-node-test-plan.mts");
+  const rows = createNodeTestShardBundles({ runnerBackend: "github" });
+  for (const owner of [
+    "agentic-agents-support",
+    "agentic-control-plane-agent-chat",
+    "core-runtime-config",
+  ]) {
+    const split = rows.filter((row) => row.shardName.startsWith(`${owner}-hosted-`));
+    expect(split.length, owner).toBeGreaterThan(1);
+  }
+});

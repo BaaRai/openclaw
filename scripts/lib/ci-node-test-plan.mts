@@ -3447,6 +3447,17 @@ export function createNodeTestShardBundles(
   ).toSorted(compareFullNodeTestAdmissionOrder);
 }
 
+// Whole owners whose hosted release jobs ran 35-60+ minutes (FRV 37557136793,
+// 37623751955). File churn resets their selector, so keep completed historical
+// walls until the new inventory has a full observation.
+const HISTORICAL_WALL_SHARDS = new Set([
+  "agentic-agents-support",
+  "agentic-control-plane-agent-chat",
+  "agentic-gateway-methods",
+  "agentic-gateway-server-isolated-4",
+  "core-runtime-config",
+]);
+
 // Full release jobs include setup and can execute both runtimes. Keep their
 // measured walls separate from compact test-group spans and reserve eight minutes
 // of the 20-minute objective for changes in setup and cold-run overhead.
@@ -3502,12 +3513,10 @@ function splitHostedReleaseShard(shard: NodeTestShard): NodeTestShard[] {
     currentGenerationSeconds ?? 0,
   );
   if (
-    shard.shardName === "agentic-gateway-methods" &&
+    HISTORICAL_WALL_SHARDS.has(shard.shardName) &&
     timings[parentShardName] === undefined &&
     currentGenerationSeconds === undefined
   ) {
-    // This whole owner retains its two-worker contract as files change. Keep
-    // completed historical walls until the new inventory has a full observation.
     const selectors = new Set(
       Object.keys(timings).flatMap((key) => {
         const parsed = parseCompactSplitTimingKey(key);
