@@ -69,9 +69,9 @@ beforeEach(async () => {
     messageInjectionV2: {
       version: 2 as const,
       isAvailable: () => true,
-      queueMessage: async (text: string, _options: unknown, assertCurrent: () => void) => {
+      queueMessage: async (_text: string, _options: unknown, assertCurrent: () => void) => {
         assertCurrent();
-        return queueMessage(text);
+        return queueMessage();
       },
     },
     isStreaming: () => true,
