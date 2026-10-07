@@ -82,9 +82,17 @@ export interface SubagentLifecycleAnnounceCleanupContext
   completeCleanupBookkeeping(args: CleanupBookkeepingParams): Promise<void>;
 }
 
+/** One in-flight requester wake evaluation and the trigger that must rerun it. */
+export type RequesterSettleWakeEvaluation = {
+  runId: string;
+  /** The row the evaluation read; absent until it starts reading registry state. */
+  evaluated?: SubagentRunRecord;
+  rearm?: SubagentRunRecord;
+};
+
 export interface SubagentLifecycleWakeContext extends SubagentLifecycleCommonContext {
   /** In-flight requester wake evaluations; a trigger during one requests a rerun. */
-  readonly activeRequesterSettleWakes: Map<string, { rearm?: SubagentRunRecord }>;
+  readonly activeRequesterSettleWakes: Map<string, RequesterSettleWakeEvaluation>;
   resumeAncestorCleanup(settledEntry: SubagentRunRecord): void;
   runRequesterSettleWake(
     entry: SubagentRunRecord,

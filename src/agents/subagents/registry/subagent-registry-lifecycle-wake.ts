@@ -10,7 +10,10 @@ import { revokeRequesterFinalAttachment } from "../requester-final-attachment.js
 import { retireSubagentControllerInputs } from "./subagent-controller-inputs.js";
 import { isCompletedRequesterDeliveryBlocked } from "./subagent-delivery-state.js";
 import { retireSubagentGatewayBinding } from "./subagent-registry-execution-cleanup.js";
-import type { SubagentLifecycleWakeContext } from "./subagent-registry-lifecycle-context.js";
+import type {
+  RequesterSettleWakeEvaluation,
+  SubagentLifecycleWakeContext,
+} from "./subagent-registry-lifecycle-context.js";
 import {
   buildSafeLifecycleErrorMeta,
   maskLifecycleIdentifier,
@@ -176,12 +179,14 @@ function requesterSettleWakeScope(entry: SubagentRunRecord): string {
 /**
  * Evaluates the requester continuation this row owes. Only the requester's mailbox
  * decides when the continuation runs; this owner decides only whether it is owed.
+ * A resume asks only that the row be evaluated; any other trigger reports changed state.
  */
 export function scheduleRequesterSettleWake(
   context: SubagentLifecycleWakeContext,
   runId: string,
   observedEntry: SubagentRunRecord,
   originalContext?: OpenClawStateWorkerContext,
+  resume = false,
 ): void {
   const params = context.options;
   const published = params.runs.get(runId);
@@ -206,10 +211,17 @@ export function scheduleRequesterSettleWake(
   const scope = requesterSettleWakeScope(entry);
   const active = context.activeRequesterSettleWakes.get(scope);
   if (active) {
-    active.rearm = entry;
+    // The wake depends on sibling and descendant rows too, so a changed-state trigger reruns
+    // the evaluation once. A resume is satisfied by one that has not yet read, or read this row.
+    const satisfied =
+      active.runId === entry.runId &&
+      (active.evaluated === undefined || (resume && active.evaluated === entry));
+    if (!satisfied) {
+      active.rearm = entry;
+    }
     return;
   }
-  const evaluation: { rearm?: SubagentRunRecord } = {};
+  const evaluation: RequesterSettleWakeEvaluation = { runId: entry.runId };
   context.activeRequesterSettleWakes.set(scope, evaluation);
   const stateContext = originalContext ?? captureOpenClawStateWorkerContext();
   const admittedIdentity = captureRequesterSettleRunIdentity(entry);
@@ -262,6 +274,7 @@ export function scheduleRequesterSettleWake(
           ) {
             return;
           }
+          evaluation.evaluated = entry;
           try {
             await params.maybeWakeRequesterAfterAllChildrenSettled({
               requesterSessionKey,
@@ -308,7 +321,6 @@ export function scheduleRequesterSettleWake(
       })
       .finally(() => {
         context.activeRequesterSettleWakes.delete(scope);
-        // The wake depends on sibling and descendant rows too, so any trigger reruns it once.
         const rearm = evaluation.rearm;
         if (rearm) {
           scheduleRequesterSettleWake(context, rearm.runId, rearm, stateContext);

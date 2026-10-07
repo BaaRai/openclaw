@@ -26,6 +26,7 @@ import { completeCleanupBookkeeping } from "./subagent-registry-lifecycle-bookke
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
+  RequesterSettleWakeEvaluation,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
 import { refreshFrozenResultFromSession } from "./subagent-registry-lifecycle-delivery.js";
@@ -101,7 +102,7 @@ function terminalPublication(entry: SubagentRunRecord): readonly unknown[] {
 }
 
 export class SubagentLifecycleController {
-  readonly activeRequesterSettleWakes = new Map<string, { rearm?: SubagentRunRecord }>();
+  readonly activeRequesterSettleWakes = new Map<string, RequesterSettleWakeEvaluation>();
   private readonly terminalCompletionLocks = new Map<object, Promise<void>>();
   private readonly terminalGenerations = new WeakMap<object, number>();
   private readonly terminalPublications = new WeakMap<object, readonly unknown[]>();
@@ -462,7 +463,7 @@ export class SubagentLifecycleController {
 
   resumeRequesterSettleWake = (runId: string, entry: SubagentRunRecord) => {
     this.trackRun(entry);
-    scheduleRequesterSettleWake(this, runId, entry);
+    scheduleRequesterSettleWake(this, runId, entry, undefined, true);
   };
 
   retireSubagentObligations = (
