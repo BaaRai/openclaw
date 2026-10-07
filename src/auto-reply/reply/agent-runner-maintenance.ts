@@ -66,7 +66,10 @@ export function scheduleReplySessionMaintenance(params: {
       compactionRequestBudget: context.execution.compactionRequestBudget,
     },
     replyOperation.ownerSettlement.then(
-      () => replyOperation.result?.kind === "completed" && !replyOperation.abortSignal.aborted,
+      () =>
+        (replyOperation.result?.kind === "completed" ||
+          replyOperation.result?.kind === "yielded") &&
+        !replyOperation.abortSignal.aborted,
     ),
   );
 }

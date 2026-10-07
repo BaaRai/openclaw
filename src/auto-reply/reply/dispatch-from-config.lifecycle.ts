@@ -362,6 +362,7 @@ export function createDispatchReplyOperationCoordinator(params: {
       phase !== "pre_dispatch" &&
       preDispatchAbortOperation?.result &&
       preDispatchAbortOperation.result.kind !== "completed" &&
+      preDispatchAbortOperation.result.kind !== "yielded" &&
       // Low-level queue resolution can abort the old owner before final delivery acquires its
       // successor operation. The old result belongs to that owner, not to this inbound turn.
       params.allowActiveQueueResolution !== true
