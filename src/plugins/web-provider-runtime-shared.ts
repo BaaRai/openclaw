@@ -9,6 +9,8 @@ import type { PluginLoadOptions } from "./loader.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 import { hasCompletedPluginRuntimeRegistration } from "./plugin-runtime-artifact-binding.js";
 import { hasExplicitPluginIdScope, normalizePluginIdScope } from "./plugin-scope.js";
+import { getPluginRegistryInspectionResources } from "./registry-inspection-resources.js";
+import { capturePluginLifecycleAuthority } from "./registry-lifecycle.js";
 import type { PluginRegistry } from "./registry.js";
 import { getActivePluginRegistryWorkspaceDir } from "./runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
@@ -100,6 +102,16 @@ export function resolvePluginWebProviders<TEntry>(
   deps: WebProviderRuntimeResolution<TEntry>,
 ): TEntry[] {
   const env = params.env ?? process.env;
+  const generationRegistry = getPluginRuntimeGenerationRegistry();
+  const scopedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+  const selectedRegistry = generationRegistry ?? scopedRegistry;
+  if (
+    selectedRegistry &&
+    getPluginRegistryInspectionResources(selectedRegistry) &&
+    !capturePluginLifecycleAuthority(selectedRegistry, undefined, { scopedRuntime: true })?.()
+  ) {
+    throw new Error("Plugin tool inspection has been released");
+  }
   const workspaceDir = params.workspaceDir ?? getActivePluginRegistryWorkspaceDir();
   if (params.mode === "setup") {
     const pluginIds =
@@ -151,14 +163,13 @@ export function resolvePluginWebProviders<TEntry>(
     return deps.mapRegistryProviders({ registry, onlyPluginIds: pluginIds });
   }
 
-  const scopedContext = getPluginRuntimeLoadContext(
-    getPluginRuntimeGatewayRequestScope()?.pluginRegistry,
-  );
+  const selectedContext = getPluginRuntimeLoadContext(selectedRegistry);
   // Per-turn projections retain the scoped owner's executable plugin generation.
   const preparedContext =
-    scopedContext?.env === env &&
-    (!params.manifestRecords || params.manifestRecords === scopedContext.manifestRegistry?.plugins)
-      ? scopedContext
+    selectedContext?.env === env &&
+    (!params.manifestRecords ||
+      params.manifestRecords === selectedContext.manifestRegistry?.plugins)
+      ? selectedContext
       : undefined;
 
   const shouldFilterProviders =
@@ -195,7 +206,6 @@ export function resolvePluginWebProviders<TEntry>(
     ? allowlistedPluginIds
     : discoveredPluginIds;
   const onlyPluginIds = shouldFilterProviders ? candidatePluginIds : undefined;
-  const generationRegistry = getPluginRuntimeGenerationRegistry();
   const current = getCurrentPluginToolInspection(params.config, env, params.workspaceDir);
   if (generationRegistry && !current) {
     return deps.mapRegistryProviders({ registry: generationRegistry, onlyPluginIds });
@@ -223,7 +233,6 @@ export function resolvePluginWebProviders<TEntry>(
         : {}),
     },
   );
-  const scopedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
   const compatible = current
     ? undefined
     : scopedRegistry
