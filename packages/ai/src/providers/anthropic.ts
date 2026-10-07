@@ -44,10 +44,9 @@ import {
 } from "./anthropic-auth-headers.js";
 import {
   buildAnthropicClaudeCodeIdentity,
+  defaultsClaudeAdaptiveThinking,
   prepareClaudeNoPrefillRequestContext,
   resolveAnthropicThinkingEffort,
-  resolveClaudeOpus5ModelIdentity,
-  resolveClaudeSonnet5ModelIdentity,
   requiresClaudeAdaptiveThinking,
   supportsClaudeAdaptiveThinking,
   usesClaudeStreamingRefusalContract,
@@ -303,8 +302,7 @@ export const streamSimpleAnthropic: StreamFunction<
   }
   const reasoning = options?.reasoning === "off" ? "low" : options?.reasoning;
   if (
-    resolveClaudeOpus5ModelIdentity(model) ||
-    resolveClaudeSonnet5ModelIdentity(model) ||
+    defaultsClaudeAdaptiveThinking(model) ||
     (reasoning && supportsClaudeAdaptiveThinking(model))
   ) {
     return streamAnthropic(model, context, {
