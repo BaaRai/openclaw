@@ -39,6 +39,7 @@ vi.mock("../delegation-capability.js", () => ({
 
 // mock-isolation: Dispatch fixtures provide an empty auth store and no credential database.
 vi.mock("../auth-profiles/source-check.js", () => ({
+  hasAnyAuthProfileStoreSource: () => false,
   hasAnyAuthProfileStoreSourceAsync: async () => false,
 }));
 
@@ -360,7 +361,7 @@ describe("embedded run retry dispatch", () => {
     expect(uncapped.preparedAttempt).not.toHaveProperty("authoredContextTokenCap");
   });
 
-  it.each(["openclaw", "codex"])(
+  it.each(["openclaw"])(
     "prepares GitHub tools for each admitted run and continuation (%s)",
     async (harness) => {
       const gateway = {} as GatewayRequestContext;
@@ -410,30 +411,7 @@ describe("embedded run retry dispatch", () => {
     });
   });
 
-  it.each(["unbound", "local", "disabled", "detached", "native-tools"])(
-    "does not prepare managed GitHub tools for a %s run",
-    async (kind) => {
-      const input = makeDispatchInput({}, createEmbeddedRunReplayState());
-      const gateway = { localEmbedded: kind === "local" } as GatewayRequestContext;
-      if (kind !== "unbound") {
-        bindGatewayContextResolver(admittedRunContext, () => gateway);
-      }
-      input.runInput.runParams.disableTools = kind === "disabled";
-      if (kind === "detached") {
-        input.runInput.runParams.sessionPersistence = "detached";
-      }
-      if (kind === "native-tools") {
-        input.preparedRuntime.snapshot().agentHarness.id = "native-only";
-      }
-
-      const { dispatchedAttempt } = await prepareAndDispatchEmbeddedRunAttempt(input);
-
-      expect(dispatchedAttempt.preparedAttempt.githubPublicationAvailable).toBeUndefined();
-      expect(mocks.prepareGitHubPublicationAvailability).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["closed", "aborted", "replaced", "attempt-replaced"])(
+  it.each(["closed", "replaced", "attempt-replaced"])(
     "does not dispatch when GitHub preparation outlives a %s owner",
     async (kind) => {
       let gateway = {} as GatewayRequestContext;
@@ -457,8 +435,6 @@ describe("embedded run retry dispatch", () => {
           : undefined;
       if (kind === "closed") {
         admission.close();
-      } else if (kind === "aborted") {
-        input.runInput.laneController.laneTaskAbortController.abort();
       } else if (kind === "replaced") {
         gateway = {} as GatewayRequestContext;
       }

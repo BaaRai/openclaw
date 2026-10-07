@@ -1,7 +1,6 @@
 import {
   mkdir as fsMkdir,
   readFile as fsReadFile,
-  stat as fsStat,
   writeFile as fsWriteFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -12,14 +11,18 @@ import { keyHint } from "../../modes/interactive/components/keybinding-hints.js"
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { AgentTool, AgentToolResult } from "../../runtime/index.js";
 import { textResult } from "../../tools/tool-results.js";
-import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
+import type { ToolRenderResultOptions } from "../extensions/types.js";
 import { WRITE_DIFF_MAX_BYTES } from "./file-diff.js";
 import {
   resolveFileMutationQueueKey,
   withFileMutationQueueKeyResolution,
 } from "./file-mutation-queue.js";
 import { planFileWriteDiff } from "./file-tool-planning.js";
-import { type PersistedFileStat, verifyPersistedUtf8File } from "./file-write-verification.js";
+import {
+  type PersistedFileStat,
+  readPersistedFileStat,
+  verifyPersistedUtf8File,
+} from "./file-write-verification.js";
 import { resolveLocalPathToCwd, resolveToCwd } from "./path-utils.js";
 import {
   invalidArgText,
@@ -41,7 +44,6 @@ import { writeSchema, WriteToolOutputSchema } from "./tool-schemas.js";
 interface WriteOperations {
   /** Resolve the physical identity used to order this backend's file operations. */
   resolveQueueKey?: (absolutePath: string, signal?: AbortSignal) => string | Promise<string>;
-  /** Write content to a file */
   writeFile: (absolutePath: string, content: string) => Promise<void>;
   /** Create directory recursively */
   mkdir: (dir: string) => Promise<void>;
@@ -55,21 +57,7 @@ const defaultWriteOperations: WriteOperations = {
   writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
   mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
   readFile: (path) => fsReadFile(path),
-  statFile: async (path) => {
-    try {
-      const stat = await fsStat(path);
-      return {
-        type: stat.isFile() ? "file" : stat.isDirectory() ? "directory" : "other",
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-      } as const;
-    } catch (error) {
-      if (isMissingPathError(error)) {
-        return null;
-      }
-      throw error;
-    }
-  },
+  statFile: (path) => readPersistedFileStat(path, isMissingPathError),
 };
 
 export interface WriteToolOptions {
@@ -363,13 +351,13 @@ function successfulWriteResult(path: string, content: string, details: WriteTool
   );
 }
 
-function createWriteToolDefinition(
+export function createWriteTool(
   cwd: string,
   options?: WriteToolOptions,
-): ToolDefinition<typeof writeSchema, WriteToolDetails> {
+): AgentTool<typeof writeSchema> {
   const ops = options?.operations ?? defaultWriteOperations;
   const resolvePath = options?.operations ? resolveToCwd : resolveLocalPathToCwd;
-  return {
+  return wrapToolDefinition<typeof writeSchema, WriteToolDetails>({
     name: "write",
     label: "write",
     description: "Write/overwrite file; creates parent directories.",
@@ -472,12 +460,5 @@ function createWriteToolDefinition(
       }
       return reuseTextComponent(context.lastComponent, output);
     },
-  };
-}
-
-export function createWriteTool(
-  cwd: string,
-  options?: WriteToolOptions,
-): AgentTool<typeof writeSchema> {
-  return wrapToolDefinition(createWriteToolDefinition(cwd, options));
+  });
 }

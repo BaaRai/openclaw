@@ -1,7 +1,7 @@
-/**
- * Splits streamed embedded-agent replies into Markdown-safe message chunks.
- */
-
+import {
+  findGraphemeChunkEnd,
+  firstGraphemeClusterLength,
+} from "@openclaw/normalization-core/grapheme";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { FenceSpan } from "../../packages/markdown-core/src/fences.js";
 import {
@@ -209,7 +209,6 @@ export class EmbeddedBlockChunker {
     return this.#buffer.length > 0;
   }
 
-  /** Emit safe chunks according to size and Markdown fence constraints. */
   drain(params: BlockChunkDrain) {
     const sourceBreaks = this.#sourceBreaks;
     while (this.#nextSourceBreak < sourceBreaks.length) {
@@ -437,6 +436,7 @@ export class EmbeddedBlockChunker {
               hardMaxChars - reopenPrefix.length,
               maxChars,
               openFence,
+              params.force,
             );
       if (breakResult.index <= 0) {
         if (force) {
@@ -628,6 +628,7 @@ export class EmbeddedBlockChunker {
     hardMaxCharsOverride?: number,
     totalMaxCharsOverride?: number,
     openFence?: FenceSpan,
+    finalDrain = false,
   ): BreakResult {
     const { minChars, maxChars, hardMaxChars } = normalizeChunkLimits({
       minChars: minCharsOverride ?? chunking.minChars,
@@ -688,6 +689,10 @@ export class EmbeddedBlockChunker {
       }
       // An unfinished span ends at the buffer boundary without a source closer.
       const absoluteBreakIndex = offset + forcedBreakIndex;
+      const endingFence = findFenceSpanAt(spans.fences, absoluteBreakIndex - 1);
+      if (endingFence?.end === absoluteBreakIndex && endingFence !== openFence) {
+        return { index: forcedBreakIndex };
+      }
       const fence =
         findFenceSpanAt(spans.fences, absoluteBreakIndex) ??
         (openFence?.end === absoluteBreakIndex ? openFence : undefined);
@@ -716,7 +721,25 @@ export class EmbeddedBlockChunker {
           fenceSplit: { closeFenceLine, reopenFenceLine, fence },
         };
       }
-      return { index: protectBreakIndex(unbreakableSpans, forcedBreakIndex, offset, force) };
+      // A streamed trailing cluster can still gain a combining mark or ZWJ
+      // continuation in the next delta. Keep it pending until a following
+      // cluster or final drain establishes the boundary.
+      const graphemeSource =
+        !finalDrain && /[\uD800-\uDBFF]$/u.test(buffer) ? buffer.slice(0, -1) : buffer;
+      const maxEnd = Math.min(
+        forcedBreakIndex,
+        finalDrain ? graphemeSource.length : graphemeSource.length - 1,
+      );
+      const wholeEnd = findGraphemeChunkEnd(graphemeSource, 0, maxEnd, maxEnd, false);
+      const graphemeBreakIndex =
+        wholeEnd ||
+        (firstGraphemeClusterLength(graphemeSource) >= forcedBreakIndex ? forcedBreakIndex : 0);
+      return {
+        index:
+          graphemeBreakIndex > 0
+            ? protectBreakIndex(unbreakableSpans, graphemeBreakIndex, offset, force)
+            : 0,
+      };
     }
 
     return { index: -1 };
@@ -757,3 +780,4 @@ function findNextParagraphBreak(
   }
   return null;
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

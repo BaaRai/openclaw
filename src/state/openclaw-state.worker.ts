@@ -44,20 +44,24 @@ import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
 // PR provisioning retains allocation and template owners without the application runtime.
 const provisionRegistry = createWorkerOperationRegistry<
   WorktreeTemplateWorkerOperations &
-    Pick<OpenClawStateWorkerOperations, "worktrees.reserveCapacity">
+    Pick<OpenClawStateWorkerOperations, "worktrees.reserveCapacity" | "worktrees.recoverPending">
 >({
   worktrees: async () => {
-    const [templates, reserveCapacity] = await Promise.all([
+    const [templates, reserveCapacity, recoverPending] = await Promise.all([
       import("../agents/worktrees/template-registry.worker.js").then(
         (loaded) => loaded.worktreeTemplateOperations,
       ),
       import("../agents/worktrees/capacity.worker.js").then(
         (loaded) => loaded.reserveWorktreeCapacityInWorker,
       ),
+      import("../agents/worktrees/registry-run-end.worker.js").then(
+        (loaded) => loaded.recoverPendingWorktreesInWorker,
+      ),
     ]);
     return {
       ...templates,
       "worktrees.reserveCapacity": reserveCapacity,
+      "worktrees.recoverPending": recoverPending,
     };
   },
 });
@@ -118,7 +122,7 @@ function createSharedStateWorkerBackend(
   let borrow = nativeDatabase ? retainOpenClawStateDatabase(nativeDatabase) : undefined;
   let closed = false;
   let secretSchemaAdmitted = false;
-  const open = (): OpenClawStateDatabase => {
+  const open = (admission: "open" | "transaction" = "open"): OpenClawStateDatabase => {
     if (!nativeDatabase) {
       const opened = openOpenClawStateDatabase({
         path: context.databasePath,
@@ -135,6 +139,11 @@ function createSharedStateWorkerBackend(
     ) {
       throw new Error("Shared-state worker lost its retained native database");
     }
+    // Plugin-state mutations validate schema and ownership after BEGIN. Reuse
+    // this retained handle without repeating that row read before the transaction.
+    if (admission === "transaction") {
+      return nativeDatabase;
+    }
     return openOpenClawStateDatabase({
       database: nativeDatabase,
       path: context.databasePath,
@@ -145,7 +154,8 @@ function createSharedStateWorkerBackend(
     [SQLITE_WORKER_PREPARE_COMMAND](commandType) {
       if (
         commandType.startsWith("worktrees.templates.") ||
-        commandType === "worktrees.reserveCapacity"
+        commandType === "worktrees.reserveCapacity" ||
+        commandType === "worktrees.recoverPending"
       ) {
         return provisionRegistry.prepare(commandType);
       }
@@ -327,7 +337,7 @@ function createSharedStateWorkerBackend(
             path: context.databasePath,
             env: getSqliteWorkerStateContext().environment,
           },
-          open,
+          () => open("transaction"),
           nativeDatabase?.db.isOpen === true,
         );
       }
