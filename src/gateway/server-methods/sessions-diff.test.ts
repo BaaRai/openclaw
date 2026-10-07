@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
+import type { InternalSessionEntry, SessionEntry } from "../../config/sessions/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import * as execRunner from "../../process/exec-runner.js";
 import { ensureSessionDiffBaseline } from "../../sessions/session-diff-baseline.js";
@@ -16,7 +17,8 @@ import { loadSessionDiff, sessionsDiffHandlers } from "./sessions-diff.js";
 const hoisted = vi.hoisted(() => ({
   readSessionEntryReadOnlyInWorker: vi.fn(),
   loadSessionEntry: vi.fn(),
-  patchSessionEntryCore: vi.fn(),
+  patchSessionEntryCore:
+    vi.fn<(typeof import("../../config/sessions/session-accessor.js"))["patchSessionEntryCore"]>(),
   resolveAgentWorkspaceDir: vi.fn(),
   resolveDefaultAgentId: vi.fn(),
 }));
@@ -229,6 +231,43 @@ describe("loadSessionDiff", () => {
 
     expect(result.files.map((file) => file.path)).toEqual(["pending.txt"]);
     expect(hoisted.patchSessionEntryCore).not.toHaveBeenCalled();
+  });
+
+  it("filters against an active baseline after its persistence settles", async ({ signal }) => {
+    initRepo(repoRoot);
+    fs.writeFileSync(path.join(repoRoot, "existing.txt"), "before the agent\n");
+    const entry: InternalSessionEntry = {
+      sessionId: "s1",
+      updatedAt: 1,
+      spawnedCwd: repoRoot,
+      sessionDiffBaselineCapture: { version: 1, captureId: "active-capture", status: "pending" },
+    };
+    mockSession(repoRoot, entry);
+    hoisted.readSessionEntryReadOnlyInWorker.mockResolvedValueOnce(entry);
+    const settling = createDeferred<InternalSessionEntry>();
+    const persist = createDeferred<InternalSessionEntry>();
+    hoisted.patchSessionEntryCore.mockImplementationOnce(async (_target, update) => {
+      settling.resolve({ ...entry, ...(await update(entry)) });
+      return persist.promise;
+    });
+    const capture = ensureSessionDiffBaseline({
+      agentId: "main",
+      cwd: repoRoot,
+      entry,
+      isNewSession: false,
+      sessionKey: "agent:main:s1",
+      storePath: "/tmp/sessions.json",
+    });
+    try {
+      const captured = await withinTest(settling.promise, signal);
+      const diff = loadSessionDiff({ sessionKey: "agent:main:s1" });
+      persist.resolve(captured);
+      expect((await diff).files).toEqual([]);
+      expect(hoisted.patchSessionEntryCore).toHaveBeenCalledOnce();
+    } finally {
+      persist.resolve(entry);
+      await capture;
+    }
   });
 
   it("uses the persisted fixed-store owner for a bare session checkout", async () => {

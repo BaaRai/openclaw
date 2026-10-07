@@ -14,6 +14,7 @@ import {
 } from "../infra/diagnostic-trace-context.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
+import { getSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
 import { recordRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
 import {
@@ -261,6 +262,7 @@ export function wrapToolWithBeforeToolCallHook(
   options: Partial<BeforeToolCallDiagnosticOptions> = {},
 ): AnyAgentTool {
   const execute = tool.execute;
+  const baseline = getSessionDiffBaselineCapture();
   const refresh = captureAgentPluginRuntimeRefresh();
   // Only the exact host wait control may drain work admitted before a reload.
   const assertAgentPluginRuntimeCurrent =
@@ -282,6 +284,10 @@ export function wrapToolWithBeforeToolCallHook(
   const wrappedTool: AnyAgentTool = {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate, ...executionArgs: unknown[]) => {
+      if (baseline) {
+        await baseline;
+        signal?.throwIfAborted();
+      }
       assertAgentPluginRuntimeCurrent();
       const prepareControl = readInternalExecutionControl(executionArgs.at(-1));
       if (prepareControl) {

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { resolveModelRefFromString } from "../../agents/model-selection-shared.js";
@@ -218,7 +219,7 @@ describe("getReplyFromConfig configOverride", () => {
     expect(runState.preRunRejection).toBe("session-directive-rejected");
     expect(runPreparedReplyMock).not.toHaveBeenCalled();
   });
-  it("rethrows baseline work-start invalidation before reply execution", async () => {
+  it("propagates baseline work-start invalidation when settling the reply", async () => {
     const { ctx } = await prepareBaselineClaimSession("invalidated-get-reply");
     mocks.captureBaseline.mockRejectedValueOnce(
       new SessionWorkStartInvalidatedError("session changed during baseline capture"),
@@ -227,6 +228,43 @@ describe("getReplyFromConfig configOverride", () => {
       SessionWorkStartInvalidatedError,
     );
     expect(runPreparedReplyMock).not.toHaveBeenCalled();
+  });
+  it("prepares the first model turn while its workspace baseline is still capturing", async ({
+    signal,
+  }) => {
+    const { ctx, sessionKey } = await prepareBaselineClaimSession("deferred-get-reply");
+    const capture = createDeferred<Awaited<ReturnType<CaptureSessionDiffBaseline>>>();
+    const capturing = createDeferred();
+    const modelTurn = createDeferred();
+    mocks.captureBaseline.mockImplementationOnce(() => {
+      capturing.resolve();
+      return capture.promise;
+    });
+    mocks.resolveReplyDirectives.mockResolvedValueOnce(continueDirectives("hello", sessionKey));
+    mocks.handleInlineActions.mockResolvedValueOnce({
+      kind: "continue",
+      directives: {},
+      cleanedBody: "hello",
+      abortedLastRun: false,
+    });
+    vi.mocked(runPreparedReplyMock).mockImplementationOnce(async () => {
+      modelTurn.resolve();
+      return { text: "ok" };
+    });
+    const reply = getReplyFromConfig(ctx, undefined, {});
+    try {
+      await withinTest(modelTurn.promise, signal);
+      await withinTest(capturing.promise, signal);
+      expect(mocks.captureBaseline).toHaveBeenCalledOnce();
+    } finally {
+      capture.resolve({
+        version: 1,
+        sessionId: "deferred-get-reply",
+        root: "/workspace",
+        files: [],
+      });
+      await reply;
+    }
   });
   it("uses the admitted catalog through the native SDK resolver", async () => {
     const preparedRuntime = createPreparedDispatchRuntime();

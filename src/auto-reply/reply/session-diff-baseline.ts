@@ -26,6 +26,7 @@ export async function prepareReplySessionDiffBaseline(params: {
     isNewSession: sessionState.isNewSession,
     sessionKey: sessionState.sessionKey,
     storePath: sessionState.storePath,
+    deferCapture: true,
   });
   sessionState.sessionEntry = entry;
   sessionState.sessionEntryHandle.replaceCurrent(entry);

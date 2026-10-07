@@ -20,6 +20,7 @@ import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
@@ -343,6 +344,7 @@ export async function runReplyAgent(
     !shouldQueueTerminalReceiptSteer &&
     messageInjectionDisposition === "none"
   ) {
+    await getSessionDiffBaselineCapture();
     bindQueueDisposition();
     const result = await runActiveReplySteer({
       followupRun,
@@ -382,6 +384,7 @@ export async function runReplyAgent(
   }
 
   if (activeRunQueueAction === "enqueue-followup") {
+    await getSessionDiffBaselineCapture();
     bindQueueDisposition();
     const enqueued = enqueueFollowupRun(
       queueKey,

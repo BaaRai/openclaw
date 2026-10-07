@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import type { InternalSessionEntry, SessionEntry } from "../config/sessions.js";
+import type { SessionDiffBaseline } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
@@ -97,45 +99,52 @@ async function commitAttemptCompaction(
 }
 
 describe("agentCommand compaction transcript rotation", () => {
-  it.each([
-    ["settles a precreated baseline claim before embedded execution", false],
-    ["does not execute after baseline work-start invalidation", true],
-  ] as const)("%s", async (_name, invalidated) => {
-    const sessionId = invalidated ? "invalidated-agent-command" : "precreated-agent-command",
-      sessionKey = `agent:main:explicit:${sessionId}`;
-    await replaceSessionEntry({ sessionKey, storePath: requireStorePath() }, {
-      sessionId,
-      sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
-      updatedAt: Date.now(),
-    } as InternalSessionEntry);
-    if (invalidated) {
-      const error = new SessionWorkStartInvalidatedError(
-        "session changed during baseline settlement",
-      );
-      state.captureSessionDiffBaselineMock.mockRejectedValueOnce(error);
-      await expect(
-        agentCommand({ message: "must not execute", sessionId, sessionKey }),
-      ).rejects.toBe(error);
-      expect(state.runAgentAttemptMock).not.toHaveBeenCalled();
-      return;
-    }
-    state.captureSessionDiffBaselineMock.mockResolvedValueOnce({
-      version: 1,
-      sessionId,
-      root: "/workspace",
-      files: [],
-    });
-    state.runAgentAttemptMock.mockImplementationOnce(async () => {
-      expect(findStoredSessionEntry(sessionKey)?.sessionDiffBaseline).toMatchObject({
-        version: 1,
+  it.for([false, true])(
+    "settles a deferred baseline after model preparation (invalidated=%s)",
+    async (invalidated, { signal }) => {
+      const sessionId = invalidated ? "invalidated-agent-command" : "precreated-agent-command";
+      const sessionKey = `agent:main:explicit:${sessionId}`;
+      await replaceSessionEntry({ sessionKey, storePath: requireStorePath() }, {
         sessionId,
+        sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+        updatedAt: Date.now(),
+      } as InternalSessionEntry);
+      const capture = createDeferred<SessionDiffBaseline>();
+      const capturing = createDeferred();
+      const modelTurn = createDeferred();
+      state.captureSessionDiffBaselineMock.mockImplementationOnce(() => {
+        capturing.resolve();
+        return capture.promise;
       });
-      return makeResult({ sessionId, text: "captured before execution" });
-    });
-
-    await agentCommand({ message: "write after capture", sessionId, sessionKey });
-    expect(state.captureSessionDiffBaselineMock).toHaveBeenCalledOnce();
-  });
+      state.runAgentAttemptMock.mockImplementationOnce(async () => {
+        modelTurn.resolve();
+        return makeResult({ sessionId, text: "model prepared" });
+      });
+      const command = agentCommand({ message: "prepare a reply", sessionId, sessionKey });
+      const settled = Promise.allSettled([command]);
+      try {
+        await withinTest(modelTurn.promise, signal);
+        await withinTest(capturing.promise, signal);
+        if (invalidated) {
+          const error = new SessionWorkStartInvalidatedError(
+            "session changed during baseline settlement",
+          );
+          capture.reject(error);
+          await expect(command).rejects.toBe(error);
+        } else {
+          capture.resolve({ version: 1, sessionId, root: "/workspace", files: [] });
+          await command;
+          expect(findStoredSessionEntry(sessionKey)?.sessionDiffBaseline).toMatchObject({
+            version: 1,
+            sessionId,
+          });
+        }
+      } finally {
+        capture.resolve({ version: 1, sessionId, root: "/workspace", files: [] });
+        await settled;
+      }
+    },
+  );
 
   it("does not re-normalize an exact configured custom provider through plugin runtime", async () => {
     state.normalizeProviderModelIdWithRuntimeMock.mockImplementation(

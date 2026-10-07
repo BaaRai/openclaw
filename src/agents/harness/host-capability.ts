@@ -14,6 +14,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { bindUserTurnTranscriptAnnotation } from "../../sessions/user-turn-transcript-annotation.js";
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { resolveSkillResourceCandidates } from "../../skills/runtime/resource-candidates.js";
@@ -95,6 +96,7 @@ export function createAgentHarnessHostCapabilities(params: {
   runWithScope: <T>(run: () => Promise<T>) => Promise<T>;
 } {
   const attempt = params.attempt;
+  const baseline = getSessionDiffBaselineCapture();
   // Capture authority by value before any plugin handoff can mutate the attempt.
   const runtimePluginToolGrant = attempt.runtimePluginToolGrant
     ? Object.freeze({
@@ -315,6 +317,9 @@ export function createAgentHarnessHostCapabilities(params: {
       ...request
     }: Parameters<AgentHarnessHostCapabilities["runBeforeToolCall"]>[0],
   ) => {
+    if (baseline) {
+      await baseline;
+    }
     assertCurrent();
     const hostApprovalMode = approvalMode === "defer" ? "defer" : "request";
     const actionCwd =
@@ -388,7 +393,7 @@ export function createAgentHarnessHostCapabilities(params: {
         callerIdentity ? wrapToolWithGatewayCallerIdentity(tool, callerIdentity) : tool,
       )
       .map((tool) => wrapToolWithAbortSignal(tool, boundAbortSignal))
-      .map((tool) => gateBoundTool(tool, assertActive, observeResult));
+      .map((tool) => gateBoundTool(tool, assertActive, observeResult, baseline));
   };
   const bindToolSurface: AgentHarnessHostCapabilities["bindToolSurface"] = (tools, options) =>
     bindTools(tools, options, () => {});

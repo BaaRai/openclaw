@@ -16,6 +16,7 @@ import {
   buildAgentHookContextIdentityFields,
 } from "../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { getSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
 import { sleep } from "../utils/sleep.js";
 import {
   hasAcceptedSessionSpawn,
@@ -136,7 +137,10 @@ async function runCliAgentInternal(
   params: RunCliAgentParams,
   diagnosticLifecycle?: ClaudeCliRunDiagnosticLifecycle,
 ): Promise<EmbeddedAgentRunResult> {
+  await getSessionDiffBaselineCapture();
   assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration!);
+  params.abortSignal?.throwIfAborted();
+  params.assertCurrent?.();
   // The hook gate must fire before prepareCliRunContext — that call allocates
   // backend resources released only by runPreparedCliAgent's try…finally.
   await params.onExecutionStarted?.();

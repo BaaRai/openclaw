@@ -15,6 +15,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import {
   getAdmittedRunDelegatedAuthority,
   type PreparedAgentRunAdmission,
@@ -71,6 +72,11 @@ export async function runAcpAgentCommand(params: {
   if (getInstallationTarget()) {
     throw new Error(LOCAL_INSTALLATION_TARGET_UNSUPPORTED);
   }
+  await getSessionDiffBaselineCapture();
+  assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
+  params.opts.abortSignal?.throwIfAborted();
+  params.opts.assertSourceCurrent?.();
+  params.opts.operatorAuthority?.assertCurrent();
   const attemptExecutionRuntime = await loadAttemptExecutionRuntime();
   const acpToolTracker = attemptExecutionRuntime.createAcpToolLifecycleTracker();
   const startedAt = Date.now();

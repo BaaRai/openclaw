@@ -4,6 +4,13 @@ import {
   isSessionEntryDataSql,
   observeHostDataSql,
 } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { hasBeforeToolCallPolicy } from "../agents/agent-tools.before-tool-call.policy.js";
+import { wrapToolWithBeforeToolCallHook } from "../agents/agent-tools.before-tool-call.wrapper.js";
+import { createAdmittedHostCapabilityTestFixture } from "../agents/harness/host-capability.test-support.js";
+import {
+  nativeHookRelayEventHasLocalWork,
+  nativeHookRelayEventToolMatcher,
+} from "../agents/harness/native-hook-relay-events.js";
 import { SessionWorkStartInvalidatedError } from "../config/sessions/lifecycle.js";
 import {
   deleteSessionEntryLifecycle,
@@ -42,7 +49,10 @@ vi.mock("./session-diff.js", async (importOriginal) => ({
   captureSessionDiffBaseline: captureMocks.capture,
 }));
 
-import { ensureSessionDiffBaseline } from "./session-diff-baseline.js";
+import {
+  ensureSessionDiffBaseline,
+  withSessionDiffBaselineCapture,
+} from "./session-diff-baseline.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-session-diff-owner-");
 
@@ -121,6 +131,94 @@ describe("ensureSessionDiffBaseline", () => {
       return persistenceMocks.actualPatch(...args);
     });
   });
+
+  it.each(["embedded", "native", "host-tool"] as const)(
+    "keeps a captured %s tool blocked when the baseline fails after model preparation",
+    async (runtime) => {
+      const entry = makeEntry(`deferred-${runtime}`, {
+        sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+      });
+      const target = await seedEntry({ entry });
+      const capture = createDeferredCore<SessionDiffBaseline>();
+      const capturing = createDeferredCore();
+      captureMocks.capture.mockImplementationOnce(() => {
+        capturing.resolve();
+        return capture.promise;
+      });
+      const prepared = createDeferredCore<() => Promise<unknown>>();
+      const finished = createDeferredCore();
+      const mutate = vi.fn().mockResolvedValue({ content: [], details: {} });
+      const scoped = withSessionDiffBaselineCapture(async () => {
+        await ensureSessionDiffBaseline({
+          ...target,
+          cwd: "/workspace",
+          isNewSession: false,
+          deferCapture: true,
+        });
+        expect(hasBeforeToolCallPolicy()).toBe(true);
+        const policy = {
+          sessionKey: target.sessionKey,
+          agentId: target.agentId,
+          preToolUseLoopDetection: false,
+        };
+        expect(nativeHookRelayEventHasLocalWork(policy, "pre_tool_use")).toBe(true);
+        expect(nativeHookRelayEventToolMatcher(policy, "pre_tool_use")).toBeUndefined();
+        const host =
+          runtime !== "embedded"
+            ? await createAdmittedHostCapabilityTestFixture({
+                runId: `baseline-${runtime}`,
+                sessionId: entry.sessionId,
+                sessionKey: target.sessionKey,
+                agentId: target.agentId,
+              })
+            : undefined;
+        const sourceTool = {
+          name: "write",
+          label: "Write",
+          description: "Write a workspace file",
+          parameters: { type: "object", properties: {} },
+          execute: mutate,
+        } satisfies Parameters<typeof wrapToolWithBeforeToolCallHook>[0];
+        const tool = wrapToolWithBeforeToolCallHook(sourceTool, undefined, {
+          emitDiagnostics: false,
+        });
+        prepared.resolve(
+          host && runtime === "native"
+            ? async () => {
+                await host.hostCapabilities.runBeforeToolCall({ toolName: "write", params: {} });
+                return mutate();
+              }
+            : () =>
+                (host ? host.hostCapabilities.bindToolSurface([sourceTool])[0]! : tool).execute(
+                  "write-1",
+                  {},
+                ),
+        );
+        try {
+          await finished.promise;
+        } finally {
+          host?.closeHost();
+          host?.closeAdmission();
+        }
+      });
+      const settlement = Promise.allSettled([scoped]);
+      try {
+        const invoke = await prepared.promise;
+        await capturing.promise;
+        // Native HTTP callbacks and retained tools execute outside the preparation ALS scope.
+        expect(hasBeforeToolCallPolicy()).toBe(false);
+        const execution = invoke();
+        const refused = expect(execution).rejects.toBeInstanceOf(SessionWorkStartInvalidatedError);
+        capture.reject(new SessionWorkStartInvalidatedError("baseline generation changed"));
+        await refused;
+        expect(mutate).not.toHaveBeenCalled();
+      } finally {
+        capture.resolve(baseline(entry.sessionId));
+        finished.resolve();
+        await settlement;
+      }
+    },
+  );
 
   it.each([false, true])(
     "keeps a global session baseline in its selected agent's custom store (new=%s)",

@@ -16,6 +16,7 @@ import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
+import { withSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { classifySessionStateActor } from "../sessions/session-state-events.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
@@ -236,7 +237,7 @@ async function agentCommandInternal(
         }
       },
     });
-    return await sessionWorkAdmission.run(async () => {
+    const runSessionWork = async () => {
       if (sessionStore && sessionKey && !suppressVisibleSessionEffects) {
         try {
           await repairPendingAssistantTranscriptTurns({
@@ -563,7 +564,8 @@ async function agentCommandInternal(
       sessionReboundDuringRun = finalized.sessionReboundDuringRun;
       maintenanceRequest = finalized.maintenance;
       return finalized.deliveryResult;
-    });
+    };
+    return await sessionWorkAdmission.run(() => withSessionDiffBaselineCapture(runSessionWork));
   } catch (error) {
     commandError = error;
     throw error;

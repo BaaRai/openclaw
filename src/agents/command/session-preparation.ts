@@ -88,7 +88,7 @@ export async function prepareCommandSessionDiffBaseline(
   },
 ): Promise<InternalSessionEntry> {
   try {
-    const entry = await ensureSessionDiffBaseline(params);
+    const entry = await ensureSessionDiffBaseline({ ...params, deferCapture: true });
     if (params.sessionStore) {
       params.sessionStore[params.sessionKey] = entry;
     }

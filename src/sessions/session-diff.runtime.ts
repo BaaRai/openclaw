@@ -480,13 +480,17 @@ async function fingerprintBaselineCandidate(params: {
 }
 
 async function gitOutForBaseline(cwd: string, args: string[]): Promise<string | null> {
-  const result = await runGitBuffered(cwd, ["-c", "core.quotePath=false", ...args], {
-    timeoutMs: 30_000,
-    maxOutputBytes: {
-      stdout: MAX_BASELINE_GIT_OUTPUT_BYTES,
-      stderr: 32 * 1024,
+  const result = await runGitBuffered(
+    cwd,
+    ["--no-optional-locks", "-c", "core.quotePath=false", ...args],
+    {
+      timeoutMs: 30_000,
+      maxOutputBytes: {
+        stdout: MAX_BASELINE_GIT_OUTPUT_BYTES,
+        stderr: 32 * 1024,
+      },
     },
-  });
+  );
   if (result.termination !== "exit" || result.code !== 0) {
     return null;
   }

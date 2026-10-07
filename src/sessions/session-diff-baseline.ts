@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   isSessionWorkStartInvalidatedError,
   resolveSessionWorkStartError,
@@ -13,7 +14,7 @@ import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-ent
 import type { InternalSessionEntry, SessionDiffBaseline } from "../config/sessions/types.js";
 import { logVerbose } from "../globals.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { resolveGlobalMap } from "../shared/global-singleton.js";
+import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 
 const captureInFlight = resolveGlobalMap<string, Promise<InternalSessionEntry>>(
@@ -23,6 +24,35 @@ const captureInFlight = resolveGlobalMap<string, Promise<InternalSessionEntry>>(
     captures.clear();
   },
 );
+
+const captureScope = resolveGlobalSingleton(
+  Symbol.for("openclaw.sessionDiffBaselineCaptureScope"),
+  () => new AsyncLocalStorage<{ ready?: Promise<InternalSessionEntry> }>(),
+);
+
+/** Inference can overlap capture; tools and native before-tool policy retain its dependency. */
+export async function withSessionDiffBaselineCapture<T>(run: () => Promise<T>): Promise<T> {
+  const scope: { ready?: Promise<InternalSessionEntry> } = {};
+  return captureScope.run(scope, async () => {
+    try {
+      return await run();
+    } finally {
+      await scope.ready;
+    }
+  });
+}
+
+export function getSessionDiffBaselineCapture(): Promise<InternalSessionEntry> | undefined {
+  return captureScope.getStore()?.ready;
+}
+
+/** Read-only clients join an active capture; they never start or retry one. */
+export async function waitForSessionDiffBaselineCapture(
+  entry: InternalSessionEntry,
+): Promise<InternalSessionEntry> {
+  const capture = matchingCapture(entry);
+  return (capture && captureInFlight.get(capture.captureId)) ?? entry;
+}
 
 function matchingCapture(entry: InternalSessionEntry): SessionDiffBaselineCapture | undefined {
   const capture = entry.sessionDiffBaselineCapture;
@@ -184,6 +214,7 @@ export async function ensureSessionDiffBaseline(params: {
   isNewSession: boolean;
   sessionKey: string;
   storePath: string;
+  deferCapture?: boolean;
 }): Promise<InternalSessionEntry> {
   if (params.entry.execNode) {
     return params.entry;
@@ -241,7 +272,7 @@ export async function ensureSessionDiffBaseline(params: {
     return entry;
   }
 
-  return await getOrCreatePromise(
+  const ready = getOrCreatePromise(
     captureInFlight,
     capture.captureId,
     () =>
@@ -253,4 +284,15 @@ export async function ensureSessionDiffBaseline(params: {
       }),
     { evictOnSettled: true },
   );
+  if (params.deferCapture) {
+    const scope = captureScope.getStore();
+    if (!scope) {
+      throw new Error("Deferred session diff capture requires a reply scope");
+    }
+    scope.ready = ready;
+    // The scoped tool barrier and reply settlement both consume this rejection.
+    void ready.catch(() => undefined);
+    return entry;
+  }
+  return await ready;
 }

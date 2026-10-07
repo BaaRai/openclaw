@@ -7,6 +7,7 @@ import {
   type SessionsDiffParams,
   type SessionsDiffResult,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { waitForSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { loadCheckoutDiff } from "../../sessions/session-diff.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
@@ -51,6 +52,8 @@ export async function loadSessionDiff(
   if (!entry?.sessionId || !storePath) {
     return empty("unknown_session");
   }
+  const captured =
+    params.scope === "commit" ? entry : await waitForSessionDiffBaselineCapture(entry);
   const repository = await resolveRepositoryWorkspaceAccess(loaded, context);
   if (repository) {
     if (repository.kind === "stored") {
@@ -85,7 +88,7 @@ export async function loadSessionDiff(
     result = await loadCheckoutDiff({
       ...input,
       scope: params.scope ?? "all",
-      baseline: entry.sessionDiffBaseline,
+      baseline: captured.sessionDiffBaseline,
       sessionId: entry.sessionId,
     });
   }

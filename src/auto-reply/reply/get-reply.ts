@@ -42,6 +42,7 @@ import {
   isModelSelectionLocked,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
+import { withSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
@@ -218,6 +219,14 @@ function finishCommandTurn(params: {
 }
 
 export async function getReplyFromConfig(
+  ctx: MsgContext,
+  options?: GetReplyOptions,
+  configOverride?: OpenClawConfig,
+): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  return withSessionDiffBaselineCapture(() => resolveReplyFromConfig(ctx, options, configOverride));
+}
+
+async function resolveReplyFromConfig(
   ctx: MsgContext,
   options?: GetReplyOptions,
   configOverride?: OpenClawConfig,
