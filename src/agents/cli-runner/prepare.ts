@@ -67,7 +67,7 @@ import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { isSetupCredentialAccessible } from "../auth-profiles/setup-access.js";
 import { loadAuthProfileStoreForRuntime } from "../auth-profiles/store-runtime.js";
 import { resolveRuntimeAuthProfileAgentDir } from "../auth-profiles/store.js";
-import type { AuthProfileCredential, AuthProfileStore } from "../auth-profiles/types.js";
+import type { AuthProfileStore } from "../auth-profiles/types.js";
 import {
   buildBootstrapBudgetState,
   buildBootstrapInjectionStats,
@@ -436,7 +436,6 @@ async function prepareCliRunContextWithinReadFence(
   let effectiveAuthProfileId =
     requestedAuthProfileId ?? backendResolved.defaultAuthProfileId?.trim() ?? undefined;
   let authStore: AuthProfileStore | undefined;
-  let authCredential: AuthProfileCredential | undefined;
   let resolvedProfileAuth: ResolvedProviderAuth | undefined;
   const loadScopedAuthStore = (options: { profileId?: string; readOnly?: boolean } = {}) => {
     params.assertCurrent?.();
@@ -452,7 +451,6 @@ async function prepareCliRunContextWithinReadFence(
   };
   if (effectiveAuthProfileId) {
     authStore = loadScopedAuthStore({ profileId: effectiveAuthProfileId });
-    authCredential = authStore.profiles[effectiveAuthProfileId];
   } else if (
     backendResolved.autoSelectAuthProfile !== false &&
     (backendResolved.authEpochMode === "profile-only" || backendResolved.prepareExecution)
@@ -465,10 +463,10 @@ async function prepareCliRunContextWithinReadFence(
         provider: params.provider,
         includePendingOAuthRefresh: true,
       })[0]?.trim() || undefined;
-    if (effectiveAuthProfileId) {
-      authCredential = authStore.profiles[effectiveAuthProfileId];
-    }
   }
+  let authCredential = effectiveAuthProfileId
+    ? authStore?.profiles[effectiveAuthProfileId]
+    : undefined;
   if (
     effectiveAuthProfileId &&
     authCredential &&
@@ -701,17 +699,12 @@ async function prepareCliRunContextWithinReadFence(
       // A same-name API model may have a different native window from this CLI runtime.
       allowUnscopedModelLookup: false,
     });
-  let modelContextTokens: number | undefined;
-  for (const contextModelId of contextModelIds) {
-    const candidateContextTokens = resolveContextModelTokens(contextModelId);
-    if (candidateContextTokens !== undefined) {
-      modelContextTokens =
-        modelContextTokens === undefined
-          ? candidateContextTokens
-          : Math.min(modelContextTokens, candidateContextTokens);
-    }
-  }
-  modelContextTokens ??= DEFAULT_CONTEXT_TOKENS;
+  const contextTokenCandidates = contextModelIds
+    .map((contextModelId) => resolveContextModelTokens(contextModelId))
+    .filter((tokens) => tokens !== undefined);
+  let modelContextTokens = contextTokenCandidates.length
+    ? Math.min(...contextTokenCandidates)
+    : DEFAULT_CONTEXT_TOKENS;
   // Session-selectable context windows (catalog `contextWindows`, e.g. Claude
   // CLI 200k/1m) cap the resolved window here: the fixed provider contract in
   // resolveAnthropicFixedContextWindow deliberately ignores catalog scalars,
@@ -839,12 +832,9 @@ async function prepareCliRunContextWithinReadFence(
   const systemAgentMcpConfig = internalParams.systemAgentTool
     ? buildSystemAgentToolsMcpServerConfig(internalParams.systemAgentTool)
     : undefined;
+  const canUseGatewayTools = !nodeClaudePlacement && !skipsTurnPreparation && !systemAgentMcpConfig;
   const bundleMcpEnabled =
-    !nodeClaudePlacement &&
-    !skipsTurnPreparation &&
-    !systemAgentMcpConfig &&
-    backendResolved.bundleMcp &&
-    params.disableTools !== true;
+    canUseGatewayTools && backendResolved.bundleMcp && params.disableTools !== true;
   let mcpLoopbackRuntime = bundleMcpEnabled ? getActiveMcpLoopbackRuntime() : undefined;
   if (bundleMcpEnabled && !mcpLoopbackRuntime) {
     try {
@@ -862,20 +852,15 @@ async function prepareCliRunContextWithinReadFence(
       "Bundled MCP is enabled, but the OpenClaw MCP loopback server did not publish a runtime after startup.",
     );
   }
-  const mcpDeliveryCaptureEnabled = bundleMcpEnabled && Boolean(mcpLoopbackRuntime);
   const { nodeWorkshopEnabled, hostOwnedTools } = mcp.resolveCliMcpToolOwnership(params, {
     backend: backendResolved,
-    enabled: mcpDeliveryCaptureEnabled,
+    enabled: bundleMcpEnabled,
     nodePlacement: nodeClaudePlacement,
     rooted: Boolean(rootedExecution),
     skipPreparation: skipsTurnPreparation,
   });
   const shouldMaterializeRuntimePolicy =
-    runtimeToolsAllowPolicy !== undefined &&
-    !nodeClaudePlacement &&
-    !skipsTurnPreparation &&
-    !systemAgentMcpConfig &&
-    params.disableTools !== true;
+    runtimeToolsAllowPolicy !== undefined && canUseGatewayTools && params.disableTools !== true;
   const skillLibraryAuthoring: RunCliAgentParams["skillLibraryAuthoring"] =
     nodeWorkshopEnabled && params.skillLibraryAuthoring
       ? { ...params.skillLibraryAuthoring, defaultTarget: "personal" }
@@ -902,25 +887,24 @@ async function prepareCliRunContextWithinReadFence(
       }
     : undefined;
   params.assertCurrent?.();
-  const mcpProjection =
-    (bundleMcpEnabled || shouldMaterializeRuntimePolicy || nodeWorkshopEnabled) && mcpContextBase
-      ? await mcp.prepareCliMcpToolProjection(params, {
-          agentId: workspaceResolution.agentId,
-          context: mcpContextBase,
-          runtimeToolsAllowPolicy,
-          rootedToolsAllow,
-          defaultMediatedToolNames: hostOwnedTools,
-          scope: {
-            cfg: runConfig,
-            rootedExecution,
-            ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
-            ...(mcpToolAuth ? { authProfileStore: mcpToolAuth.store } : {}),
-            ...(mcpToolAuth?.agentDir ? { authProfileStoreAgentDir: mcpToolAuth.agentDir } : {}),
-          },
-          resolvePolicyTools: resolveMcpLoopbackPolicyTools,
-          resolveScopedTools: resolveMcpLoopbackScopedTools,
-        })
-      : { params, tools: [] };
+  const mcpProjection = mcpContextBase
+    ? await mcp.prepareCliMcpToolProjection(params, {
+        agentId: workspaceResolution.agentId,
+        context: mcpContextBase,
+        runtimeToolsAllowPolicy,
+        rootedToolsAllow,
+        defaultMediatedToolNames: hostOwnedTools,
+        scope: {
+          cfg: runConfig,
+          rootedExecution,
+          ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
+          ...(mcpToolAuth ? { authProfileStore: mcpToolAuth.store } : {}),
+          ...(mcpToolAuth?.agentDir ? { authProfileStoreAgentDir: mcpToolAuth.agentDir } : {}),
+        },
+        resolvePolicyTools: resolveMcpLoopbackPolicyTools,
+        resolveScopedTools: resolveMcpLoopbackScopedTools,
+      })
+    : { params, tools: [] };
   params = mcpProjection.params;
   params.assertCurrent?.();
   const hookFilteredProjectedTools = applyEmbeddedAttemptToolsAllow(
@@ -940,7 +924,7 @@ async function prepareCliRunContextWithinReadFence(
     (promptBuildRestrictsTools &&
       params.cliToolAvailability === undefined &&
       backendResolved.nativeToolMode === "selectable") ||
-    (runtimeToolsAllowPolicy !== undefined && shouldMaterializeRuntimePolicy) ||
+    shouldMaterializeRuntimePolicy ||
     rootedExecution
   ) {
     params = {
@@ -1403,14 +1387,12 @@ async function prepareCliRunContextWithinReadFence(
       backendId: backendResolved.id,
       execute: preparedExecution?.execute,
     });
-    const promptToolNamesHash =
-      bundleMcpEnabled && mcpLoopbackRuntime
-        ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
-        : undefined;
+    const promptToolNamesHash = bundleMcpEnabled
+      ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
+      : undefined;
     // `sessionMode: none` may still use a live transport in-process, but neither a
     // returned nor previously stored id is authority for cross-process continuity.
-    const ignoreCliSessionCandidate =
-      isSideQuestion || preparedBackendFinal.backend.sessionMode === "none";
+    const ignoreCliSessionCandidate = preparedBackendFinal.backend.sessionMode === "none";
     // Native controls target the already-owned transcript without rebuilding its turn-time MCP
     // topology. Re-validating that topology here would discard the session being compacted.
     const controlOperationCliSessionId = isControlOperation
@@ -1794,7 +1776,7 @@ async function prepareCliRunContextWithinReadFence(
       promptToolNamesHash,
       ...(resultContentSourceByToolName.size > 0 ? { resultContentSourceByToolName } : {}),
       cwdHash,
-      ...(mcpDeliveryCaptureEnabled ? { mcpDeliveryCapture: true as const } : {}),
+      ...(bundleMcpEnabled ? { mcpDeliveryCapture: true as const } : {}),
     });
     const admitFinalParams = () =>
       admitCliRunParams(
