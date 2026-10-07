@@ -276,13 +276,7 @@ export async function runManagerTurn(params: {
               : undefined
             : meta.runtimeOptions?.model;
           assertModelAllowed(appliedModel);
-          activeTurn = {
-            requestId: input.requestId,
-            instanceId: input.admittedRunContext.operationalRunInstance.instanceId,
-            runtime,
-            handle,
-            abortController,
-          };
+          activeTurn = { runtime, handle, abortController };
           // Publish custody before controls or state persistence can yield, so a
           // forced discard reaches this exact late handle.
           params.activeTurnBySession.set(actorKey, activeTurn);
