@@ -34,14 +34,14 @@ describe("FRV protected gh evidence reads", () => {
     [
       "getAttemptJobs",
       ["101", 2],
-      "actions/runs/101/attempts/2/jobs?per_page=100",
-      [{ id: 1 }, { id: 2 }],
+      "actions/runs/101/attempts/2/jobs?per_page=25",
+      Array.from({ length: 26 }, (_, index) => ({ id: index + 1 })),
     ],
     [
       "getParentJobs",
       ["77"],
-      "actions/runs/77/jobs?filter=all&per_page=100",
-      [{ id: 1 }, { id: 2 }],
+      "actions/runs/77/jobs?filter=all&per_page=25",
+      Array.from({ length: 26 }, (_, index) => ({ id: index + 1 })),
     ],
     ["getJobLog", [1], "actions/jobs/1/logs", "job evidence"],
   ])("revalidates %s through the default protected route", (method, args, endpoint, expected) => {
@@ -59,7 +59,7 @@ describe("FRV protected gh evidence reads", () => {
           ? ["101", { operationDeadline: 15_000 }]
           : ["101", 2, { operationDeadline: 15_000 }];
       const endpoint =
-        method === "getRun" ? "actions/runs/101" : "actions/runs/101/attempts/2/jobs?per_page=100";
+        method === "getRun" ? "actions/runs/101" : "actions/runs/101/attempts/2/jobs?per_page=25";
       const result = runProtectedFrv(method, args, endpoint, "transient-deadline");
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("FRV operation timed out");
@@ -121,7 +121,7 @@ if (${endpoint.endsWith("/logs")} && failure === "unrelated") fail("unrelated lo
 if (${endpoint.endsWith("/logs")} && failure === "none" && !args.includes("--allow-escape-sequences")) fail("missing escape-sequence flag", 20);
 if (${endpoint.includes("/jobs?")}) {
   if (!args.includes("--paginate") || !args.includes(".jobs[] | @json")) fail("missing pagination", 17);
-  console.log('{"id":1}\\n{"id":2}');
+  console.log(Array.from({ length: 26 }, (_, index) => JSON.stringify({ id: index + 1 })).join("\\n"));
 } else console.log(${endpoint.endsWith("/logs") ? JSON.stringify("job evidence") : JSON.stringify('{"run_attempt":2}')});
 `,
   );

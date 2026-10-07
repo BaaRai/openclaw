@@ -843,6 +843,7 @@ export function createClient(repository, dependencies = {}) {
     mutate(["api", "-X", "POST", `repos/${repository}/actions/runs/${runId}/${action}`]);
   const execute = dependencies.execCommand ?? execCommand;
   const readJobs = async (path, options) => {
+    // Smaller pages avoid GitHub 502s on large job/step payloads; pagination retains all jobs.
     const output = await apiText(path, ".jobs[] | @json", [], options);
     return output
       ? output
@@ -893,7 +894,7 @@ export function createClient(repository, dependencies = {}) {
     getAttemptJobs:
       dependencies.getAttemptJobs ??
       ((runId, runAttempt, options) =>
-        readJobs(`actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100`, options)),
+        readJobs(`actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=25`, options)),
     getRun(runId, options) {
       return apiJson(`actions/runs/${runId}`, options);
     },
@@ -901,7 +902,7 @@ export function createClient(repository, dependencies = {}) {
       return apiJson(`actions/runs/${runId}/attempts/${runAttempt}`, options);
     },
     getParentJobs: (runId, options) =>
-      readJobs(`actions/runs/${runId}/jobs?filter=all&per_page=100`, options),
+      readJobs(`actions/runs/${runId}/jobs?filter=all&per_page=25`, options),
     async getJobLog(jobId, options) {
       // Octopool's gh shim refuses log bodies with terminal escape sequences even off a TTY;
       // real gh ignores the flag off-TTY, so the controller works with either binary.
