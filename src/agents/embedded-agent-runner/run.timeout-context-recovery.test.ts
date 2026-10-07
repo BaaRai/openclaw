@@ -316,13 +316,16 @@ describe("timeout recovery", () => {
       }),
     });
     abandon("run-timeout");
-    await expect(sendCompletion()).resolves.toMatchObject({
-      delivered: false,
-      path: "none",
-      reason: "completion_handoff_pending",
-      disposition: "retryable",
+    // Delivery is recorded once and never retried (c6ecb5f9f2a), so a recovering requester
+    // receives the completion through one dispatch that waits in its mailbox.
+    dispatchGatewayMethodInProcess.mockResolvedValueOnce({
+      status: "ok",
+      result: { payloads: [{ text: "Recovered requester reviewed the child." }], meta: {} },
     });
-    expect(dispatchGatewayMethodInProcess).not.toHaveBeenCalled();
+    await expect(sendCompletion()).resolves.toMatchObject({ delivered: true, path: "direct" });
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledOnce();
+    expect(dispatchGatewayMethodInProcess.mock.calls[0]?.[0]).toBe("agent");
+    dispatchGatewayMethodInProcess.mockClear();
     const queueMessage = vi.fn(async () => undefined);
     const successor = createEmbeddedRunHandle({
       runId: "run-successor",
