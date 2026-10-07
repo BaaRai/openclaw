@@ -153,14 +153,18 @@ owner, so callbacks from the closed Gateway cannot settle the recovered wake.
 - **Retirement is an event.** Kill, Stop of a paused or queued child, child
   session deletion, and requester reset or deletion retire the child's owed
   inputs. A retired member is terminal, so it never holds its siblings'
-  continuation, and it never delivers its own result. A yielded cohort still
-  resolves into exactly one continuation: when its last member settles or
+  continuation. The parent hears of a retired child exactly once. A yielded
+  cohort resolves into exactly one continuation: when its last member settles or
   retires, the parent is woken once, and the continuation names each child that
-  ended without a result. A yield claims only children that still owe a
-  completion; with none left, `sessions_yield` reports nothing pending.
-- **The requester that already knows is not woken.** A Stop or reset of the
-  parent itself retires its children without a continuation, and so does a kill
-  the parent's own running turn issues.
+  ended without a result. Any other child reports its stopped outcome through
+  its own completion, with no output. A kill is confirmed once the killed run's
+  operation settles and its kill owner finishes. A yield claims only children
+  that still owe a completion; with none left, `sessions_yield` reports nothing
+  pending.
+- **The requester that already knows is not woken.** A Stop, reset, or deletion
+  of the parent itself retires its children without a report. So does a kill
+  that lands while the parent's own turn still holds the child. Descendants of a
+  stopped child are retired without a report to that child.
 - **Recorded once.** A delivery outcome, including a transport failure, is
   recorded once and never retried. A required completion has no expiry: it
   waits until the requester runs it, or until the requester session is reset or
