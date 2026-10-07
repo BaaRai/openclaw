@@ -2,12 +2,13 @@ import { html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { html as staticHtml, literal } from "lit/static-html.js";
 import { presenceUserKey } from "../../../src/shared/presence-user.ts";
+import { readPresenceEntries, resolveCurrentSelfUser } from "../app/user-profile.ts";
 import { t } from "../i18n/index.ts";
 import { renderHoverMarquee } from "../lib/hover-marquee.ts";
 import {
   presenceViewerActivity,
   presenceActivityLabel,
-  presenceViewerLabel,
+  onlinePresenceViewerLabel,
   projectOnlinePresenceViewers,
   type PresenceViewer,
 } from "../lib/presence-users.ts";
@@ -23,6 +24,11 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
   const team = host.sidebarAgentsMode === "roster";
   const collapsed = team ? !host.teamOnlineExpanded : host.collapsedSessionSections.has(sectionId);
   const label = t("presence.rosterTitle");
+  const selfUser = resolveCurrentSelfUser({
+    snapshotUser: host.sessionDataContext?.gateway.snapshot.selfUser,
+    presenceEntries: readPresenceEntries(host.sessionData.presencePayload),
+    presenceInstanceId: host.sessionDataContext?.gateway.snapshot.client?.instanceId,
+  });
   let onlineUsers = projectOnlinePresenceViewers(host.sessionData.presencePayload);
   const previousFaces = onlineFaces.get(host);
   // Recheck activity ordering on each render, but retain equal facepile inputs.
@@ -60,9 +66,13 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
               (countsFor(a)?.[host.people.sortMode] ?? -1);
       return (
         order ||
-        presenceViewerLabel(a).localeCompare(presenceViewerLabel(b), undefined, {
-          sensitivity: "base",
-        })
+        onlinePresenceViewerLabel(a, selfUser).localeCompare(
+          onlinePresenceViewerLabel(b, selfUser),
+          undefined,
+          {
+            sensitivity: "base",
+          },
+        )
       );
     });
   const routing = personActivityRouting(
@@ -145,7 +155,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                   const activity = personActivityLink(
                     user.identity?.id,
                     routing,
-                    presenceViewerLabel(user),
+                    onlinePresenceViewerLabel(user, selfUser),
                   );
                   const tag = activity ? literal`a` : literal`button`;
                   return staticHtml`<div
@@ -167,7 +177,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                     aria-haspopup="dialog"
                     aria-expanded="false"
                     aria-label=${t(activity ? "presence.card.ariaLabel" : "presence.card.details", {
-                      name: presenceViewerLabel(user),
+                      name: onlinePresenceViewerLabel(user, selfUser),
                     })}
                   >
                     <span class="sidebar-online__avatar" aria-hidden="true">
@@ -177,7 +187,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                         variant="footer"
                       ></openclaw-viewer-avatar>
                     </span>
-                    <span class="sidebar-online__person-name">${presenceViewerLabel(user)}</span>
+                    <span class="sidebar-online__person-name">${onlinePresenceViewerLabel(user, selfUser)}</span>
                     ${
                       workload && (workload.open > 0 || workload.running > 0)
                         ? html`<span class="sidebar-online__counts" aria-hidden="true">
