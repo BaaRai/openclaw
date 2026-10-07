@@ -180,6 +180,18 @@ export function renderChatQueue(props: ChatQueueProps) {
   if (!visibleQueue.length) {
     return nothing;
   }
+  // Display reconciliation excludes accepted inputs. Only an unresolved local
+  // head can block this tray; keep that exact input and its actions beside it.
+  const head = props.queue.find((item) => item.sendState !== "failed" || item.localCommandName);
+  if (
+    head &&
+    (head.sendState === "unconfirmed" || head.sendState === "held") &&
+    isQueuedSendInlineState(head) &&
+    !visibleQueue.some((item) => item.id === head.id) &&
+    (props.displayQueue ?? props.queue).some((item) => item.id === head.id)
+  ) {
+    visibleQueue.unshift(head);
+  }
   // Hidden and edited rows retain their delivery positions and split the
   // offered segments even though they may not appear in this tray.
   const visibleIds = new Set(visibleQueue.map((item) => item.id));
@@ -194,16 +206,10 @@ export function renderChatQueue(props: ChatQueueProps) {
     // edit shrinks the segments but must not retract the handle column.
     offered: visibleQueue.filter(isMovableChatQueueItem).length > 1,
   };
-  // Attempted sends live in the transcript but still own their FIFO position.
-  // Keep their unresolved delivery visible beside the messages they block.
-  const head = props.queue.find((item) => item.sendState !== "failed" || item.localCommandName);
   const globalState =
-    (head?.sendState === "unconfirmed" || head?.sendState === "held") &&
-    isQueuedSendInlineState(head)
-      ? { label: t("chat.queue.states.blockedByUnconfirmed"), tone: "warn" }
-      : visibleQueue.some((item) => item.sendState === "waiting-model") && !props.offline
-        ? { label: t("chat.queue.states.applyingSettings"), tone: "settings" }
-        : null;
+    visibleQueue.some((item) => item.sendState === "waiting-model") && !props.offline
+      ? { label: t("chat.queue.states.applyingSettings"), tone: "settings" }
+      : null;
   // Keyed rows so a reorder moves the existing DOM node instead of rewriting
   // it in place; that is what keeps focus on the handle the operator is using.
   return html`
@@ -283,6 +289,7 @@ function renderChatQueueItem(
   const previewUrl = images?.[0] ? getChatAttachmentPreviewUrl(images[0]) : null;
   const failed =
     item.sendState === "failed" || item.sendState === "unconfirmed" || item.sendState === "held";
+  const inlineRecovery = isQueuedSendInlineState(item);
   const reconnecting =
     !item.serverQueued && !failed && (props.offline || item.sendState === "waiting-reconnect");
   const stateLabel = sendStateLabel(item, !item.serverQueued && props.offline === true);
@@ -592,12 +599,14 @@ function renderChatQueueItem(
           busy || editing
             ? nothing
             : html`
-                <openclaw-tooltip .content=${t("chat.queue.removeQueuedMessage")}>
+                <openclaw-tooltip
+                  .content=${t(inlineRecovery ? "chat.queue.discardPendingMessage" : "chat.queue.removeQueuedMessage")}
+                >
                   <button
                     class="chat-queue__remove"
                     type="button"
                     ?disabled=${item.serverQueued && !props.canRemoveServerQueued}
-                    aria-label=${t("chat.queue.removeQueuedMessage")}
+                    aria-label=${t(inlineRecovery ? "chat.queue.discard" : "chat.queue.removeQueuedMessage")}
                     @click=${(event: MouseEvent) => {
                       // Chromium retargets click 2 after row removal; detail still owns the gesture.
                       if (event.detail <= 1) {

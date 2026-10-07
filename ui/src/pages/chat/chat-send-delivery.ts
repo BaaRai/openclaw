@@ -500,6 +500,12 @@ async function sendPreparedChatMessage(
     if (!requestConnectionIsCurrent()) {
       return "pending";
     }
+    const currentDelivery = readQueuedMessageById(host, id);
+    // Exact custody can arrive before the ACK. Its newer delivery state owns
+    // recovery; a late transport failure cannot make accepted input uncertain.
+    if (!currentDelivery || !sameQueuedDeliveryVersion(currentDelivery, sendingItem)) {
+      return "pending";
+    }
     if (steerSubmission) {
       steerSubmission.pending = false;
     }

@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 describe("chat composer steering queue", () => {
-  it("keeps attempted unconfirmed messages inline while local commands retain retry and discard", () => {
+  it("keeps the exact unconfirmed blocker actionable beside the queue", () => {
     const onQueueRetry = vi.fn();
     const onQueueRemove = vi.fn();
     const container = renderQueue({
@@ -41,16 +41,21 @@ describe("chat composer steering queue", () => {
     });
 
     const rows = container.querySelectorAll(".chat-queue__item");
-    expect(rows).toHaveLength(1);
-    expect(container.querySelector(".chat-queue__global-state")?.textContent?.trim()).toBe(
-      "Queue paused. Retry or discard the earlier unconfirmed message in the conversation.",
-    );
-    expect(rows[0]?.getAttribute("data-chat-queue-item")).toBe("reset");
+    expect(rows).toHaveLength(2);
+    expect(container.querySelector(".chat-queue__global-state")).toBeNull();
+    expect(rows[0]?.getAttribute("data-chat-queue-item")).toBe("message");
     expect(rows[0]?.querySelector(".chat-queue__badge")?.textContent?.trim()).toBe(
       t("chat.queue.states.needsReview"),
     );
     rows[0]?.querySelector<HTMLButtonElement>(".chat-queue__retry")?.click();
     rows[0]?.querySelector<HTMLButtonElement>(".chat-queue__remove")?.click();
+    expect(onQueueRetry).toHaveBeenCalledWith("message");
+    expect(onQueueRemove).toHaveBeenCalledWith("message");
+    expect(rows[0]?.querySelector(".chat-queue__remove")?.getAttribute("aria-label")).toBe(
+      t("chat.queue.discard"),
+    );
+    rows[1]?.querySelector<HTMLButtonElement>(".chat-queue__retry")?.click();
+    rows[1]?.querySelector<HTMLButtonElement>(".chat-queue__remove")?.click();
     expect(onQueueRetry).toHaveBeenCalledWith("reset");
     expect(onQueueRemove).toHaveBeenCalledWith("reset");
   });

@@ -441,7 +441,15 @@ suite.define(() => {
               .waitFor();
             await expectRequestCountStable(gateway, "chat.send", 1);
             await captureProof("discard-before");
-            await deliveryStatus.getByRole("button", { name: "Discard", exact: true }).click();
+            const blockingInput = page.locator(`.chat-queue__item[data-chat-queue-item]`).filter({
+              hasText: prompt,
+            });
+            await expectBrowser(blockingInput).toBeVisible();
+            await expectBrowser(
+              blockingInput.getByRole("button", { name: "Retry queued message" }),
+            ).toBeEnabled();
+            await captureProof("discard-recovery");
+            await blockingInput.getByRole("button", { name: "Discard", exact: true }).click();
           } else {
             await deliveryStatus.getByRole("button", { name: "Retry queued message" }).click();
           }

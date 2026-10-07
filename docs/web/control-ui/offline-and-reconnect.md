@@ -327,7 +327,8 @@ If a sent message times out before its acknowledgement, the browser keeps it as
 **Delivery unconfirmed**, not **Not sent**. It checks delivery receipts automatically
 while the connection is available, without sending the message again. Timed-out
 receipt reads retry with backoff; they do not release later queued messages ahead
-of the uncertain input or overwrite a newer draft.
+of the uncertain input or overwrite a newer draft. An exact Gateway receipt
+keeps delivery confirmed even if the original acknowledgement later times out.
 
 If the connection drops before a send is acknowledged, reconnect checks the transcript and
 the session's active or last run ID for delivery proof. A matching run confirms receipt even
@@ -335,8 +336,10 @@ before its transcript row appears. Without proof, an attempted message stays in 
 with an amber **Delivery unconfirmed** footer, **Retry**, and **Discard**. Check the conversation and retry only
 if the message did not arrive. Discard removes the pending copy from this browser's outbox; it does not
 undo or cancel work the Gateway already accepted. Later queued messages stay paused until the earlier
-unconfirmed message is resolved or discarded, and the queue explains that blockage. Discarding the
-earlier message lets the next queued message proceed when the session is ready. Unconfirmed local
+unconfirmed message is resolved or discarded. The queue shows that exact message
+with **Retry** and **Discard** beside the messages it blocks, so recovery does not
+require finding an older transcript row. Discarding the earlier message lets the
+next queued message proceed when the session is ready. Unconfirmed local
 commands keep their retry/discard queue controls.
 
 An ordinary message rejected by the Gateway stays in the conversation with a **Not sent**
