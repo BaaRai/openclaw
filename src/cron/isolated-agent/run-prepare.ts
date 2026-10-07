@@ -12,6 +12,7 @@ import { captureSessionEventTargetForHost } from "../../auto-reply/reply/session
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
+import { applyLegacyHeartbeatPromptContribution } from "../../infra/heartbeat-compat.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -474,8 +475,21 @@ export async function prepareCronRunContext(params: {
             storePath: cronSession.storePath,
           })
         : undefined;
-    const turnMessage =
-      input.job.payload.kind === "agentTurn" ? input.job.payload.message : input.message;
+    const turnMessage = await applyLegacyHeartbeatPromptContribution({
+      cfg: runtimeCfg,
+      jobId: input.job.id,
+      name: input.job.name,
+      agentId,
+      sessionKey: runSessionKey,
+      prompt: input.job.payload.kind === "agentTurn" ? input.job.payload.message : input.message,
+      assertCurrent: () => {
+        input.assertCurrent?.();
+        (input.abortSignal ?? input.signal)?.throwIfAborted();
+        if (!sessionWorkAdmission.isActive()) {
+          throw new CronSessionLifecycleClaimError(agentSessionKey);
+        }
+      },
+    });
     const message = currentConversationContext
       ? `${currentConversationContext}\n\n${turnMessage}`
       : turnMessage;
