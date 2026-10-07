@@ -8,6 +8,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { isSessionMember, type SessionEntry } from "../config/sessions.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import { captureIncognitoSessionBinding } from "../config/sessions/session-incognito-binding.js";
@@ -94,6 +95,23 @@ export function isSessionVisibilityAllowed(
   return allowedSessionVisibilities(cfg).includes(visibility);
 }
 
+function captureSessionSharingIncognitoTarget(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  agentId?: string;
+}) {
+  if (!isIncognitoSessionKey(params.sessionKey)) {
+    return undefined;
+  }
+  const { agentId, canonicalKey } = resolveSessionStoreIdentity(params);
+  const binding = captureIncognitoSessionBinding({
+    agentId,
+    sessionKey: canonicalKey,
+    storePath: resolveSessionStorePathCore(params.cfg.session?.store, { agentId }),
+  });
+  return binding && { binding, canonicalKey };
+}
+
 export function resolveSessionSharingTarget(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
@@ -102,12 +120,13 @@ export function resolveSessionSharingTarget(params: {
   storeCache?: GatewaySessionStoreCache;
   targetDiscoveryCache?: GatewaySessionStoreDiscoveryCache;
 }): SessionSharingTarget | null {
-  if (isIncognitoSessionKey(params.sessionKey)) {
-    const { agentId, canonicalKey } = resolveSessionStoreIdentity(params);
-    const binding = captureIncognitoSessionBinding({ agentId, sessionKey: canonicalKey });
-    if (binding) {
-      return captureIncognitoSessionMutationFacts(binding, canonicalKey, true).readCurrent().target;
-    }
+  const captured = captureSessionSharingIncognitoTarget(params);
+  if (captured) {
+    return captureIncognitoSessionMutationFacts(
+      captured.binding,
+      captured.canonicalKey,
+      true,
+    ).readCurrent().target;
   }
   const target = resolveGatewaySessionStoreTargetWithStore({
     cfg: params.cfg,
@@ -136,6 +155,8 @@ export async function withSessionSharingTarget<T>(
     assertCurrent: () => void;
   }) => T,
 ): Promise<T> {
+  // Prepared sharing must enforce the same configured physical target as synchronous reads.
+  captureSessionSharingIncognitoTarget(params);
   return withGatewaySessionStoreTarget(
     {
       cfg: params.cfg,

@@ -17,61 +17,81 @@ import {
 describe("harness context engine source scopes", () => {
   it.each(
     (["prepared", "admitted"] as const).flatMap((phase) =>
-      (["before", "consumer"] as const).map((closedAt) => ({ phase, closedAt })),
+      (["before", "consumer"] as const).flatMap((closedAt) =>
+        (["scoped", "plain", "absent"] as const).map((sourceKind) => ({
+          phase,
+          closedAt,
+          sourceKind,
+        })),
+      ),
     ),
-  )("refuses $phase work when admission closes at $closedAt", async ({ phase, closedAt }) => {
-    const release = vi.fn();
-    const open = vi.fn(async () => ({ checks: [], assertCurrent: () => {}, release }));
-    const prepared = prepareSystemAgentRunAdmission(
-      {},
-      `close-${phase}-${closedAt}`,
-      "main",
-      "test",
-      Object.assign(() => {}, { prepareSessionSourceScope: open }),
-    );
-    const authority =
-      phase === "prepared"
-        ? { preparedRunAdmission: prepared }
-        : { admittedRunContext: await prepared.admit("embedded") };
-    const consumerStarted = createDeferred<void>();
-    const finishConsumer = createDeferred<void>();
-    if (closedAt === "before") {
-      prepared.close();
-    }
-    const run = assembleHarnessContextEngine({
-      ...sessionParams,
-      ...authority,
-      contextEngine: createContextEngine({
-        assemble: async ({ messages }) => {
-          consumerStarted.resolve();
-          await finishConsumer.promise;
-          return { messages, estimatedTokens: 0 };
-        },
-      }),
-      messages: [],
-      modelId: "test-model",
-    });
-    const rejected = expect(run).rejects.toThrow(/closed|no longer active/);
-    try {
-      if (closedAt === "consumer") {
-        await awaitGateBeforeSettlement(
-          consumerStarted.promise,
-          run,
-          "source consumer was skipped",
-        );
+  )(
+    "refuses $phase $sourceKind work when admission closes at $closedAt",
+    async ({ phase, closedAt, sourceKind }) => {
+      const release = vi.fn();
+      const open = vi.fn(async () => ({ checks: [], assertCurrent: () => {}, release }));
+      const source = vi.fn();
+      const prepared = prepareSystemAgentRunAdmission(
+        {},
+        `close-${phase}-${closedAt}-${sourceKind}`,
+        "main",
+        "test",
+        sourceKind === "scoped"
+          ? Object.assign(source, { prepareSessionSourceScope: open })
+          : sourceKind === "plain"
+            ? source
+            : undefined,
+      );
+      const authority =
+        phase === "prepared"
+          ? { preparedRunAdmission: prepared }
+          : { admittedRunContext: await prepared.admit("embedded") };
+      source.mockClear();
+      const consumerStarted = createDeferred<void>();
+      const finishConsumer = createDeferred<void>();
+      if (closedAt === "before") {
         prepared.close();
-        finishConsumer.resolve();
       }
-      await rejected;
-      expect(open).toHaveBeenCalledTimes(closedAt === "before" ? 0 : 1);
-      expect(release).toHaveBeenCalledTimes(closedAt === "before" ? 0 : 1);
-      expect(() => prepared.assertSourceCurrent()).not.toThrow();
-    } finally {
-      finishConsumer.resolve();
-      await run.catch(() => {});
-      prepared.close();
-    }
-  });
+      const run = assembleHarnessContextEngine({
+        ...sessionParams,
+        ...authority,
+        contextEngine: createContextEngine({
+          assemble: async ({ messages }) => {
+            prepared.assertSourceCurrent();
+            consumerStarted.resolve();
+            await finishConsumer.promise;
+            return { messages, estimatedTokens: 0 };
+          },
+        }),
+        messages: [],
+        modelId: "test-model",
+      });
+      const rejected = expect(run).rejects.toThrow(/closed|no longer active/);
+      try {
+        if (closedAt === "consumer") {
+          await awaitGateBeforeSettlement(
+            consumerStarted.promise,
+            run,
+            "source consumer was skipped",
+          );
+          prepared.close();
+          finishConsumer.resolve();
+        }
+        await rejected;
+        const scopedConsumer = closedAt === "consumer" && sourceKind === "scoped";
+        expect(open).toHaveBeenCalledTimes(scopedConsumer ? 1 : 0);
+        expect(release).toHaveBeenCalledTimes(scopedConsumer ? 1 : 0);
+        expect(source).toHaveBeenCalledTimes(
+          closedAt === "consumer" && sourceKind === "plain" ? 1 : 0,
+        );
+        expect(() => prepared.assertSourceCurrent()).not.toThrow();
+      } finally {
+        finishConsumer.resolve();
+        await run.catch(() => {});
+        prepared.close();
+      }
+    },
+  );
 
   it("refuses an unrecognized admitted carrier without replacing the canonical source", async () => {
     const release = vi.fn();

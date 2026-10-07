@@ -17,6 +17,7 @@ import { IncognitoSessionEndedError } from "../state/incognito-session-error.js"
 import type { IncognitoAgentDatabaseExecution } from "../state/openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import { withEnv } from "../test-utils/env.js";
 import {
   doesApprovalRequestSelectChannelAccount,
   resolveApprovalRequestAccountId,
@@ -146,10 +147,12 @@ it("keeps ordinary unbound private approval routing on the native owner without 
     request: request(sessionKey),
     channel: "slack",
   };
-  expect(captureOpenClawAgentDatabaseExecution.listIncognito(nativeEnv)).toEqual([]);
-  expect(resolveApprovalRequestAccountId(params)).toBe("native");
-  expect(resolveExecApprovalSessionTarget(params)?.accountId).toBe("native");
-  expect(captureOpenClawAgentDatabaseExecution.listIncognito(nativeEnv)).toEqual([]);
+  withEnv(nativeEnv, () => {
+    expect(captureOpenClawAgentDatabaseExecution.listIncognito(nativeEnv)).toEqual([]);
+    expect(resolveApprovalRequestAccountId(params)).toBe("native");
+    expect(resolveExecApprovalSessionTarget(params)?.accountId).toBe("native");
+    expect(captureOpenClawAgentDatabaseExecution.listIncognito(nativeEnv)).toEqual([]);
+  });
 });
 
 it("refuses a retained actor after replacement instead of selecting its successor's route", async () => {

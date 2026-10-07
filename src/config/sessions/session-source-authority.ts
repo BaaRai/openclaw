@@ -35,6 +35,8 @@ export type PreparedSessionSourceAuthority = {
 
 export type SessionSourceAssertion = (() => void) & {
   nativeSource?: boolean;
+  /** Checks the scope owner without invoking storage-dependent source predicates. */
+  assertScopeCurrent?: () => void;
   prepareSessionSource?: () => Promise<PreparedSessionSourceAuthority>;
   prepareSessionSourceScope?: () => Promise<PreparedSessionSourceAuthority | undefined>;
 };
@@ -120,12 +122,14 @@ export async function runWithSessionSourceScope<T>(
   assertion: SessionSourceAssertion | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  if (!assertion?.prepareSessionSourceScope) {
-    return run();
-  }
-  const prepared = await prepareSessionSourceScope(assertion);
-  if (!prepared) {
-    return run();
+  const prepared = assertion?.prepareSessionSourceScope
+    ? await prepareSessionSourceScope(assertion)
+    : undefined;
+  if (!assertion || !prepared) {
+    assertion?.assertScopeCurrent?.();
+    const result = await run();
+    assertion?.assertScopeCurrent?.();
+    return result;
   }
   const scopes = new Map([
     ...(sessionSourceScopes.getStore() ?? []),
@@ -135,9 +139,9 @@ export async function runWithSessionSourceScope<T>(
   const errors: unknown[] = [];
   try {
     return await sessionSourceScopes.run(scopes, async () => {
-      prepared.assertCurrent();
+      (prepared.assertPreparedCurrent ?? prepared.assertCurrent)();
       const result = await run();
-      prepared.assertCurrent();
+      (prepared.assertPreparedCurrent ?? prepared.assertCurrent)();
       return result;
     });
   } catch (error) {
@@ -191,6 +195,15 @@ export function composeSessionSourceAssertion(
     const prepared: PreparedSessionSourceAuthority[] = [];
     const scopedSources = new Map<SessionSourceAssertion, PreparedSessionSourceAuthority>();
     const release = () => releaseSessionSourceAuthorities(prepared);
+    const assertPreparedSources = () => {
+      for (const source of prepared) {
+        if (source.assertPreparedCurrent) {
+          source.assertPreparedCurrent();
+        } else if (!source.nativeSource) {
+          source.assertCurrent();
+        }
+      }
+    };
     try {
       for (const source of sources) {
         const value = scoped
@@ -205,6 +218,7 @@ export function composeSessionSourceAssertion(
         prepared.push(
           value ?? {
             assertCurrent: () => source?.(),
+            ...(scoped ? { assertPreparedCurrent: () => source?.assertScopeCurrent?.() } : {}),
             checks: [],
             nativeSource: source?.nativeSource,
           },
@@ -216,16 +230,7 @@ export function composeSessionSourceAssertion(
       return {
         nativeSource: prepared.some((source) => source.nativeSource),
         assertCurrent: () => check(() => prepared.forEach((source) => source.assertCurrent())),
-        assertPreparedCurrent: () =>
-          (options?.preparedCheck ?? check)(() => {
-            for (const source of prepared) {
-              if (source.assertPreparedCurrent) {
-                source.assertPreparedCurrent();
-              } else if (!source.nativeSource) {
-                source.assertCurrent();
-              }
-            }
-          }),
+        assertPreparedCurrent: () => (options?.preparedCheck ?? check)(assertPreparedSources),
         ...(scoped ? { scopedSources } : {}),
         checks: prepared.flatMap((source, index) =>
           source.checks.map(({ predicate, refuse }) => ({
@@ -244,8 +249,12 @@ export function composeSessionSourceAssertion(
     } catch (error) {
       let failure = error;
       try {
-        check(() => {
-          prepared.forEach((source) => source.assertCurrent());
+        (scoped ? (options?.preparedCheck ?? check) : check)(() => {
+          if (scoped) {
+            assertPreparedSources();
+          } else {
+            prepared.forEach((source) => source.assertCurrent());
+          }
           throw error;
         });
       } catch (translatedError) {

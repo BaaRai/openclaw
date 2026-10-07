@@ -378,7 +378,7 @@ export function captureAdmittedRunActiveAssertion(
   if (!lease || lease.foregroundClosed || lease.authority !== authority || !source) {
     return undefined;
   }
-  return composeSessionSourceAssertion([source.assertCurrent], (assertSource) => {
+  const assertLocalCurrent = (assertSource: () => void) => {
     if (
       signal?.aborted ||
       context.operationalRunInstance !== operationalRunInstance ||
@@ -388,6 +388,9 @@ export function captureAdmittedRunActiveAssertion(
       refuse();
     }
     assertSource();
+  };
+  return Object.assign(composeSessionSourceAssertion([source.assertCurrent], assertLocalCurrent), {
+    assertScopeCurrent: () => assertLocalCurrent(source.assertBinding),
   });
 }
 
@@ -571,6 +574,7 @@ export function prepareAgentRunAdmission(params: {
   return Object.freeze({
     operationalRunInstance,
     assertSourceCurrent: Object.assign(composeSessionSourceAssertion([assertSourceCurrent]), {
+      assertScopeCurrent: assertPreparationOpen,
       prepareSessionSourceScope: () => {
         assertPreparationOpen();
         return prepareSessionSourceScope(scopedSource);

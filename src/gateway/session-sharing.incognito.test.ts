@@ -123,6 +123,70 @@ it("carries actor sharing authority through admission and synchronous transactio
   }
 });
 
+it.each(["sessions.move", "sessions.dispatch"] as const)(
+  "prepares bound actor %s grants without changing incognito access policy",
+  async (method) => {
+    const sessionKey = `agent:main:dashboard:incognito-sharing-${method}`;
+    const sessionId = `sharing-${method}`;
+    await actor.sessions.create(authority, {
+      sessionKey,
+      entry: { sessionId, updatedAt: 1, lifecycleRevision: "initial", incognito: true },
+    });
+    const host = observeHostDataSql();
+    try {
+      await withIncognitoSessionActor(actor, async () => {
+        const request = {
+          method,
+          requestParams: { key: sessionKey, agentId: "main" },
+          expectedTarget: { agentId: "main", sessionKey, sessionId, storePath: actor.path },
+          context,
+        };
+        const denied = resolveSessionMutationAuthorization({
+          ...request,
+          client: sharingPolicyClient({ user: "different-person" }),
+        });
+        expect(denied.error).not.toBeNull();
+        expect(denied.authorization).toBeUndefined();
+        const client = sharingPolicyClient({ scopes: ["operator.admin"] });
+        const result = resolveSessionMutationAuthorization({ ...request, client });
+        expect(result.error).toBeNull();
+        const grant = await result.authorization!.prepareWorkerGrant!();
+        try {
+          grant.assertCurrent();
+          const appended = await actor.sessions.transcript(
+            { assertCurrent: grant.assertCurrent },
+            {
+              type: "session.message.append",
+              input: {
+                sessionKey,
+                sessionId,
+                fence: { expectedLifecycleRevision: "initial" },
+                message: { role: "assistant", content: "Synthetic placement reply", timestamp: 1 },
+              },
+            },
+          );
+          expect(appended.ok).toBe(true);
+          grant.assertCurrent();
+          client.connect.scopes = [];
+          client.authenticatedUserProfile = {
+            profileId: "different-person",
+            displayName: null,
+            hasAvatar: false,
+            updatedAt: 1,
+          };
+          expect(() => grant.assertCurrent()).toThrow();
+        } finally {
+          await grant.release();
+        }
+        expect(() => grant.assertLifetimeCurrent()).toThrow();
+      });
+      expect(host.queries).toEqual([]);
+    } finally {
+      host.restore();
+    }
+  },
+);
+
 it.each([undefined, "agent:main:dashboard:incognito-captured-root"])(
   "retains an explicit actor root and rejects another enclosing actor (key: %s)",
   async (sessionKey) => {
@@ -143,6 +207,39 @@ it.each([undefined, "agent:main:dashboard:incognito-captured-root"])(
       }
     });
     expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual(before);
+  },
+);
+
+it.each(["synchronous", "prepared"] as const)(
+  "refuses %s sharing authorization redirected by a configured physical root",
+  async (mode) => {
+    const sessionKey = `agent:main:dashboard:incognito-configured-root-${mode}`;
+    await actor.sessions.create(authority, {
+      sessionKey,
+      entry: { sessionId: `configured-root-${mode}`, updatedAt: 1, incognito: true },
+    });
+    await withIncognitoSessionActor(actor, async () => {
+      let storePath = actor.path;
+      const request = {
+        client: sharingPolicyClient({ scopes: ["operator.admin"] }),
+        method: "chat.send",
+        requestParams: { sessionKey, agentId: "main" },
+        context: {
+          getRuntimeConfig: () => ({ ...cfg, session: { store: storePath } }),
+        } as GatewayRequestContext,
+      };
+      const resolve = () =>
+        mode === "synchronous"
+          ? resolveSessionMutationAuthorization(request)
+          : resolveSessionMutationAuthorizationAsync(request);
+      expect((await resolve()).error).toBeNull();
+      storePath = foreignActor.path;
+      await expect(Promise.resolve().then(resolve)).rejects.toThrow(
+        "does not match its agent and state root",
+      );
+      storePath = "ordinary-logical-store/sessions.json";
+      expect((await resolve()).error).toBeNull();
+    });
   },
 );
 
