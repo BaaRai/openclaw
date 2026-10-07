@@ -18,6 +18,7 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSource,
   getRpcSourceLifecycleGeneration,
@@ -281,6 +282,7 @@ export function createTalkClientAgentConsultRunner(params: {
     ready?: () => Promise<void>,
     assertCurrent?: () => void,
     source: TalkAgentConsultSource = "tool-call",
+    sourceInput?: SessionControllerInput,
   ) => {
     const parsedArgs = parseRealtimeVoiceAgentConsultArgs(args);
     const voiceSessionId = params.getVoiceSessionId();
@@ -421,6 +423,7 @@ export function createTalkClientAgentConsultRunner(params: {
                   ownerConnId: params.ownerConnId,
                   controlUiVisible: false,
                   kind: "chat-send",
+                  sourceInput,
                 })
               : undefined;
             if (owner) {
@@ -702,7 +705,8 @@ export function createTalkClientAgentConsultRunner(params: {
       signal?: AbortSignal,
       assertCurrent?: () => void,
       source?: TalkAgentConsultSource,
-    ) => runArgs(args, signal, undefined, undefined, assertCurrent, source),
+      sourceInput?: SessionControllerInput,
+    ) => runArgs(args, signal, undefined, undefined, assertCurrent, source, sourceInput),
     runOwnedArgs: lifecycleBoundRunArgs,
     runPrompt,
   };

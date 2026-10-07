@@ -12,13 +12,6 @@ import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 
 const REALTIME_CONTROL_MAX_PENDING = 8;
 
-export function createRealtimeControlQueue(): BoundedSerialQueue {
-  return new BoundedSerialQueue({
-    maxPendingCount: REALTIME_CONTROL_MAX_PENDING,
-    maxPendingWeight: REALTIME_CONTROL_MAX_PENDING,
-  });
-}
-
 export type TalkRunCancelContext = Parameters<typeof createChatAbortOps>[0] &
   Pick<GatewayRequestContext, "getRuntimeConfig">;
 
@@ -58,7 +51,10 @@ export function createTalkRealtimeRunControlOwner(params: {
   speak: (message: string) => void;
   warn: (message: string) => void;
 }) {
-  const queue = createRealtimeControlQueue();
+  const queue = new BoundedSerialQueue({
+    maxPendingCount: REALTIME_CONTROL_MAX_PENDING,
+    maxPendingWeight: REALTIME_CONTROL_MAX_PENDING,
+  });
   const enqueue = (
     args: unknown,
     options: {
