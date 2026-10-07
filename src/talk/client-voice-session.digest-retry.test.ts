@@ -30,12 +30,8 @@ const { sendDurableMessageBatch } = vi.hoisted(() => ({
 }));
 
 vi.mock("../channels/message/runtime.js", async (importOriginal) => {
-  const { durableMessageBatchMayHaveReachedRecipient } =
-    await importOriginal<typeof import("../channels/message/runtime.js")>();
-  return {
-    sendDurableMessageBatchCore: sendDurableMessageBatch,
-    durableMessageBatchMayHaveReachedRecipient,
-  };
+  const actual = await importOriginal<typeof import("../channels/message/runtime.js")>();
+  return { ...actual, sendDurableMessageBatchCore: sendDurableMessageBatch };
 });
 
 const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);

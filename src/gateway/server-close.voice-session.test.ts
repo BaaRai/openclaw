@@ -36,9 +36,8 @@ import { prepareTalkSessionTarget } from "./talk/session-target.js";
 
 const { sendDigest } = vi.hoisted(() => ({ sendDigest: vi.fn() }));
 vi.mock("../channels/message/runtime.js", async (importOriginal) => {
-  const { durableMessageBatchMayHaveReachedRecipient } =
-    await importOriginal<typeof import("../channels/message/runtime.js")>();
-  return { sendDurableMessageBatchCore: sendDigest, durableMessageBatchMayHaveReachedRecipient };
+  const actual = await importOriginal<typeof import("../channels/message/runtime.js")>();
+  return { ...actual, sendDurableMessageBatchCore: sendDigest };
 });
 
 // mock-isolation: Keep upstream polling and its agent runtime out of this close-order fixture.
