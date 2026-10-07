@@ -13,7 +13,11 @@ import {
 } from "../infra/sqlite-lifecycle-errors.js";
 import { retainSnapshotTempDirectory } from "../infra/sqlite-readonly-location-cleanup.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
-import { admitSqliteSchema, runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
+import {
+  admitSqliteSchema,
+  isSqliteSchemaAdmissionCold,
+  runSqliteReadOperationSync,
+} from "../infra/sqlite-schema-facts.js";
 import { acquireSqliteSnapshotReadToken } from "../infra/sqlite-snapshot-staging.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
@@ -38,6 +42,7 @@ import {
   invalidateOpenClawStateRuntimeIntegrity,
   type OpenClawStateIntegrityPolicy,
 } from "./openclaw-state-db-integrity-admission.js";
+import { normalizeOpenClawStateSchemaReadError } from "./openclaw-state-db-schema-migration-required.js";
 import { isExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import type { OpenClawStateReadOnlyDatabase } from "./openclaw-state-read.types.js";
@@ -258,6 +263,22 @@ export function readOpenClawStateReadOnlyLocation<T>(
       result = {
         status: "available",
         value: runSqliteReadOperationSync(opened.database.db, () => {
+          if (!existingSchema && isSqliteSchemaAdmissionCold(opened.database.db)) {
+            try {
+              admitSqliteSchema(opened.database.db);
+            } catch (error) {
+              throw normalizeOpenClawStateSchemaReadError(error, pathname);
+            }
+            // A peer can upgrade after catalog capture releases its SQLite snapshot.
+            return runSqliteReadOperationSync(
+              opened.database.db,
+              () => {
+                assertStateReadSchemaForPolicy(opened.database.db, pathname, existingSchema);
+                return operation(opened.database);
+              },
+              "fresh",
+            );
+          }
           assertStateReadSchemaForPolicy(opened.database.db, pathname, existingSchema);
           admitSqliteSchema(opened.database.db);
           return operation(opened.database);

@@ -18,7 +18,10 @@ import { createOpenClawStateDatabaseAsyncLifecycle } from "./openclaw-state-db-a
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { assertExistingOpenClawStateRuntimeSchema } from "./openclaw-state-db-existing-schema.js";
 import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
-import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-read-connection.js";
+import {
+  closeRetainedOpenClawStateReadConnections,
+  withOpenClawStateReadOnlyLocation,
+} from "./openclaw-state-db-read-connection.js";
 import {
   getExistingOpenClawStateSchemaPath,
   withExistingOpenClawStateSchema,
@@ -103,6 +106,80 @@ function insertForeignKeyCorruption(db: DatabaseSync) {
       VALUES ('missing-session', 1, 10, 'session', NULL, '{}', 0);
   `);
 }
+
+describe("ordinary shared-state reader admission", () => {
+  it("reuses cold schema facts without adding a warm freshness probe", () => {
+    const { options } = createExistingState();
+    const read = () =>
+      withOpenClawStateReadOnlyLocation(
+        ({ db }) =>
+          db.prepare("SELECT app_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+        options.path,
+        options.path,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+    const reads = observeSqliteReadSql(StatementSync.prototype);
+    try {
+      expect(read()).toEqual({ app_version: previousAppVersion });
+      const coldVersionReads = reads.queries.filter((sql) => /^PRAGMA user_version\b/iu.test(sql));
+      reads.queries.length = 0;
+      expect(read()).toEqual({ app_version: previousAppVersion });
+      expect({
+        coldPublishedVersion: coldVersionReads.length,
+        warmPublishedVersion: reads.queries.filter((sql) => /^PRAGMA user_version\b/iu.test(sql))
+          .length,
+        warmFreshness: reads.queries.filter((sql) => /^PRAGMA data_version\b/iu.test(sql)).length,
+      }).toEqual({ coldPublishedVersion: 1, warmPublishedVersion: 0, warmFreshness: 1 });
+    } finally {
+      reads.restore();
+      closeRetainedOpenClawStateReadConnections();
+    }
+  });
+
+  it.each(["published version", "content marker"] as const)(
+    "refuses a peer's newer %s committed during cold admission before reading data",
+    (kind) => {
+      const { options } = createExistingState();
+      const peer = new DatabaseSync(options.path);
+      peer.exec("PRAGMA journal_mode = WAL");
+      let upgraded = false;
+      // oxlint-disable-next-line typescript/unbound-method -- The proxy retains the native statement receiver.
+      const nativeGet = StatementSync.prototype.get;
+      const observer = vi.spyOn(StatementSync.prototype, "get").mockImplementation(
+        new Proxy(nativeGet, {
+          apply(target, receiver: StatementSync, args) {
+            const publishedVersion = /^PRAGMA user_version\b/iu.test(receiver.sourceSQL);
+            const result = Reflect.apply(target, receiver, args);
+            if (publishedVersion && !upgraded) {
+              upgraded = true;
+              peer.exec(
+                kind === "published version"
+                  ? `PRAGMA user_version = ${OPENCLAW_STATE_SCHEMA_VERSION + 1}`
+                  : `INSERT INTO config_machine_state VALUES
+                       ('state.schema.contentVersion', '${OPENCLAW_STATE_SCHEMA_VERSION + 1}', 1)`,
+              );
+            }
+            return result;
+          },
+        }),
+      );
+      const read = vi.fn(() => "must not run");
+      try {
+        expect(() => withOpenClawStateReadOnlyLocation(read, options.path, options.path)).toThrow(
+          `uses newer schema version ${OPENCLAW_STATE_SCHEMA_VERSION + 1}`,
+        );
+        expect(upgraded).toBe(true);
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        observer.mockRestore();
+        peer.close();
+      }
+    },
+  );
+});
 
 describe("existing shared-state schema admission", () => {
   it.each(["ordinary", "required", "existing"] as const)(
