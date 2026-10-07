@@ -288,34 +288,29 @@ export function observePlacementAuthority(pathname: string, sessionId: string) {
   observations.add(observation);
   owner.observations.set(sessionId, observations);
   let released = false;
-  // A route check tolerates turn claims other turns acquire or release meanwhile.
-  const assertObservationCurrent = (routeOnly: boolean) => {
-    context.admission.assertCurrent();
-    if (
-      released ||
-      (routeOnly ? observation.routeRevoked : observation.revoked) ||
-      !owner.active ||
-      owners.get(owner.identity.key) !== owner ||
-      [...owner.pending].some(
-        (change) =>
-          change.kind !== "tools" &&
-          change.sessionId === sessionId &&
-          !(routeOnly && isTurnCustodyChange(change)),
-      )
-    ) {
-      throw new Error(`Session ${sessionId} placement authority changed`);
-    }
-  };
   return {
-    assertCurrent(this: void) {
-      assertObservationCurrent(false);
-    },
     /**
-     * Placement state, mode, and owner are current. Turn claim custody may have changed,
-     * including the default local row a first claim adds; read `turnClaim` only after `assertCurrent`.
+     * The "route" scope covers placement state, mode, and owner only. It tolerates turn claims
+     * other turns acquire or release meanwhile, including the default local row a first claim
+     * adds, so callers that read `turnClaim` keep the default scope.
      */
-    assertRouteCurrent(this: void) {
-      assertObservationCurrent(true);
+    assertCurrent(this: void, scope: "all" | "route" = "all") {
+      context.admission.assertCurrent();
+      const routeOnly = scope === "route";
+      if (
+        released ||
+        (routeOnly ? observation.routeRevoked : observation.revoked) ||
+        !owner.active ||
+        owners.get(owner.identity.key) !== owner ||
+        [...owner.pending].some(
+          (change) =>
+            change.kind !== "tools" &&
+            change.sessionId === sessionId &&
+            !(routeOnly && isTurnCustodyChange(change)),
+        )
+      ) {
+        throw new Error(`Session ${sessionId} placement authority changed`);
+      }
     },
     release(this: void) {
       released = true;

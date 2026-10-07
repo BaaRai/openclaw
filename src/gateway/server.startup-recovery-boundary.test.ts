@@ -423,10 +423,11 @@ async function interruptSurvivesInterruptedTurnCleanup(fixture: Fixture) {
   await vi.waitFor(() => expect(resendTurns(owed)).toHaveLength(1), { timeout: 30_000 });
   // Hold the message's placement check open until the interrupted resend has released
   // its placement turn claim, so that cleanup always lands inside the check.
+  const withPlacement = chatRestartRecovery.withRestartSafeChatPlacement;
   const placementCheck = vi
     .spyOn(chatRestartRecovery, "withRestartSafeChatPlacement")
     .mockImplementationOnce((service, id, consume) =>
-      chatRestartRecovery.withRestartSafeChatPlacement(service, id, async (prepared) => {
+      withPlacement(service, id, async (prepared) => {
         await vi.waitFor(() => expect(() => prepared.facts.assertCurrent()).toThrow(), {
           timeout: 30_000,
         });

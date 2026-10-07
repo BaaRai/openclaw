@@ -363,7 +363,7 @@ export async function admitChatSend(
       }
       // Admission reads only the placement route. An interrupted turn may still be releasing
       // its turn claim, and that cleanup must not fail the message that interrupted it.
-      preparedPlacement?.facts.assertRouteCurrent();
+      preparedPlacement?.facts.assertCurrent("route");
       restartSafeAdmission = resolveRestartSafeChatAdmission({
         activeRunScopeKey,
         agentId,
