@@ -238,6 +238,9 @@ describe("production lint suppressions", () => {
         "src/infra/net/undici-dispatcher-options.ts|typescript/unbound-method|1",
         "src/infra/outbound/sanitize-text.ts|eslint/no-control-regex|1",
         "src/infra/outbound/send-deps.ts|typescript/no-unnecessary-type-parameters|1",
+        // Redaction prefilters compare method identity without invoking an unbound method.
+        "src/logging/redact-pattern-runtime.ts|typescript/unbound-method|1",
+        "src/logging/redact.ts|typescript/unbound-method|1",
         "src/logging/redact.ts|unicorn/no-new-array|1",
         "src/node-host/invoke-payload.ts|typescript/no-unnecessary-type-parameters|1",
         "src/node-host/mcp.ts|unicorn/prefer-add-event-listener|1",
