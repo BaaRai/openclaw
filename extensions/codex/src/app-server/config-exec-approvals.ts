@@ -11,7 +11,6 @@ import {
 import type {
   OpenClawExecApprovalFloorsForCodexAppServer,
   OpenClawExecMode,
-  OpenClawExecPolicy,
   OpenClawExecPolicyForCodexAppServer,
 } from "./config-contracts.js";
 import { readExecAsk, readExecSecurity, readRecord } from "./config-utils.js";
@@ -19,10 +18,10 @@ import { readExecAsk, readExecSecurity, readRecord } from "./config-utils.js";
 function resolveOpenClawExecPolicyFromConfig(params: {
   config?: OpenClawConfig;
   agentId?: string;
-}): OpenClawExecPolicy {
+}): OpenClawExecPolicyForCodexAppServer {
   const globalExec = readRecord(params.config?.tools?.exec);
   const globalPolicy = applyOpenClawExecPolicyLayer(
-    { ...resolveOpenClawExecPolicyForMode("full"), touched: false },
+    resolveOpenClawExecPolicy({ mode: "full" }, false),
     globalExec,
   );
   const agentId = params.agentId?.trim();
@@ -44,12 +43,9 @@ export function resolveOpenClawExecPolicyForCodexAppServer(params: {
   agentId?: string;
 }): OpenClawExecPolicyForCodexAppServer {
   if (params.permissionMode === "full") {
-    return { ...resolveOpenClawExecPolicyForMode("full"), touched: true };
+    return resolveOpenClawExecPolicy({ mode: "full" });
   }
-  const basePolicy = resolveOpenClawExecPolicyFromConfig({
-    config: params.config,
-    agentId: params.agentId,
-  });
+  const basePolicy = resolveOpenClawExecPolicyFromConfig(params);
   const overridePolicy = applyOpenClawExecPolicyLayer(basePolicy, params.execOverrides);
   const approvalFloors = params.approvals
     ? resolveExecApprovalsFromFile({
@@ -62,38 +58,28 @@ export function resolveOpenClawExecPolicyForCodexAppServer(params: {
 }
 
 function applyOpenClawExecPolicyLayer(
-  base: OpenClawExecPolicy,
+  base: OpenClawExecPolicyForCodexAppServer,
   exec?: { mode?: unknown; security?: unknown; ask?: unknown },
-): OpenClawExecPolicy {
+): OpenClawExecPolicyForCodexAppServer {
   if (!exec) {
     return base;
   }
   const mode = readExecMode(exec.mode);
   if (mode !== undefined) {
-    return {
-      ...resolveOpenClawExecPolicyForMode(mode),
-      touched: true,
-    };
+    return resolveOpenClawExecPolicy({ mode });
   }
   const security = readExecSecurity(exec.security);
   const ask = readExecAsk(exec.ask);
   if (security === undefined && ask === undefined) {
     return base;
   }
-  const nextSecurity = security ?? base.security;
-  const nextAsk = ask ?? base.ask;
-  return {
-    mode: execPolicy.resolveExecModePolicy({ security: nextSecurity, ask: nextAsk }).mode,
-    security: nextSecurity,
-    ask: nextAsk,
-    touched: true,
-  };
+  return resolveOpenClawExecPolicy({ security: security ?? base.security, ask: ask ?? base.ask });
 }
 
 function applyOpenClawExecApprovalFloors(
-  base: OpenClawExecPolicy,
+  base: OpenClawExecPolicyForCodexAppServer,
   approvalFloors?: OpenClawExecApprovalFloorsForCodexAppServer,
-): OpenClawExecPolicy {
+): OpenClawExecPolicyForCodexAppServer {
   if (!approvalFloors) {
     return base;
   }
@@ -104,23 +90,19 @@ function applyOpenClawExecApprovalFloors(
   if (nextSecurity === base.security && nextAsk === base.ask) {
     return base;
   }
-  return {
-    mode: execPolicy.resolveExecModePolicy({ security: nextSecurity, ask: nextAsk }).mode,
-    security: nextSecurity,
-    ask: nextAsk,
-    touched: true,
-  };
+  return resolveOpenClawExecPolicy({ security: nextSecurity, ask: nextAsk });
 }
 
-function resolveOpenClawExecPolicyForMode(
-  mode: OpenClawExecMode,
-): Omit<OpenClawExecPolicy, "touched"> {
-  const { security, ask } = execPolicy.resolveExecModePolicy({
-    mode,
-    security: "full",
-    ask: "off",
+function resolveOpenClawExecPolicy(
+  policy: OpenClawExecApprovalFloorsForCodexAppServer & { mode?: OpenClawExecMode },
+  touched = true,
+): OpenClawExecPolicyForCodexAppServer {
+  const { mode, security, ask } = execPolicy.resolveExecModePolicy({
+    mode: policy.mode,
+    security: policy.security ?? "full",
+    ask: policy.ask ?? "off",
   });
-  return { mode, security, ask };
+  return { mode, security, ask, touched };
 }
 
 function readExecMode(value: unknown): OpenClawExecMode | undefined {

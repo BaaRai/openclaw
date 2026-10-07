@@ -261,12 +261,6 @@ function summarizeRateLimitUsage(
   const blockingReset =
     blockingWindow && blockingWindow.resetsAtMs > nowMs ? blockingWindow : undefined;
   const blockingPeriod = formatBlockingLimitPeriod(blockingWindowEntry, blockingEntries);
-  const blockedUntilText = blockingReset
-    ? formatAccountResetTime(blockingReset.resetsAtMs, nowMs)
-    : undefined;
-  const blockedResetRelative = blockingReset
-    ? `in ${formatRelativeDuration(blockingReset.resetsAtMs - nowMs)}`
-    : undefined;
   const blockingReason = blockingPeriod
     ? `${blockingPeriod} Codex usage limit is reached`
     : blockingSnapshot
@@ -275,9 +269,13 @@ function summarizeRateLimitUsage(
   return {
     usageLine: formatUsageLine(usageSnapshot),
     blocked: Boolean(blockingSnapshot),
-    ...(blockingReset ? { blockedUntilMs: blockingReset.resetsAtMs } : {}),
-    ...(blockedUntilText ? { blockedUntilText } : {}),
-    ...(blockedResetRelative ? { blockedResetRelative } : {}),
+    ...(blockingReset
+      ? {
+          blockedUntilMs: blockingReset.resetsAtMs,
+          blockedUntilText: formatAccountResetTime(blockingReset.resetsAtMs, nowMs),
+          blockedResetRelative: `in ${formatRelativeDuration(blockingReset.resetsAtMs - nowMs)}`,
+        }
+      : {}),
     ...(blockingPeriod ? { blockingPeriod } : {}),
     ...(blockingReason ? { blockingReason } : {}),
   };
@@ -332,9 +330,6 @@ function selectNextRateLimitReset(
     LIMIT_WINDOW_KEYS.flatMap((key) => snapshot[key] ?? []),
   );
   const futureWindows = windows.filter((window) => window.resetsAtMs > nowMs);
-  if (futureWindows.length === 0) {
-    return undefined;
-  }
   const exhaustedWindows = futureWindows.filter(
     (window) => window.usedPercent !== undefined && window.usedPercent >= 100,
   );
@@ -568,13 +563,11 @@ function selectBlockingWindowEntry(
   const resetCandidates =
     exhaustedFutureEntries.length > 0 ? exhaustedFutureEntries : futureEntries;
   if (resetCandidates.length > 0) {
-    const resetSort =
+    return resetCandidates.toSorted((left, right) =>
       exhaustedFutureEntries.length > 0
-        ? (left: RateLimitWindowEntry, right: RateLimitWindowEntry) =>
-            right.window.resetsAtMs - left.window.resetsAtMs
-        : (left: RateLimitWindowEntry, right: RateLimitWindowEntry) =>
-            left.window.resetsAtMs - right.window.resetsAtMs;
-    return resetCandidates.toSorted(resetSort)[0];
+        ? right.window.resetsAtMs - left.window.resetsAtMs
+        : left.window.resetsAtMs - right.window.resetsAtMs,
+    )[0];
   }
   const exhaustedEntries = entries.filter(
     (entry) => entry.window.usedPercent !== undefined && entry.window.usedPercent >= 100,

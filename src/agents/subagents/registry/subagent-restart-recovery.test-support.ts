@@ -65,6 +65,7 @@ export function makeRestartRecoveryRun(
 export function useSubagentRestartRecoveryFixture() {
   const dispatchAgent = vi.fn();
   const gatewayRuntime: GatewayRecoveryRuntime = {
+    prepareRestartRecovery: () => undefined,
     dispatchSessionMethod: vi.fn(),
     dispatchAgent: dispatchAgent as GatewayRecoveryRuntime["dispatchAgent"],
     waitForAgent: vi.fn(async () => ({
@@ -72,13 +73,14 @@ export function useSubagentRestartRecoveryFixture() {
     })) as GatewayRecoveryRuntime["waitForAgent"],
     sendRecoveryNotice: vi.fn(),
   };
-  const activateGatewayRuntime = () => {
+  const activateGatewayRuntime = async () => {
     const gatewayContext = {
       recoveryRuntime: gatewayRuntime,
+      chatAbortControllers: new Map(),
       resolveGatewayContext: () => gatewayContext as never,
     };
     bindGatewayContextResolver(gatewayRuntime, gatewayContext.resolveGatewayContext);
-    activateSubagentRegistry(gatewayContext.resolveGatewayContext);
+    await activateSubagentRegistry(gatewayContext.resolveGatewayContext);
   };
 
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
@@ -99,7 +101,7 @@ export function useSubagentRestartRecoveryFixture() {
     vi.mocked(cleanupBrowserSessionsForLifecycleEnd).mockReset();
     vi.mocked(onAgentEvent).mockImplementation(() => () => undefined);
     settleRootWork = observeRootWork();
-    activateGatewayRuntime();
+    await activateGatewayRuntime();
     dispatchAgent.mockReset();
   });
 
@@ -113,7 +115,7 @@ export function useSubagentRestartRecoveryFixture() {
     // Preserve stores and their environment while detached delivery still owns them.
     if (getActiveGatewayRootWorkCount() === 0) {
       try {
-        resetSubagentRegistryForTests({ persist: false });
+        await resetSubagentRegistryForTests({ persist: false });
         await cleanupSessionStateForTest({ stateDir: tempStateDir ?? undefined });
         clearRuntimeConfigSnapshot();
         if (tempStateDir) {

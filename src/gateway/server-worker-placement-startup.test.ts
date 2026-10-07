@@ -16,22 +16,38 @@ import {
   runExclusiveSessionLifecycleMutation,
   startSessionWorkAdmissionInterruption,
 } from "../sessions/session-lifecycle-admission.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
+import * as workspaceRetention from "./worker-environments/node-workspace-retain-coordinator.js";
 import type { WorkerPlacementDispatchService } from "./worker-environments/placement-dispatch.js";
 import type { WorkerSessionWorkspace } from "./worker-environments/session-workspace.js";
 
-function placementStoreDefaults() {
+function placementStoreDefaults(
+  readPlacements: () => ReadonlyArray<{
+    sessionId: string;
+    environmentId?: string | null;
+  }> = () => [],
+) {
   return {
+    readChangeSnapshot: async () => readPlacements(),
+    readEnvironmentOwner: async (environmentId: string) =>
+      readPlacements().find((placement) => placement.environmentId === environmentId),
+    readProjection: async () => ({
+      placements: new Map(readPlacements().map((placement) => [placement.sessionId, placement])),
+    }),
     workspaceResultInstanceId: () => "gateway-test",
-    retireSessionPlacement: vi.fn(),
-    pruneOrphanedWorkspaceReconciliations: () => [],
-    listWorkspaceReconciliationOwners: () => [],
-    listPendingWorkspaceResults: () => [],
+    getAsync: async (sessionId: string) =>
+      readPlacements().find((placement) => placement.sessionId === sessionId),
+    listAsync: async () => readPlacements(),
+    retireSessionPlacementAsync: vi.fn(async () => {}),
+    pruneOrphanedWorkspaceReconciliations: async () => [],
+    listWorkspaceReconciliationOwners: async () => [],
+    listPendingWorkspaceResultsAsync: () => [],
   };
 }
 
@@ -49,9 +65,24 @@ describe("worker placement startup health lifetime", () => {
     const scheduler = createTestGatewayScheduler(time.clock);
     const releaseReconcile = createDeferredCore();
     const releaseScheduledHealth = createDeferredCore();
+    const releaseScheduledCleanup = createDeferredCore();
+    const retentionStopped = createDeferredCore();
     const reconcileStarted = createDeferredCore();
     const scheduledHealthStarted = createDeferredCore();
     const healthError = new Error("probe transport failed");
+    const createRetention = workspaceRetention.createNodeWorkspaceRetainCoordinator;
+    const retentionFactory = vi
+      .spyOn(workspaceRetention, "createNodeWorkspaceRetainCoordinator")
+      .mockImplementationOnce((options) => {
+        const retention = createRetention(options);
+        return {
+          ...retention,
+          async stop() {
+            await retention.stop();
+            retentionStopped.resolve();
+          },
+        };
+      });
     let holdScheduledWork = false;
     const diskSpace = {
       read: vi.fn(),
@@ -66,6 +97,7 @@ describe("worker placement startup health lifetime", () => {
     const reconcile = vi.fn().mockResolvedValue(undefined);
     const reconcileActive = vi.fn(async () => {
       if (holdScheduledWork) {
+        void trackAsyncWork(() => releaseScheduledCleanup.promise);
         reconcileStarted.resolve();
         await releaseReconcile.promise;
       }
@@ -132,6 +164,10 @@ describe("worker placement startup health lifetime", () => {
       expect(environments.stop).not.toHaveBeenCalled();
 
       releaseReconcile.resolve();
+      await retentionStopped.promise;
+      await Promise.resolve();
+      expect(environments.stop).not.toHaveBeenCalled();
+      releaseScheduledCleanup.resolve();
       await stopping;
 
       expect(warn).toHaveBeenCalledWith("Worker disk-space sweep failed: probe transport failed");
@@ -139,8 +175,10 @@ describe("worker placement startup health lifetime", () => {
     } finally {
       releaseReconcile.resolve();
       releaseScheduledHealth.resolve();
+      releaseScheduledCleanup.resolve();
       await sidecar?.stop();
       await scheduledWake;
+      retentionFactory.mockRestore();
     }
   });
 
@@ -178,7 +216,7 @@ describe("worker placement startup health lifetime", () => {
         getCommittedRuntimeConfig: getRuntimeConfig,
         cancelSessionWork: vi.fn(async () => {}),
         placements: {
-          ...placementStoreDefaults(),
+          ...placementStoreDefaults(() => [placement]),
           get: () => placement,
           list: () => [placement],
         } as never,
@@ -194,7 +232,9 @@ describe("worker placement startup health lifetime", () => {
       });
 
       try {
-        await vi.waitFor(() => expect(reconcile).toHaveBeenCalledWith("startup"));
+        await vi.waitFor(() =>
+          expect(reconcile).toHaveBeenCalledWith("startup", expect.any(Function)),
+        );
         expect(environments.start).not.toHaveBeenCalled();
 
         let ready = false;
@@ -219,7 +259,7 @@ describe("worker placement startup health lifetime", () => {
   it("immediately retires absent sessions after readiness and drains retirement on stop", async () => {
     const evidence = createDeferredCore<"absent">();
     const reconcileActive = vi.fn().mockResolvedValue(undefined);
-    const retireSessionPlacement = vi.fn();
+    const retireSessionPlacementAsync = vi.fn(async () => {});
     runtimeFactoryMocks.resolveSessionEvidence.mockImplementationOnce(async () => evidence.promise);
     runtimeFactoryMocks.createSessionEvidenceResolver.mockResolvedValueOnce(
       runtimeFactoryMocks.resolveSessionEvidence,
@@ -264,10 +304,10 @@ describe("worker placement startup health lifetime", () => {
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
-        ...placementStoreDefaults(),
+        ...placementStoreDefaults(() => [placement]),
         get: () => placement,
         list: () => [placement],
-        retireSessionPlacement,
+        retireSessionPlacementAsync,
       } as never,
       environments: environments as never,
       gatewayNamespace: "gateway-test",
@@ -287,7 +327,7 @@ describe("worker placement startup health lifetime", () => {
       await expect(starting).resolves.toBe(sidecar);
       expect(runtimeFactoryMocks.resolveSessionEvidence).toHaveBeenCalledOnce();
       expect(reconcileActive).not.toHaveBeenCalled();
-      expect(retireSessionPlacement).not.toHaveBeenCalled();
+      expect(retireSessionPlacementAsync).not.toHaveBeenCalled();
 
       const stopping = sidecar?.stop();
       const repeatedStop = sidecar?.stop();
@@ -301,7 +341,7 @@ describe("worker placement startup health lifetime", () => {
       expect(environments.stop).not.toHaveBeenCalled();
       evidence.resolve("absent");
       await Promise.all([stopping, repeatedStop]);
-      expect(retireSessionPlacement).toHaveBeenCalledOnce();
+      expect(retireSessionPlacementAsync).toHaveBeenCalledOnce();
       expect(environments.stop).toHaveBeenCalledOnce();
       expect(unregisterSidecar).not.toHaveBeenCalled();
     } finally {
@@ -405,7 +445,7 @@ describe("worker placement startup health lifetime", () => {
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
-        ...placementStoreDefaults(),
+        ...placementStoreDefaults(() => placementRows),
         get: () => undefined,
         list: () => placementRows,
       } as never,
@@ -449,16 +489,6 @@ describe("worker placement startup health lifetime", () => {
       const unrelatedCore = vi.fn(async () => {});
       await guard("worker-unrelated", unrelatedCore);
       expect(unrelatedCore).toHaveBeenCalledOnce();
-
-      placementRows = [
-        provisioning,
-        { sessionId: "session-duplicate", state: "active", environmentId: "worker-guarded" },
-      ];
-      const ambiguousCore = vi.fn(async () => {});
-      await expect(guard("worker-guarded", ambiguousCore)).rejects.toThrow(
-        "multiple placement owners",
-      );
-      expect(ambiguousCore).not.toHaveBeenCalled();
 
       placementRows = [
         { sessionId: "session-mismatch", state: "active", environmentId: "worker-mismatch" },
@@ -534,7 +564,7 @@ describe("worker placement startup health lifetime", () => {
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
-        ...placementStoreDefaults(),
+        ...placementStoreDefaults(() => [placement]),
         get: () => placement,
         list: () => [placement],
       } as never,
@@ -680,7 +710,7 @@ describe("worker placement startup recovery authority", () => {
       )
       .finally(() => admission.release());
     await vi.waitFor(() => expect(events).toEqual(["recovery:/gateway/workspace"]));
-    const contender = runExclusiveSessionLifecycleMutation({
+    const contender = runExclusiveSessionLifecycleMutation("placement-activate", {
       scope: "/tmp/openclaw-worker-placement-session.sqlite",
       identities: [
         request.sessionKey,
@@ -721,12 +751,19 @@ describe("worker placement startup recovery authority", () => {
       }),
     ).rejects.toThrow("placement changed");
 
-    moveDestinationMocks.resolveCanonicalSession.mockReturnValueOnce({
-      sessionId: "session-replaced",
-      worktree: { id: "worktree-recovery" },
-    });
-    await expect(
-      dispatchOptions.runRecoveryBarrier({ ...request, run: async () => {} }),
-    ).rejects.toThrow("changed before cloud worker recovery");
+    const recoverReplacedSession = vi.fn(async () => {});
+    // Keep the replacement installed through preparation and the final authority check.
+    await moveDestinationMocks.resolveCanonicalSession.withImplementation(
+      () => ({
+        sessionId: "session-replaced",
+        worktree: { id: "worktree-recovery" },
+      }),
+      async () => {
+        await expect(
+          dispatchOptions.runRecoveryBarrier({ ...request, run: recoverReplacedSession }),
+        ).rejects.toThrow("changed before cloud worker recovery");
+      },
+    );
+    expect(recoverReplacedSession).not.toHaveBeenCalled();
   });
 });

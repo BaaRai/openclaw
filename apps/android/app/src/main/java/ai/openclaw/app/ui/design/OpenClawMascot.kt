@@ -122,27 +122,19 @@ private fun DrawScope.drawMascot(
     if (stretchY != 1f) scale(stretchX, stretchY, pivot = Offset(60f, 110f))
     if (pose.bodyTilt != 0.0) rotate(pose.bodyTilt.toFloat(), pivot = Offset(60f, 60f))
   }) {
-    val bodyBrush =
+    fun coralBrush(
+      start: Offset,
+      end: Offset,
+    ): Brush =
       tint?.let(::SolidColor)
         ?: Brush.linearGradient(
           colors = listOf(CoralBright, CoralDark),
-          start = Offset(15f, 10f),
-          end = Offset(105f, 110f),
+          start = start,
+          end = end,
         )
-    val leftClawBrush =
-      tint?.let(::SolidColor)
-        ?: Brush.linearGradient(
-          colors = listOf(CoralBright, CoralDark),
-          start = Offset(3.125f, 43.67f),
-          end = Offset(26.197f, 65.451f),
-        )
-    val rightClawBrush =
-      tint?.let(::SolidColor)
-        ?: Brush.linearGradient(
-          colors = listOf(CoralBright, CoralDark),
-          start = Offset(93.803f, 43.67f),
-          end = Offset(116.875f, 65.451f),
-        )
+    val bodyBrush = coralBrush(Offset(15f, 10f), Offset(105f, 110f))
+    val leftClawBrush = coralBrush(Offset(3.125f, 43.67f), Offset(26.197f, 65.451f))
+    val rightClawBrush = coralBrush(Offset(93.803f, 43.67f), Offset(116.875f, 65.451f))
 
     drawPath(BodyPath, bodyBrush)
     withTransform({ rotate(pose.leftClawDegrees.toFloat(), pivot = LeftClawPivot) }) {
@@ -305,7 +297,7 @@ private fun DrawScope.drawEffect(pose: MascotPose) {
     MascotEffect.Sparkles -> {
       repeat(6) { index ->
         val phase = (pose.effectPhase + index * 0.37) % 1.0
-        val alpha = effectBell(phase)
+        val alpha = mascotBell(phase)
         if (alpha > 0.05) {
           val angle = PI + PI * (index + 0.5) / 6.0
           val center =
@@ -363,7 +355,7 @@ private fun DrawScope.drawEffect(pose: MascotPose) {
     }
 
     MascotEffect.Sweat -> {
-      val alpha = effectBell(pose.effectPhase)
+      val alpha = mascotBell(pose.effectPhase)
       if (alpha > 0.02) {
         val center = Offset(42f, (24.0 + 7.0 * pose.effectPhase).toFloat())
         val drop =
@@ -411,10 +403,4 @@ private fun DrawScope.drawZ(
     alpha = alpha * 0.9f,
     style = Stroke(width = max(1.2f, size * 0.16f), cap = StrokeCap.Round, join = StrokeJoin.Round),
   )
-}
-
-private fun effectBell(value: Double): Double {
-  val t = value.coerceIn(0.0, 1.0)
-  val edge = if (t < 0.5) t * 2.0 else (1.0 - t) * 2.0
-  return edge * edge * (3.0 - 2.0 * edge)
 }

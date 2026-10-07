@@ -11,7 +11,7 @@ const authorizedSlackMessage = {
       workspaceId: "T123",
       conversationKind: "direct" as const,
     },
-    RawBody: "Please render alpha to beta",
+    rawText: "Please render alpha to beta",
   },
   channel: "slack",
   isHeartbeat: false,
@@ -35,7 +35,7 @@ describe("plugin approval source snapshot", () => {
       ...authorizedSlackMessage,
       context: {
         ...authorizedSlackMessage.context,
-        RawBody: `${"x".repeat(300)} ${secret} ${"y".repeat(40)}`,
+        rawText: `${"x".repeat(300)} ${secret} ${"y".repeat(40)}`,
       },
     });
     expect(source?.userMessageExcerpt).toBe(`${"x".repeat(300)} ghp_aa…aaaa ${"y".repeat(6)}…`);

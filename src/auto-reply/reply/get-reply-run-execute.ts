@@ -20,6 +20,7 @@ import {
   readToolAllowlistIntersection,
 } from "../../agents/tool-policy.js";
 import { readChannelContextAdmissionEvidence } from "../../channels/message-access/admission-evidence.js";
+import { copyChildSessionPublication } from "../../channels/message-access/child-session-publication.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { conversationIdentityFromMsgContext } from "../../config/sessions/conversation-identity.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
@@ -45,11 +46,11 @@ import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import type { PreparedReplyRunAdmission } from "./get-reply-run-admission.js";
 import {
   buildPersistedMediaImageLayout,
-  normalizeMessageTimestampMs,
   suppressUnresolvedPromptMedia,
   updateRoomEventAmbientTranscriptWatermark,
 } from "./get-reply-run-helpers.js";
 import { hasInboundAudio } from "./inbound-media.js";
+import { normalizeMessageTimestampMs } from "./message-timestamp.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { capturePluginApprovalSource } from "./plugin-approval-source.js";
 import { resolveReplyToMode } from "./reply-threading.js";
@@ -154,11 +155,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     (normalizeOptionalString(preparedSessionState.sessionEntry?.modelOverride) ||
       normalizeOptionalString(preparedSessionState.sessionEntry?.providerOverride)),
   );
-  const runHasLegacyAutoFallbackWithoutOrigin =
-    runHasStoredSessionModelOverride &&
-    hasLegacyAutoFallbackWithoutOrigin(preparedSessionState.sessionEntry);
   const runHasSessionModelOverride =
-    runHasStoredSessionModelOverride && !runHasLegacyAutoFallbackWithoutOrigin;
+    runHasStoredSessionModelOverride &&
+    !hasLegacyAutoFallbackWithoutOrigin(preparedSessionState.sessionEntry);
   const runModelOverrideSource = runHasSessionModelOverride
     ? preparedSessionState.sessionEntry?.modelOverrideSource === "default"
       ? undefined
@@ -171,7 +170,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   // Abort-signal attachment for queued followups:
   // - room_event: always inherit (source admission fence / ambient cancel).
   // - Gateway-owned lifecycle (chat.send / turnAdoptionLifecycle): always inherit
-  //   so Esc can cancel a turn after chat.send terminalizes while still queued.
+  //   so Esc can cancel an input while it waits for its followup execution.
   // - plain user_request without lifecycle: deliberately detach from the
   //   source/active-lane signal so a superseded parent abort does not cancel a
   //   still-valid queued user turn.
@@ -288,9 +287,6 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       : resolvePersistedUserTurnText(transcriptBody);
   const conversationIdentity = conversationIdentityFromMsgContext({ ctx: sessionCtx });
   const conversationRef = conversationIdentity?.conversationRef;
-  const transportMessageId =
-    normalizeOptionalString(sessionCtx.MessageSidFull) ??
-    normalizeOptionalString(sessionCtx.MessageSid);
   const transportReplyToId =
     normalizeOptionalString(sessionCtx.ReplyToIdFull) ??
     normalizeOptionalString(sessionCtx.ReplyToId);
@@ -304,14 +300,14 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     normalizeOptionalString(sessionCtx.Provider);
   const transport =
     conversationRef ||
-    transportMessageId ||
+    sourceMessageId ||
     transportReplyToId ||
     transportThreadId ||
     transportChannel
       ? {
           ...(transportChannel ? { channel: transportChannel } : {}),
           ...(conversationRef ? { conversationRef } : {}),
-          ...(transportMessageId ? { messageId: transportMessageId } : {}),
+          ...(sourceMessageId ? { messageId: sourceMessageId } : {}),
           ...(transportReplyToId ? { replyToId: transportReplyToId } : {}),
           ...(transportThreadId ? { threadId: transportThreadId } : {}),
         }
@@ -419,6 +415,13 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     ...(queuedFollowupAbortSignal ? { abortSignal: queuedFollowupAbortSignal } : {}),
     deliveryCorrelations: opts?.queuedDeliveryCorrelations,
     turnAdoptionLifecycle: opts?.turnAdoptionLifecycle,
+    runObservers: {
+      onAgentRunStart: opts?.onAgentRunStart,
+      onAgentRunTerminalOutcome: opts?.onAgentRunTerminalOutcome,
+      onModelSelected: opts?.onModelSelected,
+      prepareAssistantTranscriptMessage: opts?.prepareAssistantTranscriptMessage,
+      resolveReplyDelivery: opts?.resolveReplyDelivery,
+    },
     ...(opts?.onFollowupQueueDisposition
       ? { onQueueDisposition: opts.onFollowupQueueDisposition }
       : {}),
@@ -442,7 +445,6 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     imageOrder: currentTurnImages.imageOrder,
     mediaImageLayout: promptMediaImageLayout,
     media: promptMediaForRun,
-    // Originating channel for reply routing.
     originatingChannel: replyRoute.channel,
     originatingTo: replyRoute.to,
     originatingAccountId: replyRoute.accountId,
@@ -498,7 +500,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       sessionFile: preparedSessionState.sessionFile,
       workspaceDir,
       cwd:
-        normalizeOptionalString(state.sessionEntry?.spawnedCwd) ?? resolveAgentRunCwd(cfg, agentId),
+        normalizeOptionalString(preparedSessionState.sessionEntry?.spawnedCwd) ??
+        resolveAgentRunCwd(cfg, agentId),
       permissionMode: admittedSessionSettings
         ? admittedSessionSettings.permissionMode
         : preparedSessionState.sessionEntry?.permissionMode,
@@ -595,6 +598,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     },
   };
   const sourceReplyDeliveryRuntimeOptions = opts as SourceReplyDeliveryRuntimeOptions | undefined;
+  copyChildSessionPublication(sessionCtx, followupRun.run);
   const channelOwnerAuthority = getCommandOwnerAuthority(sessionCtx);
   if (command.senderIsOwner && channelOwnerAuthority) {
     bindCommandOwnerAuthority(followupRun.run, channelOwnerAuthority);

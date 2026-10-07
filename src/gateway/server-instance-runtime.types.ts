@@ -22,6 +22,8 @@ export type GatewayInstanceAgentDispatchOptions = {
   internalDeliveryMediaUrls?: string[];
   runtimeContextFragments?: RuntimeContextFragment[];
   internalDeliverySuppressText?: boolean;
+  /** Keep runtime error payloads (timeouts, provider failures) out of the delivered reply. */
+  internalDeliverySuppressErrors?: boolean;
   onAccepted?: (payload: unknown) => void;
   onStartOwner?: (owner: AgentTurnStartOwner) => void;
   onExecutionStarted?: () => void;
@@ -49,6 +51,8 @@ export type GatewayRecoveryTypingParams = {
 };
 
 export type GatewayRecoveryRuntime = {
+  /** Healthy boots are ready synchronously; safe mode returns its owner's pause deadline. */
+  prepareRestartRecovery: (signal?: AbortSignal) => Promise<number | undefined> | undefined;
   dispatchSessionMethod: <T = unknown>(
     method: GatewayRecoverySessionMethod,
     params: unknown,

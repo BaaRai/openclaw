@@ -20,14 +20,17 @@ const TEAM = "T11111111";
 const EXCERPT = "Private requester message for an approval.";
 const proxyEnvKeys = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] as const;
 
-function approvalConfig(approver: string): OpenClawConfig {
+function approvalConfig(approver: string, policy: "legacy" | "selected"): OpenClawConfig {
   return {
+    ...(policy === "selected"
+      ? { approvals: { plugin: { slack: { approvers: [approver] } } } }
+      : {}),
     channels: {
       slack: {
         mode: "http",
         signingSecret: "test-signing-secret",
         botToken: BOT_TOKEN,
-        allowFrom: [approver],
+        allowFrom: [policy === "selected" ? OTHER : approver],
         execApprovals: { enabled: true, target: "dm" },
       },
     },
@@ -55,13 +58,52 @@ afterEach(() => {
 
 describe("Slack approval reviewer delivery authority", () => {
   it.each([
-    { installation: "enterprise", change: "removed", nextApprover: OTHER, shouldPost: false },
-    { installation: "enterprise", change: "retained", nextApprover: REVIEWER, shouldPost: true },
-    { installation: "workspace", change: "removed", nextApprover: OTHER, shouldPost: false },
-    { installation: "workspace", change: "retained", nextApprover: REVIEWER, shouldPost: true },
+    {
+      policy: "legacy",
+      installation: "enterprise",
+      change: "removed",
+      nextApprover: OTHER,
+      shouldPost: false,
+    },
+    {
+      policy: "legacy",
+      installation: "enterprise",
+      change: "retained",
+      nextApprover: REVIEWER,
+      shouldPost: true,
+    },
+    {
+      policy: "legacy",
+      installation: "workspace",
+      change: "removed",
+      nextApprover: OTHER,
+      shouldPost: false,
+    },
+    {
+      policy: "legacy",
+      installation: "workspace",
+      change: "retained",
+      nextApprover: REVIEWER,
+      shouldPost: true,
+    },
+    {
+      policy: "selected",
+      installation: "workspace",
+      change: "removed",
+      nextApprover: OTHER,
+      shouldPost: false,
+    },
+    {
+      policy: "selected",
+      installation: "workspace",
+      change: "retained",
+      nextApprover: REVIEWER,
+      shouldPost: true,
+    },
   ] as const)(
-    "checks the $change reviewer on $installation delivery",
-    async ({ installation, nextApprover, shouldPost }) => {
+    "checks the $change $policy reviewer on $installation delivery",
+    async ({ policy, installation, nextApprover, shouldPost }) => {
+      const qualified = installation === "enterprise" || policy === "selected";
       for (const key of proxyEnvKeys) {
         vi.stubEnv(key, undefined);
       }
@@ -70,7 +112,11 @@ describe("Slack approval reviewer delivery authority", () => {
       const releaseLookup = createDeferred<void>();
       const posts: Record<string, string>[] = [];
       const updates: Record<string, string>[] = [];
-      const registration = registerSlackInstallationState("default", installation);
+      const registration = registerSlackInstallationState(
+        "default",
+        installation,
+        qualified ? TEAM : undefined,
+      );
       try {
         await withServer(
           (request, response) => {
@@ -96,7 +142,7 @@ describe("Slack approval reviewer delivery authority", () => {
             });
           },
           async (baseUrl) => {
-            const cfg = approvalConfig(REVIEWER);
+            const cfg = approvalConfig(REVIEWER, policy);
             setRuntimeConfigSnapshot(cfg);
             const client = createSlackWebClient(BOT_TOKEN, { slackApiUrl: `${baseUrl}/api/` });
             const approvalSource = {
@@ -112,10 +158,7 @@ describe("Slack approval reviewer delivery authority", () => {
                 title: "Render a diff",
                 description: "Render an example diff",
                 turnSourceChannel: "slack",
-                turnSourceTo:
-                  installation === "enterprise"
-                    ? `team:${TEAM}:channel:D33333333`
-                    : "channel:D33333333",
+                turnSourceTo: qualified ? `team:${TEAM}:channel:D33333333` : "channel:D33333333",
                 turnSourceAccountId: "default",
                 approvalSource,
               },
@@ -142,7 +185,9 @@ describe("Slack approval reviewer delivery authority", () => {
               resolveClient: () => client,
               ...(installation === "enterprise"
                 ? { enterprise: { enterpriseId: "E11111111" } }
-                : {}),
+                : qualified
+                  ? { workspaceTeamId: TEAM }
+                  : {}),
               readConfig: createRuntimeConfigReader(cfg),
               assertCurrent: () => {},
             };
@@ -166,36 +211,33 @@ describe("Slack approval reviewer delivery authority", () => {
                 surface: "approver-dm",
                 reason: "preferred",
                 target: {
-                  to:
-                    installation === "enterprise"
-                      ? `team:${TEAM}:user:${REVIEWER}`
-                      : `user:${REVIEWER}`,
+                  to: qualified ? `team:${TEAM}:user:${REVIEWER}` : `user:${REVIEWER}`,
                 },
               },
               preparedTarget: {
                 to: `user:${REVIEWER}`,
-                ...(installation === "enterprise" ? { teamId: TEAM } : {}),
+                ...(qualified ? { teamId: TEAM } : {}),
               },
               pendingPayload,
               view,
             });
-            if (installation === "enterprise") {
+            if (qualified) {
               try {
                 await lookupStarted.promise;
-                setRuntimeConfigSnapshot(approvalConfig(nextApprover));
+                setRuntimeConfigSnapshot(approvalConfig(nextApprover, policy));
               } finally {
                 releaseLookup.resolve();
               }
             } else {
               // The workspace path yields at resolveApprovalChannel before dispatch.
-              setRuntimeConfigSnapshot(approvalConfig(nextApprover));
+              setRuntimeConfigSnapshot(approvalConfig(nextApprover, policy));
             }
             if (shouldPost) {
               const entry = await delivery;
               expect(entry).toMatchObject({ channelId: "D11111111" });
               expect(posts).toMatchObject([
                 {
-                  channel: installation === "enterprise" ? "D11111111" : REVIEWER,
+                  channel: qualified ? "D11111111" : REVIEWER,
                   text: expect.stringContaining(EXCERPT),
                 },
               ]);
@@ -236,7 +278,7 @@ describe("Slack approval reviewer delivery authority", () => {
                   text: expect.stringContaining(EXCERPT),
                 },
               ]);
-              setRuntimeConfigSnapshot(approvalConfig(OTHER));
+              setRuntimeConfigSnapshot(approvalConfig(OTHER, policy));
               await expect(update()).rejects.toThrow(
                 "Slack approval delivery is no longer authorized",
               );

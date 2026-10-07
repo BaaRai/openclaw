@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
+import { convertToLlm } from "openclaw/plugin-sdk/agent-core";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isCodexDurableCustomMessage } from "./context-engine-projection.js";
 import { CodexHistoryRejection } from "./history-rejection.js";
 import type { JsonValue } from "./protocol.js";
 import { readUpstreamUserText } from "./upstream-prompt-provenance.js";
@@ -63,24 +65,13 @@ function requireToolName(value: unknown): string {
 }
 
 function serializeToolArguments(value: unknown, projection: HistoryProjection): string {
-  if (typeof value === "string") {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      throw new CodexHistoryRejection("invalid_content");
-    }
+  let serialized: string;
+  try {
+    const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
     if (!isRecord(parsed)) {
       throw new CodexHistoryRejection("invalid_content");
     }
-    return requireBoundedText(value, projection);
-  }
-  if (!isRecord(value)) {
-    throw new CodexHistoryRejection("invalid_content");
-  }
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value);
+    serialized = typeof value === "string" ? value : JSON.stringify(value);
   } catch {
     throw new CodexHistoryRejection("invalid_content");
   }
@@ -286,6 +277,20 @@ class HistoryProjection {
       projectAssistantMessage(message, this);
     } else if (message.role === "toolResult") {
       projectToolResult(message, this);
+    } else if (
+      message.role === "custom" ||
+      message.role === "bashExecution" ||
+      message.role === "branchSummary" ||
+      message.role === "compactionSummary"
+    ) {
+      if (message.role === "custom" && !isCodexDurableCustomMessage(message)) {
+        return;
+      }
+      // Evidence is verified before projection. Use the shared context conversion
+      // for durable history, then enforce the same content and budget checks.
+      for (const converted of convertToLlm([message])) {
+        this.append(converted);
+      }
     } else {
       throw new CodexHistoryRejection("unsupported_content");
     }

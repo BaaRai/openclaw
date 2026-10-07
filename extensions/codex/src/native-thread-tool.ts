@@ -11,7 +11,7 @@ import {
   asSafeIntegerInRange,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { Type } from "typebox";
+import { Type, type TProperties } from "typebox";
 import { CODEX_CONTROL_METHODS, type CodexControlMethod } from "./app-server/capabilities.js";
 import { readCodexPluginConfig } from "./app-server/config-parsing.js";
 import {
@@ -29,29 +29,28 @@ import type { CodexAppServerBindingStore } from "./app-server/session-binding.js
 import { assertCodexArchiveDescendantsUnowned } from "./app-server/thread-archive-guard.js";
 import type { codexControlRequest, CodexControlRequestOptions } from "./command-rpc.js";
 
-const ListParamsSchema = Type.Object(
-  {
-    action: Type.Literal("list"),
+function threadActionSchema<Action extends string, Properties extends TProperties>(
+  action: Action,
+  properties: Properties,
+) {
+  return Type.Object(
+    { action: Type.Literal(action), ...properties },
+    { additionalProperties: false },
+  );
+}
+
+const CodexThreadsParamsSchema = Type.Union([
+  threadActionSchema("list", {
     archived: Type.Optional(Type.Boolean()),
     cursor: Type.Optional(Type.String()),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
     search: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-const ReadParamsSchema = Type.Object(
-  {
-    action: Type.Literal("read"),
+  }),
+  threadActionSchema("read", {
     thread_id: Type.String(),
     include_turns: Type.Optional(Type.Boolean()),
-  },
-  { additionalProperties: false },
-);
-
-const ForkParamsSchema = Type.Object(
-  {
-    action: Type.Literal("fork"),
+  }),
+  threadActionSchema("fork", {
     thread_id: Type.String(),
     attach: Type.Optional(
       Type.Boolean({
@@ -59,45 +58,20 @@ const ForkParamsSchema = Type.Object(
         description: "Attach the fork to this OpenClaw session for its next turn.",
       }),
     ),
-  },
-  { additionalProperties: false },
-);
-
-const RenameParamsSchema = Type.Object(
-  {
-    action: Type.Literal("rename"),
+  }),
+  threadActionSchema("rename", {
     thread_id: Type.String(),
     name: Type.String(),
-  },
-  { additionalProperties: false },
-);
-
-const ArchiveParamsSchema = Type.Object(
-  {
-    action: Type.Literal("archive"),
+  }),
+  threadActionSchema("archive", {
     thread_id: Type.String(),
     confirm: Type.Literal(true, {
       description: "Required acknowledgement that the thread is closed in other Codex clients.",
     }),
-  },
-  { additionalProperties: false },
-);
-
-const UnarchiveParamsSchema = Type.Object(
-  {
-    action: Type.Literal("unarchive"),
+  }),
+  threadActionSchema("unarchive", {
     thread_id: Type.String(),
-  },
-  { additionalProperties: false },
-);
-
-const CodexThreadsParamsSchema = Type.Union([
-  ListParamsSchema,
-  ReadParamsSchema,
-  ForkParamsSchema,
-  RenameParamsSchema,
-  ArchiveParamsSchema,
-  UnarchiveParamsSchema,
+  }),
 ]);
 
 type CodexThreadsToolOptions = {
@@ -225,6 +199,8 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
       const supervision = admissionPlugin.supervision;
       const mayReadRawTranscripts =
         supervision?.enabled !== true || supervision.allowRawTranscripts === true;
+      const threadResult = (response: unknown) =>
+        jsonResult(mayReadRawTranscripts ? response : redactNativeThreadResponse(response));
 
       const isMutation =
         action === "fork" || action === "rename" || action === "archive" || action === "unarchive";
@@ -247,7 +223,7 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
           await import("./app-server/config-runtime.js");
         const requestOptions = async (): Promise<CodexControlRequestOptions> => {
           const pluginConfig = admissionConfig;
-          const plugin = readCodexPluginConfig(pluginConfig);
+          const plugin = admissionPlugin;
           const base = baseRequestOptions();
           const session = currentSession();
           const identity = session ? currentIdentity(session.sessionId) : undefined;
@@ -320,9 +296,7 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
             ...(cursor ? { cursor } : {}),
             ...(searchTerm ? { searchTerm } : {}),
           });
-          return jsonResult(
-            mayReadRawTranscripts ? response : redactNativeThreadResponse(response),
-          );
+          return threadResult(response);
         }
 
         const threadId = archiveAdmission?.threadId ?? readThreadId(params);
@@ -337,9 +311,7 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
             threadId,
             includeTurns,
           });
-          return jsonResult(
-            mayReadRawTranscripts ? response : redactNativeThreadResponse(response),
-          );
+          return threadResult(response);
         }
         if (action === "rename") {
           const name = readStringParam(params, "name", { required: true, label: "name" });
@@ -348,9 +320,7 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
         }
         if (action === "unarchive") {
           const response = await scopedRequest(CODEX_CONTROL_METHODS.unarchiveThread, { threadId });
-          return jsonResult(
-            mayReadRawTranscripts ? response : redactNativeThreadResponse(response),
-          );
+          return threadResult(response);
         }
 
         const session = archiveAdmission?.session ?? currentSession();
@@ -520,7 +490,7 @@ export function createCodexThreadsTool(options: CodexThreadsToolOptions): AnyAge
           thread: response.thread,
           attached: attach,
         };
-        return jsonResult(mayReadRawTranscripts ? result : redactNativeThreadResponse(result));
+        return threadResult(result);
       };
       if (action === "archive") {
         const threadId = readThreadId(params);

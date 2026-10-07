@@ -61,51 +61,25 @@ class NotificationsHandler internal constructor(
 
     val params =
       parseJsonParamsObject(paramsJson)
-        ?: return GatewaySession.InvokeResult.error(
-          code = "INVALID_REQUEST",
-          message = "INVALID_REQUEST: expected JSON object",
-        )
+        ?: return nodeInvokeError("INVALID_REQUEST", "expected JSON object")
     val key =
       params.nonBlankString("key")
-        ?: return GatewaySession.InvokeResult.error(
-          code = "INVALID_REQUEST",
-          message = "INVALID_REQUEST: key required",
-        )
+        ?: return nodeInvokeError("INVALID_REQUEST", "key required")
     val actionRaw =
       params.nonBlankString("action")?.lowercase()
-        ?: return GatewaySession.InvokeResult.error(
-          code = "INVALID_REQUEST",
-          message = "INVALID_REQUEST: action required (open|dismiss|reply)",
-        )
+        ?: return nodeInvokeError("INVALID_REQUEST", "action required (open|dismiss|reply)")
     // Keep accepted action names aligned with the cross-platform notification
     // command contract rather than Android-specific PendingIntent labels.
     val action =
       when (actionRaw) {
-        "open" -> {
-          NotificationActionKind.Open
-        }
-
-        "dismiss" -> {
-          NotificationActionKind.Dismiss
-        }
-
-        "reply" -> {
-          NotificationActionKind.Reply
-        }
-
-        else -> {
-          return GatewaySession.InvokeResult.error(
-            code = "INVALID_REQUEST",
-            message = "INVALID_REQUEST: action must be open|dismiss|reply",
-          )
-        }
+        "open" -> NotificationActionKind.Open
+        "dismiss" -> NotificationActionKind.Dismiss
+        "reply" -> NotificationActionKind.Reply
+        else -> return nodeInvokeError("INVALID_REQUEST", "action must be open|dismiss|reply")
       }
     val replyText = params.nonBlankString("replyText")
     if (action == NotificationActionKind.Reply && replyText.isNullOrBlank()) {
-      return GatewaySession.InvokeResult.error(
-        code = "INVALID_REQUEST",
-        message = "INVALID_REQUEST: replyText required for reply action",
-      )
+      return nodeInvokeError("INVALID_REQUEST", "replyText required for reply action")
     }
 
     val result =
@@ -147,11 +121,6 @@ class NotificationsHandler internal constructor(
       put("enabled", JsonPrimitive(snapshot.enabled))
       put("connected", JsonPrimitive(snapshot.connected))
       put("count", JsonPrimitive(snapshot.notifications.size))
-      put(
-        "notifications",
-        JsonArray(
-          snapshot.notifications.map { entry -> entry.toJsonObject() },
-        ),
-      )
+      put("notifications", JsonArray(snapshot.notifications.map { it.toJsonObject() }))
     }.toString()
 }

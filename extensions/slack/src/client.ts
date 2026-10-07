@@ -1,6 +1,7 @@
 import { hash } from "node:crypto";
 import { type WebClientOptions, WebClient } from "@slack/web-api";
 import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
+import { captureEffectAuthority } from "openclaw/plugin-sdk/fetch-runtime";
 import type { SlackLookupClientOptions, SlackProxyDispatcher } from "./client-options.js";
 import {
   resolveSlackLookupClientOptions,
@@ -18,7 +19,7 @@ const SLACK_STARTUP_AUTH_RETRY_BUDGET_MS = 35_000;
 const slackWriteClientCache = new Map<string, WebClient>();
 const slackListenerWriteClientCache = new WeakMap<
   WebClient,
-  { teamId: string | undefined; client: WebClient }
+  { teamId: string | undefined; client?: WebClient }
 >();
 
 type SlackWriteClientCacheOptions = Pick<WebClientOptions, "slackApiUrl" | "teamId">;
@@ -131,6 +132,9 @@ export function getSlackWriteClient(
   token: string,
   options: SlackWriteClientCacheOptions = {},
 ): WebClient {
+  if (captureEffectAuthority().active) {
+    return createSlackWriteClient(token, options);
+  }
   const resolvedOptions = resolveSlackWriteClientOptions(options);
   const tokenKey = slackWriteClientCacheKey(token, resolvedOptions);
   const cached = readLruMapEntry(slackWriteClientCache, tokenKey);
@@ -154,13 +158,17 @@ export function getSlackListenerWriteClient(params: {
   if (!token) {
     return undefined;
   }
-  const cached = params.assertCurrent
-    ? undefined
-    : slackListenerWriteClientCache.get(params.listenerClient);
+  const effectScoped = captureEffectAuthority().active || Boolean(params.assertCurrent);
+  const cached = slackListenerWriteClientCache.get(params.listenerClient);
   if (cached) {
     // Bolt pools listener clients by authorized team. Reusing one for a
     // different team is invalid scope, not another write-client key.
-    return cached.teamId === teamId ? cached.client : undefined;
+    if (cached.teamId !== teamId) {
+      return undefined;
+    }
+    if (!effectScoped && cached.client) {
+      return cached.client;
+    }
   }
   const headers = Object.fromEntries(
     Object.entries(params.clientOptions?.headers ?? {}).filter(
@@ -184,8 +192,10 @@ export function getSlackListenerWriteClient(params: {
       params.assertCurrent,
     ),
   );
-  if (!params.assertCurrent) {
+  if (!effectScoped) {
     slackListenerWriteClientCache.set(params.listenerClient, { teamId, client });
+  } else if (!cached) {
+    slackListenerWriteClientCache.set(params.listenerClient, { teamId });
   }
   return client;
 }

@@ -235,26 +235,21 @@ internal abstract class LegacyChatDatabase : RoomDatabase() {
           // Earlier rows did not persist the default agent that owned an unscoped key. Never
           // guess after upgrade: queued input stays visible for manual resend, while accepted
           // input remains delivery-ambiguous and must not be replayed under a different owner.
-          connection
-            .prepare(
-              "UPDATE outbox_commands SET status = ?, lastError = ? " +
-                "WHERE status = ? AND sessionKey NOT LIKE 'agent:%'",
-            ).use { statement ->
-              statement.bindText(1, ChatOutboxStatus.Failed.dbValue)
-              statement.bindText(2, OUTBOX_OWNER_CHANGED_ERROR)
-              statement.bindText(3, ChatOutboxStatus.Queued.dbValue)
-              statement.step()
-            }
-          connection
-            .prepare(
-              "UPDATE outbox_commands SET status = ?, lastError = ? " +
-                "WHERE status = ? AND sessionKey NOT LIKE 'agent:%'",
-            ).use { statement ->
-              statement.bindText(1, ChatOutboxStatus.Failed.dbValue)
-              statement.bindText(2, OUTBOX_DELIVERY_UNCONFIRMED_ERROR)
-              statement.bindText(3, ChatOutboxStatus.Accepted.dbValue)
-              statement.step()
-            }
+          for ((status, error) in listOf(
+            ChatOutboxStatus.Queued to OUTBOX_OWNER_CHANGED_ERROR,
+            ChatOutboxStatus.Accepted to OUTBOX_DELIVERY_UNCONFIRMED_ERROR,
+          )) {
+            connection
+              .prepare(
+                "UPDATE outbox_commands SET status = ?, lastError = ? " +
+                  "WHERE status = ? AND sessionKey NOT LIKE 'agent:%'",
+              ).use { statement ->
+                statement.bindText(1, ChatOutboxStatus.Failed.dbValue)
+                statement.bindText(2, error)
+                statement.bindText(3, status.dbValue)
+                statement.step()
+              }
+          }
         }
       }
 
@@ -551,8 +546,8 @@ internal class AndroidClientDatabases private constructor(
     }
   }
 
-  private val transcriptCache = DeferredChatTranscriptCache(::ready)
-  private val commandOutbox = DeferredChatCommandOutbox(::ready)
+  private val transcriptCache = RoomChatTranscriptCache { ready().gatewayCache }
+  private val commandOutbox = RoomChatCommandOutbox { ready().clientState }
 
   fun transcriptCache(): ChatTranscriptCache = transcriptCache
 
@@ -583,193 +578,6 @@ internal class AndroidClientDatabases private constructor(
     scope.cancel()
     openedReference.getAndSet(null)?.close()
   }
-}
-
-private class DeferredChatTranscriptCache(
-  private val ready: suspend () -> OpenedAndroidClientDatabases,
-) : ChatTranscriptCache {
-  override suspend fun loadLastDefaultAgentId(gatewayId: String): String? = ready().transcriptCache.loadLastDefaultAgentId(gatewayId)
-
-  override suspend fun saveLastDefaultAgentId(
-    gatewayId: String,
-    agentId: String,
-  ) = ready().transcriptCache.saveLastDefaultAgentId(gatewayId, agentId)
-
-  override suspend fun loadSessions(
-    gatewayId: String,
-    agentId: String,
-  ): List<ChatSessionEntry> = ready().transcriptCache.loadSessions(gatewayId, agentId)
-
-  override suspend fun loadTranscript(
-    gatewayId: String,
-    agentId: String,
-    sessionKey: String,
-  ): List<ChatMessage> = ready().transcriptCache.loadTranscript(gatewayId, agentId, sessionKey)
-
-  override suspend fun saveSessions(
-    gatewayId: String,
-    agentId: String,
-    sessions: List<ChatSessionEntry>,
-    retainedSessionKey: String?,
-  ) = ready().transcriptCache.saveSessions(gatewayId, agentId, sessions, retainedSessionKey)
-
-  override suspend fun saveTranscript(
-    gatewayId: String,
-    agentId: String,
-    sessionKey: String,
-    messages: List<ChatMessage>,
-    sessionInfo: ChatSessionEntry?,
-  ) = ready().transcriptCache.saveTranscript(gatewayId, agentId, sessionKey, messages, sessionInfo)
-
-  override suspend fun deleteSession(
-    gatewayId: String,
-    agentId: String,
-    sessionKey: String,
-  ) = ready().transcriptCache.deleteSession(gatewayId, agentId, sessionKey)
-
-  override suspend fun clearGateway(gatewayId: String) = ready().transcriptCache.clearGateway(gatewayId)
-}
-
-private class DeferredChatCommandOutbox(
-  private val ready: suspend () -> OpenedAndroidClientDatabases,
-) : ChatCommandOutbox {
-  override suspend fun load(gatewayId: String): List<ChatOutboxItem> = ready().commandOutbox.load(gatewayId)
-
-  override suspend fun wasAdmitted(id: String): Boolean = ready().commandOutbox.wasAdmitted(id)
-
-  override suspend fun enqueue(
-    gatewayId: String,
-    sessionKey: String,
-    text: String,
-    thinkingLevel: String,
-    nowMs: Long,
-    attachments: List<OutboxAttachmentPayload>,
-    gatedEpoch: Long?,
-    ownerAgentId: String,
-    idempotencyKey: String?,
-  ): ChatOutboxEnqueueResult =
-    ready()
-      .commandOutbox
-      .enqueue(gatewayId, sessionKey, text, thinkingLevel, nowMs, attachments, gatedEpoch, ownerAgentId, idempotencyKey)
-
-  override suspend fun loadAttachments(id: String): List<LoadedOutboxAttachment> = ready().commandOutbox.loadAttachments(id)
-
-  override suspend fun updateStatusIfAttempt(
-    id: String,
-    expectedAttemptVersion: Int,
-    status: ChatOutboxStatus,
-    retryCount: Int,
-    lastError: String?,
-    expectedStatus: ChatOutboxStatus?,
-  ): Int = ready().commandOutbox.updateStatusIfAttempt(id, expectedAttemptVersion, status, retryCount, lastError, expectedStatus)
-
-  override suspend fun claimForSendingIfAttempt(
-    id: String,
-    expectedAttemptVersion: Int,
-    retryCount: Int,
-    lastError: String?,
-  ): Int = ready().commandOutbox.claimForSendingIfAttempt(id, expectedAttemptVersion, retryCount, lastError)
-
-  override suspend fun pinSessionKey(
-    id: String,
-    sessionKey: String,
-  ) = ready().commandOutbox.pinSessionKey(id, sessionKey)
-
-  override suspend fun requeueForRetryIfCurrent(
-    gatewayId: String,
-    id: String,
-    expectedAttemptVersion: Int,
-    expectedRetryCount: Int,
-    expectedLastError: String?,
-    nowMs: Long,
-    gatedEpoch: Long?,
-    ownerAgentId: String?,
-    replacementId: String?,
-  ): Int =
-    ready()
-      .commandOutbox
-      .requeueForRetryIfCurrent(
-        gatewayId,
-        id,
-        expectedAttemptVersion,
-        expectedRetryCount,
-        expectedLastError,
-        nowMs,
-        gatedEpoch,
-        ownerAgentId,
-        replacementId,
-      )
-
-  override suspend fun delete(id: String) = ready().commandOutbox.delete(id)
-
-  override suspend fun deleteIfQueued(id: String): Boolean = ready().commandOutbox.deleteIfQueued(id)
-
-  override suspend fun confirmDeliveredAttempts(ids: Map<String, Int>): Int = ready().commandOutbox.confirmDeliveredAttempts(ids)
-
-  override suspend fun branchState(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-  ): ChatOutboxBranchState? = ready().commandOutbox.branchState(gatewayId, scope)
-
-  override suspend fun beginSessionMutation(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-    nowMs: Long,
-  ): ChatOutboxMutationLease? = ready().commandOutbox.beginSessionMutation(gatewayId, scope, nowMs)
-
-  override suspend fun cancelSessionMutation(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-    lease: ChatOutboxMutationLease,
-  ): Boolean = ready().commandOutbox.cancelSessionMutation(gatewayId, scope, lease)
-
-  override suspend fun demoteSessionMutationToReconciliationState(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-    lease: ChatOutboxMutationLease?,
-  ): ChatOutboxBranchState? = ready().commandOutbox.demoteSessionMutationToReconciliationState(gatewayId, scope, lease)
-
-  override suspend fun reconcileBranchScope(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-    evidence: ChatOutboxBranchEvidence,
-    activeLeafEntryId: String?,
-    activeTranscriptEntryIds: Set<String>,
-    lastError: String,
-  ): ChatOutboxBranchState? =
-    ready()
-      .commandOutbox
-      .reconcileBranchScope(
-        gatewayId,
-        scope,
-        evidence,
-        activeLeafEntryId,
-        activeTranscriptEntryIds,
-        lastError,
-      )
-
-  override suspend fun confirmBranchChange(
-    gatewayId: String,
-    scope: ChatOutboxScope,
-    activeLeafEntryId: String?,
-    lastError: String,
-    lease: ChatOutboxMutationLease?,
-  ): Boolean = ready().commandOutbox.confirmBranchChange(gatewayId, scope, activeLeafEntryId, lastError, lease)
-
-  override suspend fun deleteForSession(
-    gatewayId: String,
-    sessionKey: String,
-    ownerAgentId: String,
-  ) = ready().commandOutbox.deleteForSession(gatewayId, sessionKey, ownerAgentId)
-
-  override suspend fun clearGateway(gatewayId: String) = ready().commandOutbox.clearGateway(gatewayId)
-
-  override suspend fun failSendingAfterRestart() = ready().commandOutbox.failSendingAfterRestart()
-
-  override suspend fun expireStale(
-    gatewayId: String,
-    nowMs: Long,
-  ) = ready().commandOutbox.expireStale(gatewayId, nowMs)
 }
 
 private fun scopedGatewayId(gatewayId: String): String? = gatewayId.trim().takeIf { it.isNotEmpty() }

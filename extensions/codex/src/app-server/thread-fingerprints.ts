@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import {
   isJsonObject,
+  type CodexTurn,
   type CodexTurnEnvironmentParams,
   type JsonObject,
   type JsonValue,
@@ -84,10 +85,34 @@ export function fingerprintJsonObject(value: JsonObject): string {
 
 /** Hash thread-creation identity; settings already applied by turn/start must not restart Codex. */
 export function fingerprintCodexThreadConfig(
-  request: JsonObject,
+  initialRequest: JsonObject,
   authProfileId?: string,
   dynamicToolsFingerprint?: string,
+  selection?: {
+    model?: string | null;
+    modelProvider?: string | null;
+    preserveNativeModel?: boolean;
+  },
 ): string {
+  let request = initialRequest;
+  if (selection) {
+    const preserve = selection.preserveNativeModel;
+    request = {
+      ...request,
+      model: preserve ? null : (selection.model ?? request.model ?? null),
+      requestedModel: preserve ? null : (request.model ?? null),
+      // A normalized native-auth provider is explicitly null; an absent warm
+      // observation falls back to the requested provider.
+      modelProvider: preserve
+        ? null
+        : selection.modelProvider === undefined
+          ? (request.modelProvider ?? null)
+          : selection.modelProvider,
+      requestedModelProvider: preserve
+        ? null
+        : (request.modelProvider ?? selection.modelProvider ?? null),
+    };
+  }
   return hashCodexAppServerBindingFingerprint(
     fingerprintJsonObject({
       authProfileId: authProfileId ?? null,
@@ -138,22 +163,13 @@ export function stabilizeJsonValue(value: JsonValue): JsonValue {
   );
 }
 
-function readActiveCodexTurnIds(thread: unknown): string[] {
-  const turns = (thread as { turns?: Array<{ id?: unknown; status?: unknown }> }).turns;
-  return (turns ?? [])
-    .filter((turn) => turn.status === "inProgress")
-    .map((turn) => (typeof turn.id === "string" ? turn.id : ""))
-    .filter((turnId) => turnId.trim().length > 0);
-}
-
 export function readActiveCodexTurnIdsFromResume(response: {
-  thread: unknown;
-  initialTurnsPage?: { data?: unknown[] } | null;
+  thread: { turns?: Pick<CodexTurn, "id" | "status">[] };
+  initialTurnsPage?: { data?: Pick<CodexTurn, "id" | "status">[] } | null;
 }): string[] {
-  const pagedTurns = response.initialTurnsPage?.data;
-  return readActiveCodexTurnIds(
-    Array.isArray(pagedTurns) ? { turns: pagedTurns } : response.thread,
-  );
+  return (response.initialTurnsPage?.data ?? response.thread.turns ?? [])
+    .filter((turn) => turn.status === "inProgress" && turn.id.trim().length > 0)
+    .map((turn) => turn.id);
 }
 
 const LEGACY_EMPTY_DYNAMIC_TOOLS_FINGERPRINT = codexLegacyDynamicToolsFingerprint([]);

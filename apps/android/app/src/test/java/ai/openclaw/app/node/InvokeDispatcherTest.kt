@@ -13,7 +13,6 @@ import ai.openclaw.app.protocol.OpenClawSmsCommand
 import ai.openclaw.app.protocol.OpenClawTalkCommand
 import android.content.Context
 import android.content.pm.PackageManager
-import android.location.Location
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -343,7 +342,10 @@ internal fun newInvokeDispatcher(
     locationHandler =
       LocationHandler(
         appContext = appContext,
-        dataSource = InvokeDispatcherFakeLocationDataSource(),
+        capture = { _, _, _ -> error("unused in InvokeDispatcherTest") },
+        hasFinePermission = { false },
+        hasCoarsePermission = { false },
+        hasBackgroundPermission = { false },
       ),
     deviceHandler = DeviceHandler(appContext),
     notificationsHandler =
@@ -383,24 +385,7 @@ private fun newCameraHandler(appContext: Context): CameraHandler =
     appContext = appContext,
     camera = CameraCaptureManager(appContext),
     setCameraAudioCaptureActive = { true },
-    invokeErrorFromThrowable = { err -> "UNAVAILABLE" to (err.message ?: "camera failed") },
   )
-
-private class InvokeDispatcherFakeLocationDataSource : LocationDataSource {
-  override fun hasFinePermission(context: Context): Boolean = false
-
-  override fun hasCoarsePermission(context: Context): Boolean = false
-
-  override fun hasBackgroundPermission(context: Context): Boolean = false
-
-  override suspend fun fetchLocation(
-    desiredProviders: List<String>,
-    maxAgeMs: Long?,
-    timeoutMs: Long,
-  ): Location {
-    error("unused in InvokeDispatcherTest")
-  }
-}
 
 private class InvokeDispatcherFakeNotificationsStateProvider : NotificationsStateProvider {
   override fun readSnapshot(context: Context): DeviceNotificationSnapshot = DeviceNotificationSnapshot(enabled = false, connected = false, notifications = emptyList())

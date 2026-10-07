@@ -23,7 +23,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -40,16 +39,11 @@ internal fun DreamingSettingsScreen(
   val state by viewModel.dreamingState.collectAsState()
   val isConnected by viewModel.isConnected.collectAsState()
 
-  LaunchedEffect(isConnected) {
-    if (isConnected) {
-      viewModel.refreshDreaming()
-    }
-  }
+  SettingsRefreshOnConnect(isConnected) { viewModel.refreshDreaming() }
 
   SettingsDetailFrame(
-    title = nativeString("Dreaming"),
     subtitle = nativeString("Memory consolidation and dream diary."),
-    icon = SettingsRoute.Dreaming.icon,
+    route = SettingsRoute.Dreaming,
     onBack = onBack,
   ) {
     SettingsRefreshControls(isConnected, state.refreshing, state.errorText, viewModel::refreshDreaming)
@@ -101,18 +95,14 @@ private fun DreamDiaryPanel(summary: GatewayDreamingSummary) {
   Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
     Text(text = nativeString("DIARY"), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
     if (!summary.diaryFound) {
-      ClawPanel {
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-          Text(text = nativeString("No dream diary yet."), style = ClawTheme.type.section, color = ClawTheme.colors.text)
-          Text(text = nativeString("Entries appear after a dreaming cycle writes a narrative summary."), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted)
-        }
-      }
+      SettingsMessagePanel(
+        title = nativeString("No dream diary yet."),
+        text = nativeString("Entries appear after a dreaming cycle writes a narrative summary."),
+      )
       return
     }
     if (summary.diaryEntries.isEmpty()) {
-      ClawPanel {
-        Text(text = nativeString("The diary is waiting for its first entry."), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted)
-      }
+      SettingsMessagePanel(text = nativeString("The diary is waiting for its first entry."))
       return
     }
     ClawPanel(contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {

@@ -1,11 +1,6 @@
 import type { RequestListener } from "node:http";
-import { type FetchFunction, WebClient } from "@slack/web-api";
-import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
+import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
-import {
-  getChannelRuntimeContext,
-  registerChannelRuntimeContext,
-} from "openclaw/plugin-sdk/channel-runtime-context";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import {
   createRuntimeConfigReader,
@@ -27,10 +22,10 @@ import { resolveSlackAccount } from "../accounts.js";
 import { isSlackAnyNativeApprovalClientEnabled } from "../approval-native-gates.js";
 import {
   resolveSlackLookupClientOptions,
-  resolveSlackProxyDispatcher,
+  resolveSlackMonitorDispatchers,
   resolveSlackWebClientOptions,
 } from "../client-options.js";
-import { createSlackStartupAuthClient } from "../client.js";
+import { createSlackStartupAuthClient, createSlackWebClient } from "../client.js";
 import { formatSlackError } from "../errors.js";
 import { normalizeSlackWebhookPath, registerSlackHttpHandler } from "../http/index.js";
 import { registerSlackInstallationState } from "../installation-identity-state.js";
@@ -40,6 +35,7 @@ import {
   resolveSlackAppToken,
   resolveSlackBotToken,
 } from "../token.js";
+import { registerSlackApprovalRuntimeContext } from "./approval-runtime-context.js";
 import { resolveSlackSlashCommandConfig } from "./commands.js";
 import { createSlackMonitorContext, type SlackMonitorContext } from "./context.js";
 import {
@@ -79,7 +75,6 @@ import {
 import { resolveSlackMonitorPolicy } from "./runtime-policy.js";
 import { registerSlackMonitorSlashCommands } from "./slash.js";
 import type { MonitorSlackOpts } from "./types.js";
-import { createSlackWorkspaceClientResolver } from "./workspace-client-resolver.js";
 
 let slackBoltInterop: SlackBoltResolvedExports | undefined;
 
@@ -223,7 +218,8 @@ function resolveSlackRelayConfig(params: { relay: unknown; accountId: string }):
   };
 }
 
-export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
+export async function monitorSlackProvider(opts: MonitorSlackOpts) {
+  const { scheduler } = opts;
   const cfg = opts.config ?? getRuntimeConfig();
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
 
@@ -294,8 +290,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const slackCfg = account.config;
   const slashCommand = resolveSlackSlashCommandConfig(opts.slashCommand ?? slackCfg.slashCommand);
   const mediaMaxBytes = (opts.mediaMaxMb ?? slackCfg.mediaMaxMb ?? 20) * 1024 * 1024;
-  const slackDispatcher = resolveSlackProxyDispatcher();
-  const clientOptions = resolveSlackWebClientOptions({}, slackDispatcher);
+  const slackDispatchers = resolveSlackMonitorDispatchers(slackMode);
+  const clientOptions = resolveSlackWebClientOptions({}, slackDispatchers.webApi);
   const durableIngress = createSlackDurableIngress({
     accountId: account.accountId,
     ...(runtime.log ? { onLog: runtime.log } : {}),
@@ -310,7 +306,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     signingSecret: signingSecret ?? undefined,
     slackWebhookPath,
     clientOptions: clientOptions as Record<string, unknown>,
-    dispatcher: slackDispatcher,
+    dispatcher: slackDispatchers.socketMode,
     wrapReceiver: durableIngress.wrapReceiver,
     onContextIdentity: async (identity) => {
       const current = monitorContextRef.current;
@@ -340,7 +336,10 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
           botId: identity.botId,
         });
       if (adopted && contextInstallationIdentity) {
-        installationState.update(contextInstallationIdentity.kind);
+        installationState.update(
+          contextInstallationIdentity.kind,
+          contextInstallationIdentity.teamId,
+        );
         await installSlackRuntimeForIdentity(contextInstallationIdentity);
       }
       if (
@@ -506,15 +505,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   });
   let presenceRequestAbort: AbortController | undefined;
   let presenceMonitor: ReturnType<typeof createSlackPresenceMonitor> | undefined;
-  let presenceMonitorStarted = false;
   let runtimeStarted = false;
-  const startPresenceMonitor = () => {
-    if (!presenceMonitor || presenceMonitorStarted) {
-      return;
-    }
-    presenceMonitor.start();
-    presenceMonitorStarted = true;
-  };
   const installSlackPresenceRuntime = (identity: SlackInstallationIdentity) => {
     if (
       !presenceEventsEnabled ||
@@ -527,7 +518,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     presenceRequestAbort = new AbortController();
     const options = resolveSlackLookupClientOptions(
       { ...clientOptions, timeout: SLACK_PRESENCE_REQUEST_TIMEOUT_MS },
-      slackDispatcher,
+      slackDispatchers.webApi,
     );
     options.fetch = withSlackPresenceLifecycleSignal(
       options.fetch ?? globalThis.fetch,
@@ -540,6 +531,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       installationIdentity: identity,
     });
     presenceMonitor = createSlackPresenceMonitor({
+      scheduler,
       accountId: account.accountId,
       accountConfig: slackCfg.presenceEvents,
       resolveClient: (workspaceTeamId) => resolveClient(workspaceTeamId).users,
@@ -548,7 +540,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       error: runtime.error,
     });
     if (runtimeStarted) {
-      startPresenceMonitor();
+      presenceMonitor.start();
     }
   };
   const handleSlackMessage = createSlackMessageHandler({
@@ -568,10 +560,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
 
   let workspaceRuntimePromise: Promise<void> | undefined;
   const installSlackWorkspaceRuntime = async () => {
-    if (workspaceRuntimePromise) {
-      return await workspaceRuntimePromise;
-    }
-    workspaceRuntimePromise = (async () => {
+    workspaceRuntimePromise ??= (async () => {
       registerSlackWorkspaceEvents({
         ctx,
         appHomeSlashCommandName,
@@ -579,7 +568,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       });
       void ctx.readRuntimeContext();
       if (runtimeStarted) {
-        startPresenceMonitor();
+        presenceMonitor?.start();
       }
     })();
     return await workspaceRuntimePromise;
@@ -600,40 +589,14 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       clientOptions,
       installationIdentity: identity,
     });
-    const approvalContext = {
+    registerSlackApprovalRuntimeContext({
       app,
+      readConfig: createRuntimeConfigReader(cfg),
       config: slackCfg.execApprovals ?? {},
       resolveClient,
-      readConfig: createRuntimeConfigReader(cfg),
-      assertCurrent: () => {
-        // Channel replacement can leave an approval send awaiting Slack or its queue.
-        // Only this monitor's registered context may post the pending card.
-        if (
-          opts.abortSignal?.aborted ||
-          getChannelRuntimeContext({
-            channelRuntime: opts.channelRuntime,
-            channelId: "slack",
-            accountId: account.accountId,
-            capability: CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY,
-          }) !== approvalContext
-        ) {
-          throw new Error("Slack approval delivery is no longer authorized");
-        }
-      },
-      ...(identity.kind === "enterprise"
-        ? {
-            enterprise: {
-              enterpriseId: identity.enterpriseId,
-            },
-          }
-        : {}),
-    };
-    registerChannelRuntimeContext({
+      identity,
       channelRuntime: opts.channelRuntime,
-      channelId: "slack",
       accountId: account.accountId,
-      capability: CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY,
-      context: approvalContext,
       abortSignal: opts.abortSignal,
     });
     approvalRuntimeInstalled = true;
@@ -673,7 +636,12 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         if (!adopted) {
           return false;
         }
-        installationState.update(recoveredInstallationIdentity.kind);
+        installationState.update(
+          recoveredInstallationIdentity.kind,
+          recoveredInstallationIdentity.kind === "workspace"
+            ? recoveredInstallationIdentity.teamId
+            : undefined,
+        );
         await installSlackRuntimeForIdentity(recoveredInstallationIdentity);
         return true;
       } catch (err) {
@@ -703,13 +671,14 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const installationState = registerSlackInstallationState(
     account.accountId,
     installationIdentity.kind,
+    installationIdentity.kind === "workspace" ? installationIdentity.teamId : undefined,
   );
 
   try {
     await installSlackRuntimeForIdentity(installationIdentity);
     durableIngress.start();
     runtimeStarted = true;
-    startPresenceMonitor();
+    presenceMonitor?.start();
     if (slackMode === "http" && slackHttpHandler) {
       unregisterHttpHandler = registerSlackHttpHandler({
         path: slackWebhookPath,
@@ -846,8 +815,35 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     unregisterHttpHandler?.();
     await durableIngress.stop();
     await gracefulStopSlackApp(app);
-    await slackDispatcher?.close();
+    await slackDispatchers.close();
   }
+}
+
+function createSlackWorkspaceClientResolver(params: {
+  appClient: WebClient;
+  token: string;
+  clientOptions: WebClientOptions;
+  installationIdentity: SlackInstallationIdentity;
+}): (teamId?: string) => WebClient {
+  if (params.installationIdentity.kind !== "enterprise") {
+    return () => params.appClient;
+  }
+  const clients = new Map<string, WebClient>();
+  return (teamId?: string) => {
+    if (!teamId || !/^T[A-Z0-9]+$/.test(teamId)) {
+      throw new Error("Slack Enterprise Grid workspace client requires a valid teamId");
+    }
+    const cached = clients.get(teamId);
+    if (cached) {
+      return cached;
+    }
+    const client = createSlackWebClient(params.token, {
+      ...params.clientOptions,
+      teamId,
+    });
+    clients.set(teamId, client);
+    return client;
+  };
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

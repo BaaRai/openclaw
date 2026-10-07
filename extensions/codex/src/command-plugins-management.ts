@@ -70,27 +70,21 @@ export async function handleCodexPluginsSubcommand(
   const [verb = "list", ...args] = rest;
   const normalized = verb.toLowerCase();
 
+  if (["menu", "help", "list"].includes(normalized) && args.length > 0) {
+    return { text: `Usage: /codex plugins ${normalized}` };
+  }
   if (normalized === "menu") {
-    if (args.length > 0) {
-      return { text: "Usage: /codex plugins menu" };
-    }
     return buildPluginsMenuReply();
   }
 
   if (normalized === "help") {
-    if (args.length > 0) {
-      return { text: "Usage: /codex plugins help" };
-    }
     return { text: buildPluginsHelp() };
   }
 
   if (normalized === "list") {
-    if (args.length > 0) {
-      return { text: "Usage: /codex plugins list" };
-    }
     const current = await io.readConfig();
     return {
-      text: formatPluginList(current.plugins ?? {}, { globalEnabled: current.enabled === true }),
+      text: formatPluginList(current.plugins ?? {}, current.enabled === true),
     };
   }
 
@@ -583,9 +577,8 @@ async function installCodexPlugin(
 
 function formatPluginList(
   plugins: Record<string, CodexPluginConfigEntry>,
-  options: { globalEnabled?: boolean } = {},
+  globalEnabled: boolean,
 ): string {
-  const globalEnabled = options.globalEnabled === true;
   const keys = Object.keys(plugins).toSorted();
   if (keys.length === 0) {
     return "No Codex sub-plugins configured under plugins.entries.codex.config.codexPlugins.plugins";

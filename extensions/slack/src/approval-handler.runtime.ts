@@ -22,9 +22,9 @@ import { SLACK_APPROVAL_HEADER_BLOCK_ID } from "./approval-actions.js";
 import { runSlackApprovalMessageUpdate } from "./approval-message-updates.js";
 import {
   isSlackAnyNativeApprovalClientEnabled,
+  resolveSlackApproverDmTargets,
   shouldHandleSlackNativeApprovalRequest,
 } from "./approval-native-gates.js";
-import { resolveSlackApproverDmTargets } from "./approval-native.js";
 import { getSlackListenerWriteClient } from "./client.js";
 import { normalizeSlackApproverId } from "./exec-approvals.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
@@ -69,6 +69,7 @@ type SlackApprovalHandlerContext = {
   readConfig?: () => OpenClawConfig;
   assertCurrent?: () => void;
   resolveClient?: (teamId?: string) => WebClient | undefined;
+  workspaceTeamId?: string;
   enterprise?: {
     enterpriseId: string;
   };
@@ -546,7 +547,16 @@ function resolveApprovalClient(context: SlackApprovalHandlerContext, teamId?: st
   if (!teamId) {
     return context.app.client;
   }
-  if (!context.enterprise || !context.resolveClient) {
+  if (!context.enterprise) {
+    if (
+      !context.workspaceTeamId ||
+      context.workspaceTeamId.toUpperCase() !== teamId.toUpperCase()
+    ) {
+      throw new Error("Slack approval workspace does not match the authenticated installation");
+    }
+    return context.app.client;
+  }
+  if (!context.resolveClient) {
     throw new Error("Slack Enterprise Grid approval client is unavailable");
   }
   const client = context.resolveClient(teamId);
@@ -570,7 +580,7 @@ async function resolveApprovalChannel(client: WebClient, target: string, teamId?
   const opened = await client.conversations.open({ users: parsed.id, return_im: true });
   const channelId = normalizeOptionalString(opened.channel?.id);
   if (!channelId) {
-    throw new Error("Slack Enterprise Grid approval DM did not return a channel id");
+    throw new Error("Slack approval DM did not return a channel id");
   }
   return `channel:${channelId}`;
 }

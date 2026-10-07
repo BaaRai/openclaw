@@ -13,15 +13,15 @@ import ai.openclaw.app.i18n.resolveNativeTextResource
 import ai.openclaw.app.i18n.verbatimText
 import ai.openclaw.app.ui.design.ClawAvatarMark
 import ai.openclaw.app.ui.design.ClawEmptyState
+import ai.openclaw.app.ui.design.ClawIconBadge
 import ai.openclaw.app.ui.design.ClawIcons
 import ai.openclaw.app.ui.design.ClawListItem
+import ai.openclaw.app.ui.design.ClawListPanel
 import ai.openclaw.app.ui.design.ClawPanel
 import ai.openclaw.app.ui.design.ClawPlainIconButton
 import ai.openclaw.app.ui.design.ClawScaffold
-import ai.openclaw.app.ui.design.ClawSeparatedColumn
 import ai.openclaw.app.ui.design.ClawTextField
 import ai.openclaw.app.ui.design.ClawTheme
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -61,6 +60,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+
+private val commandListPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
 
 @Composable
 internal fun CommandPalette(
@@ -136,7 +137,7 @@ internal fun CommandPalette(
             if (actionRows.isEmpty()) {
               ClawEmptyState(title = nativeString("No actions found"), body = nativeString("Try Chat, Voice, Threads, Providers, or Settings."))
             } else {
-              CommandActionList(rows = actionRows, onOpen = onOpen)
+              ClawListPanel(items = actionRows, contentPadding = commandListPadding) { row -> CommandActionRow(row = row, onOpen = onOpen) }
             }
           }
         }
@@ -155,10 +156,9 @@ internal fun CommandPalette(
               )
             }
           } else {
-            CommandSessionList(
-              rows = sessionRows,
-              onOpen = onOpenSession,
-            )
+            ClawListPanel(items = sessionRows, contentPadding = commandListPadding) { row ->
+              CommandSessionListRow(row = row, onClick = { onOpenSession(row.key, row.ownerAgentId) })
+            }
           }
         }
       }
@@ -247,27 +247,7 @@ internal fun commandActionAccessibilityDescription(
   action: CommandAction,
   title: String,
   resolve: (String, String) -> String = { source, argument -> nativeString(source, argument) },
-): String =
-  when (action) {
-    CommandAction.Chat,
-    CommandAction.Voice,
-    CommandAction.Sessions,
-    -> title
-
-    is CommandAction.Settings -> resolve("Open \${row.title}", title)
-  }
-
-@Composable
-private fun CommandActionList(
-  rows: List<CommandItem>,
-  onOpen: (CommandAction) -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-    ClawSeparatedColumn(items = rows) { row ->
-      CommandActionRow(row = row, onOpen = onOpen)
-    }
-  }
-}
+): String = if (action is CommandAction.Settings) resolve("Open \${row.title}", title) else title
 
 @Composable
 private fun CommandActionRow(
@@ -288,18 +268,6 @@ private fun CommandActionRow(
     leading = { CommandRowIcon(icon = row.icon) },
     trailing = { CommandRowChevron(contentDescription = null) },
   )
-}
-
-@Composable
-private fun CommandSessionList(
-  rows: List<ChatSessionEntry>,
-  onOpen: (String, String?) -> Unit,
-) {
-  ClawPanel(contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-    ClawSeparatedColumn(items = rows) { row ->
-      CommandSessionListRow(row = row, onClick = { onOpen(row.key, row.ownerAgentId) })
-    }
-  }
 }
 
 @Composable
@@ -332,16 +300,13 @@ private fun CommandSessionListRow(
 
 @Composable
 private fun CommandRowIcon(icon: ImageVector) {
-  Surface(
-    modifier = Modifier.size(30.dp),
-    shape = CircleShape,
+  ClawIconBadge(
+    icon = icon,
+    size = 30.dp,
+    iconSize = 15.dp,
     color = ClawTheme.colors.canvas,
-    border = BorderStroke(1.dp, ClawTheme.colors.borderStrong),
-  ) {
-    Box(contentAlignment = Alignment.Center) {
-      Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = ClawTheme.colors.text)
-    }
-  }
+    borderColor = ClawTheme.colors.borderStrong,
+  )
 }
 
 @Composable

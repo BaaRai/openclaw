@@ -16,7 +16,7 @@ import { CodexTurnProjection } from "./event-projector-result.js";
 import { buildCodexSteeringMessagesSnapshot } from "./event-projector-snapshot.js";
 import type { CodexToolProgressProjection } from "./event-projector-tool-progress.js";
 import {
-  extractRawAssistantText,
+  extractRawResponseItemText,
   readCodexErrorNotificationMessage,
   readItem,
 } from "./event-projector-values.js";
@@ -86,7 +86,7 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
   }
 
   buildSteeringTranscriptPrefix(): AgentMessage[] {
-    const snapshot = buildCodexSteeringMessagesSnapshot({
+    return buildCodexSteeringMessagesSnapshot({
       runParams: this.params,
       turnId: this.turnId,
       upstreamUserText: this.options.upstreamUserText,
@@ -94,15 +94,12 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
       assistantProjection: this.assistantProjection,
       toolMessages: this.toolTranscriptProjection.transcriptMessages,
     });
-    this.pendingSteeringAssistantBoundaryItemId = snapshot.assistantBoundaryItemId;
-    return snapshot.messages;
   }
 
-  markSteeringTranscriptPersisted(): void {
-    const itemId = this.pendingSteeringAssistantBoundaryItemId;
-    if (itemId) {
-      this.assistantProjection.markAssistantBoundaryPersisted(itemId);
-      this.pendingSteeringAssistantBoundaryItemId = undefined;
+  markSteeringTranscriptMessagePersisted(mirrorIdentity: string): void {
+    const prefix = `${this.turnId}:assistant:`;
+    if (mirrorIdentity.startsWith(prefix)) {
+      this.assistantProjection.markSteeringMessagePersisted(mirrorIdentity.slice(prefix.length));
     }
   }
 
@@ -316,7 +313,13 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
     });
   }
 
-  recordDynamicToolCall(params: { callId: string; tool: string; arguments?: JsonValue }): void {
+  recordDynamicToolCall(params: {
+    callId: string;
+    namespace?: string | null;
+    tool: string;
+    arguments?: JsonValue;
+  }): void {
+    this.toolSearchEvidenceProjection?.recordDynamicToolCall(params);
     this.toolTranscriptProjection.recordDynamicToolCall(params);
   }
 
@@ -338,6 +341,7 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
       details?: unknown;
     },
   ): void {
+    this.toolSearchEvidenceProjection?.recordDynamicToolResult(params);
     this.toolProgressProjection.recordDynamicToolResult(params);
     const source = this.options.resolveDynamicToolResultContentSource?.(params.tool);
     this.toolTranscriptProjection.recordDynamicToolResult(params, source);
@@ -665,9 +669,10 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
     if (!item) {
       return;
     }
-    if (item.role === "assistant" && extractRawAssistantText(item)) {
+    if (item.role === "assistant" && extractRawResponseItemText(item)) {
       this.eventProjection.markSafetyBufferingAssistantStarted();
     }
+    this.toolSearchEvidenceProjection?.recordRawResponseItem(item);
     this.toolTranscriptProjection.recordRawNativeToolItem(item);
     // Project protocol state before media persistence yields. Notifications may overlap,
     // so delayed image I/O must not consume assistant-echo state from a newer item.

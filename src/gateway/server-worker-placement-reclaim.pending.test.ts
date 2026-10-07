@@ -35,7 +35,7 @@ it.each(["active", "failed"] as const)(
       loadSessionRuntime: async () =>
         ({
           managedWorktrees: {
-            findLiveByOwner: () => ({
+            findLiveByOwner: async () => ({
               id: "cancel-failure-worktree",
               ownerId: sessionKey,
               path: "/fixture/workspace",
@@ -60,7 +60,7 @@ it.each(["active", "failed"] as const)(
     const reclaim = vi.fn();
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
-      await runExclusiveSessionLifecycleMutation({
+      await runExclusiveSessionLifecycleMutation("placement-reclaim", {
         scope,
         identities: [sessionKey, sessionId],
         run: async () => {

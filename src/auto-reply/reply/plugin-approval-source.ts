@@ -31,7 +31,7 @@ function boundedDisplayIdentifier(
 export function capturePluginApprovalSource(params: {
   context: Pick<
     TemplateContext,
-    "InboundAccessAuthorized" | "SenderIsSelf" | "ApprovalSource" | "RawBody"
+    "InboundAccessAuthorized" | "SenderIsSelf" | "ApprovalSource" | "rawText"
   >;
   channel?: string;
   provenance?: InputProvenance;
@@ -57,8 +57,8 @@ export function capturePluginApprovalSource(params: {
   ) {
     return undefined;
   }
-  const rawBody = context.RawBody;
-  const sanitized = rawBody ? sanitizeExecApprovalWarningTextWithStatus(rawBody) : undefined;
+  const rawText = context.rawText;
+  const sanitized = rawText ? sanitizeExecApprovalWarningTextWithStatus(rawText) : undefined;
   const displayText = sanitized && !sanitized.oversized ? sanitized.text.trim() : "";
   const userMessageExcerpt =
     displayText.length > MAX_APPROVAL_MESSAGE_EXCERPT_LENGTH

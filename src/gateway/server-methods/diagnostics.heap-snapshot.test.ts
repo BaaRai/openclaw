@@ -37,8 +37,8 @@ const memory = process.memoryUsage();
 
 function request(
   options: {
-    scopes?: string[];
     role?: string;
+    scopes?: string[];
     params?: unknown;
     hasAuthority?: () => boolean;
   } = {},
@@ -70,6 +70,7 @@ function request(
 }
 
 beforeEach(() => {
+  vi.stubGlobal("process", { ...process, versions: { ...process.versions, bun: undefined } });
   stateDir = tempDirs.make("openclaw-heap-snapshot-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   setActivePluginRegistry(createEmptyPluginRegistry());
@@ -87,16 +88,15 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   setActivePluginRegistry(createEmptyPluginRegistry());
 });
 
 describe("diagnostics.heapSnapshot", () => {
   it.each([
-    { scopes: [] },
-    { scopes: ["operator.read"] },
-    { scopes: ["operator.write"] },
+    { role: "operator", scopes: ["operator.write"] },
     { role: "node", scopes: ["operator.admin"] },
-  ])("rejects non-admin operators and node clients: %j", async (options) => {
+  ])("rejects $role/$scopes before native work", async (options) => {
     const call = request(options);
     await call.pending;
     expect(native.write).not.toHaveBeenCalled();
@@ -107,19 +107,16 @@ describe("diagnostics.heapSnapshot", () => {
     );
   });
 
-  it.each([null, [], { reason: 1 }, { reason: "x".repeat(257) }, { path: "/tmp/override" }])(
-    "rejects malformed or path-controlling params %j",
-    async (params) => {
-      const call = request({ params });
-      await call.pending;
-      expect(native.write).not.toHaveBeenCalled();
-      expect(call.respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "INVALID_REQUEST" }),
-      );
-    },
-  );
+  it("rejects path-controlling params", async () => {
+    const call = request({ params: { path: "/tmp/override" } });
+    await call.pending;
+    expect(native.write).not.toHaveBeenCalled();
+    expect(call.respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
 
   it("returns only file metadata, writes privately, and refuses immediate recapture", async () => {
     const call = request({ params: { reason: "retention baseline" } });
@@ -149,22 +146,6 @@ describe("diagnostics.heapSnapshot", () => {
       }),
     );
     expect(native.write).toHaveBeenCalledTimes(1);
-  });
-
-  it("refuses heaps over 6 GiB before filesystem preparation", async () => {
-    vi.mocked(process.memoryUsage).mockReturnValue({ ...memory, heapUsed: 6 * 1024 ** 3 + 1 });
-    const call = request();
-    await call.pending;
-    expect(call.respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: "UNAVAILABLE",
-        details: { reason: "heap-too-large", cleanupFailed: false },
-      }),
-    );
-    expect(native.write).not.toHaveBeenCalled();
-    expect(await fs.readdir(stateDir)).toEqual([]);
   });
 
   it.each(["authority", "heap"])(

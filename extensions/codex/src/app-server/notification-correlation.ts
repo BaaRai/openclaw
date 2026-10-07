@@ -6,10 +6,8 @@ export function isCodexNotificationForTurn(
   threadId: string,
   turnId: string,
 ): boolean {
-  if (!isJsonObject(value)) {
-    return false;
-  }
   return (
+    isJsonObject(value) &&
     readCodexNotificationThreadId(value) === threadId &&
     readCodexNotificationTurnId(value) === turnId
   );
@@ -34,4 +32,13 @@ export function readCodexNotificationTurnId(record: JsonObject): string | undefi
     (isJsonObject(record.turn) ? normalizeOptionalString(record.turn.id) : undefined) ??
     normalizeOptionalString(record.turnId)
   );
+}
+
+export function readCodexNotificationScope(value: JsonValue | undefined) {
+  if (!isJsonObject(value)) {
+    return {};
+  }
+  const threadId = readCodexNotificationThreadId(value);
+  const turnId = readCodexNotificationTurnId(value);
+  return { ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) };
 }

@@ -12,7 +12,8 @@ import { renderSettingsPageHeader } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import { registerCronEnglish } from "../../i18n/locales/en-cron.ts";
-import { watchAgentScope } from "../../lib/agents/index.ts";
+import { watchAgentScope, watchSelectedAgent } from "../../lib/agents/index.ts";
+import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
   addCronJob,
   cancelCronEdit,
@@ -126,7 +127,22 @@ class CronPage extends OpenClawLightDomElement {
       }
     },
   });
-  private readonly observeAgentScope = watchAgentScope((scopeId) => {
+  private readonly observeAgentScope = watchAgentScope((scopeId, intentChanged) => {
+    if (!intentChanged) {
+      // Hello and roster hydration refine the filter, not the operator's route
+      // or draft. Keep its state owner and supersede reads for the previous scope.
+      this.cron.cronAgentId = scopeId;
+      void this.refreshCron({ tableFilters: true });
+      void this.loadModelSuggestions(this.cron);
+      if (
+        (this.cron.cronEditingJob || this.cron.cronCreateOpen) &&
+        !this.cron.cronForm.agentId.trim()
+      ) {
+        void this.deliveryDirectory.load();
+      }
+      this.requestUpdate();
+      return;
+    }
     this.pendingRouteData = null;
     // Replace the mutable request state so responses started for the old
     // scope cannot populate the newly selected agent's page.
@@ -142,22 +158,25 @@ class CronPage extends OpenClawLightDomElement {
   }
 
   private readonly subscriptions = new SubscriptionsController(this)
-    .watch(
+    .watchStore(
       () => this.context?.agents,
-      (agents, notify) => agents.subscribe(notify),
-      () => this.syncAgentsState(),
+      () => (this.agentsList = this.context.agents.state.agentsList),
     )
-    .watch(
-      () => this.context?.channels,
-      (channels, notify) => channels.subscribe(notify),
-    )
-    .watch(
-      () => this.context?.runtimeConfig,
-      (runtimeConfig, notify) => runtimeConfig.subscribe(notify),
-    )
+    .watchStore(() => this.context?.channels)
+    .watchStore(() => this.context?.runtimeConfig)
     .effect(
       () => this.context?.agentSelection,
-      (agentSelection) => this.observeAgentScope(agentSelection),
+      (agentSelection) => {
+        const stopScope = this.observeAgentScope(agentSelection);
+        const stopSelection = watchSelectedAgent(agentSelection, (agentId) => {
+          // Team navigation can change the catalog owner while the all-agent
+          // inventory scope stays null. Retire those per-agent rows here.
+          if (this.modelSuggestionsRequest?.agentId !== agentId) {
+            void this.loadModelSuggestions(this.cron);
+          }
+        });
+        return () => [stopSelection, stopScope].forEach((stop) => stop());
+      },
     )
     .effect(
       () => this.context?.gateway,
@@ -204,10 +223,6 @@ class CronPage extends OpenClawLightDomElement {
     this.deliveryDirectory.retireEditor();
     this.modelSuggestionsError = null;
     this.modelSuggestionsRequest = null;
-  }
-
-  private syncAgentsState() {
-    this.agentsList = this.context.agents.state.agentsList;
   }
 
   private canRefreshCron(cron: CronState = this.cron) {
@@ -332,6 +347,12 @@ class CronPage extends OpenClawLightDomElement {
   private async loadModelSuggestions(cronState: CronState) {
     const client = cronState.client;
     const agentId = this.context.agentSelection.state.selectedId;
+    // Last-good suggestions belong to one agent, including when its successor has no catalog.
+    if (this.modelSuggestionsRequest?.agentId !== agentId) {
+      this.modelSuggestionsRequest = null;
+      this.cronModelSuggestions = [];
+      this.modelSuggestionsError = null;
+    }
     if (!client || !cronState.connected || !agentId) {
       return;
     }
@@ -348,7 +369,7 @@ class CronPage extends OpenClawLightDomElement {
       if (isCurrent()) {
         this.cronModelSuggestions = result.models
           .filter((entry) => entry.manualSelectionAllowed !== false)
-          .map((entry) => entry.id);
+          .map((entry) => buildQualifiedChatModelValue(entry.id, entry.provider));
         this.modelSuggestionsError = modelCatalogRefreshError(result);
       }
     } catch (error) {

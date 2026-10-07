@@ -1,10 +1,10 @@
 package ai.openclaw.app.node
 
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.hasPermission
 import android.Manifest
 import android.content.Context
 import android.provider.CallLog
-import androidx.core.content.ContextCompat
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -44,11 +44,7 @@ internal interface CallLogDataSource {
 }
 
 private object SystemCallLogDataSource : CallLogDataSource {
-  override fun hasReadPermission(context: Context): Boolean =
-    ContextCompat.checkSelfPermission(
-      context,
-      Manifest.permission.READ_CALL_LOG,
-    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+  override fun hasReadPermission(context: Context): Boolean = context.hasPermission(Manifest.permission.READ_CALL_LOG)
 
   override fun search(
     context: Context,
@@ -77,17 +73,15 @@ private object SystemCallLogDataSource : CallLogDataSource {
       selectionArgs.add(buildCallLogLikeArg(it))
     }
 
-    if (request.dateStart != null && request.dateEnd != null) {
-      selections.add("${CallLog.Calls.DATE} >= ? AND ${CallLog.Calls.DATE} <= ?")
-      selectionArgs.add(request.dateStart.toString())
-      selectionArgs.add(request.dateEnd.toString())
-    } else if (request.dateStart != null) {
+    if (request.dateStart != null) {
       selections.add("${CallLog.Calls.DATE} >= ?")
       selectionArgs.add(request.dateStart.toString())
-    } else if (request.dateEnd != null) {
+    }
+    if (request.dateEnd != null) {
       selections.add("${CallLog.Calls.DATE} <= ?")
       selectionArgs.add(request.dateEnd.toString())
-    } else if (request.date != null) {
+    }
+    if (request.dateStart == null && request.dateEnd == null && request.date != null) {
       // Compatible with the old date parameter (exact match)
       selections.add("${CallLog.Calls.DATE} = ?")
       selectionArgs.add(request.date.toString())
@@ -154,57 +148,34 @@ class CallLogHandler internal constructor(
 ) {
   fun handleCallLogSearch(paramsJson: String?): GatewaySession.InvokeResult {
     if (!dataSource.hasReadPermission(appContext)) {
-      return GatewaySession.InvokeResult.error(
-        code = "CALL_LOG_PERMISSION_REQUIRED",
-        message = "CALL_LOG_PERMISSION_REQUIRED: grant Call Log permission",
-      )
+      return nodeInvokeError("CALL_LOG_PERMISSION_REQUIRED", "grant Call Log permission")
     }
 
     val request =
       parseSearchRequest(paramsJson)
-        ?: return GatewaySession.InvokeResult.error(
-          code = "INVALID_REQUEST",
-          message = "INVALID_REQUEST: expected JSON object",
-        )
+        ?: return nodeInvokeError("INVALID_REQUEST", "expected JSON object")
 
     return try {
       val callLogs = dataSource.search(appContext, request)
       GatewaySession.InvokeResult.ok(Json.encodeToString(mapOf("callLogs" to callLogs)))
     } catch (err: Throwable) {
-      GatewaySession.InvokeResult.error(
-        code = "CALL_LOG_UNAVAILABLE",
-        message = "CALL_LOG_UNAVAILABLE: ${err.message ?: "call log query failed"}",
-      )
+      nodeInvokeError("CALL_LOG_UNAVAILABLE", err.message ?: "call log query failed")
     }
   }
 
   private fun parseSearchRequest(paramsJson: String?): CallLogSearchRequest? {
     val params = if (paramsJson.isNullOrBlank()) JsonObject(emptyMap()) else parseJsonParamsObject(paramsJson) ?: return null
 
-    val limit =
-      ((params["limit"] as? JsonPrimitive)?.content?.toIntOrNull() ?: DEFAULT_CALL_LOG_LIMIT)
-        .coerceIn(1, 200)
-    val offset =
-      ((params["offset"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0)
-        .coerceAtLeast(0)
-    val cachedName = (params["cachedName"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
-    val number = (params["number"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
-    val date = (params["date"] as? JsonPrimitive)?.content?.toLongOrNull()
-    val dateStart = (params["dateStart"] as? JsonPrimitive)?.content?.toLongOrNull()
-    val dateEnd = (params["dateEnd"] as? JsonPrimitive)?.content?.toLongOrNull()
-    val duration = (params["duration"] as? JsonPrimitive)?.content?.toLongOrNull()
-    val type = (params["type"] as? JsonPrimitive)?.content?.toIntOrNull()
-
     return CallLogSearchRequest(
-      limit = limit,
-      offset = offset,
-      cachedName = cachedName,
-      number = number,
-      date = date,
-      dateStart = dateStart,
-      dateEnd = dateEnd,
-      duration = duration,
-      type = type,
+      limit = ((params["limit"] as? JsonPrimitive)?.content?.toIntOrNull() ?: DEFAULT_CALL_LOG_LIMIT).coerceIn(1, 200),
+      offset = ((params["offset"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0).coerceAtLeast(0),
+      cachedName = (params["cachedName"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() },
+      number = (params["number"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() },
+      date = (params["date"] as? JsonPrimitive)?.content?.toLongOrNull(),
+      dateStart = (params["dateStart"] as? JsonPrimitive)?.content?.toLongOrNull(),
+      dateEnd = (params["dateEnd"] as? JsonPrimitive)?.content?.toLongOrNull(),
+      duration = (params["duration"] as? JsonPrimitive)?.content?.toLongOrNull(),
+      type = (params["type"] as? JsonPrimitive)?.content?.toIntOrNull(),
     )
   }
 }
