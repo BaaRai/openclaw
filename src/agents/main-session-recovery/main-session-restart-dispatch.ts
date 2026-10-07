@@ -17,7 +17,7 @@ import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
-  reserveSessionControllerSource,
+  reserveOrJoinSessionControllerSource,
   retireSessionControllerInput,
   type SessionControllerInput,
 } from "../../sessions/session-controller.mailbox.js";
@@ -446,10 +446,11 @@ export async function resumeMainSession(
       log.info(`dispatching restart-safe recovery for ${params.sessionKey}`);
     }
     // The resend is one ordinary mailbox input. Its reservation id derives from
-    // the durable attempt, so a foreground claim can order the same input first.
-    const controllerInput =
-      params.controllerInput ??
-      (ownedInput = reserveSessionControllerSource(dispatchSessionKey, {
+    // the durable attempt, so a foreground claim can order the same input first;
+    // a joined input belongs to its creator and is never retired here.
+    let controllerInput = params.controllerInput;
+    if (!controllerInput) {
+      const reservation = reserveOrJoinSessionControllerSource(dispatchSessionKey, {
         reservationId: inputReservationId,
         protocolRunId: recoveryRunId,
         sourceSessionId: params.entry.sessionId,
@@ -461,7 +462,10 @@ export async function resumeMainSession(
           agentId: params.agentId,
           incarnation: params.entry.sessionId,
         }),
-      }));
+      });
+      controllerInput = reservation.input;
+      ownedInput = reservation.created ? reservation.input : undefined;
+    }
     dispatchStarted = true;
     let dispatchSettled = false;
     let stopTyping: (() => void) | undefined;
