@@ -399,6 +399,7 @@ describe("steering input custody", () => {
         );
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "original-backing-run",
           toolAuthorityFingerprint: fingerprint,
           supportsCrossProfileSteering:
@@ -686,6 +687,7 @@ describe("steering input custody", () => {
         operation.setPhase("running");
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "native-backing-run",
           toolAuthorityFingerprint: fingerprint,
           cancel,

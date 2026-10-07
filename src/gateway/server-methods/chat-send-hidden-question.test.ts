@@ -76,6 +76,7 @@ it.each(
       );
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId,
         toolAuthorityFingerprint: fingerprint,
         cancel: vi.fn(),

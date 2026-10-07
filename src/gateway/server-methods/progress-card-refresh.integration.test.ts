@@ -451,6 +451,7 @@ describe("registered progress refresh admission", () => {
       operation.setPhase("running");
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "original-work",
         toolAuthorityFingerprint: fingerprint,
         cancel,
@@ -553,6 +554,7 @@ describe("registered progress refresh admission", () => {
       const claim = vi.fn(async () => false);
       hiddenOperation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: accepted.runId,
         toolAuthorityFingerprint: "same-authority",
         cancel: vi.fn(),

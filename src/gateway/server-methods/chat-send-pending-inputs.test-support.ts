@@ -95,6 +95,7 @@ export function useBrowserFollowupFixture() {
     // Cloud workers expose a running owner but explicitly reject message injection.
     activeRun?.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "active-cloud-run",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => false, queueMessage: vi.fn() },

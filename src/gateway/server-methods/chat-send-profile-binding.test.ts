@@ -849,6 +849,7 @@ describe("native profile-bound input admission", () => {
       let preparing = false;
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "native-steering-owner",
         toolAuthorityFingerprint: fingerprint,
         cancel,
@@ -938,6 +939,7 @@ describe("native profile-bound input admission", () => {
         const cancel = vi.fn();
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "v1-backing-run",
           toolAuthorityFingerprint: fingerprint,
           cancel,
@@ -1048,6 +1050,7 @@ describe("native profile-bound input admission", () => {
         operation.setPhase("running");
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "deferred-backing-run",
           toolAuthorityFingerprint: "active-tools",
           cancel: cancelBacking,

@@ -294,6 +294,7 @@ export function createChatDirectiveReplyBackend(params: {
     cancel: params.cancel ?? (() => {}),
     runId: params.runId,
     supportsQueueMessageImages: params.supportsQueueMessageImages,
+    supportsTranscriptCommitWait: true,
     taskSuggestionDeliveryMode: params.taskSuggestionDeliveryMode,
     ...(params.legacy
       ? {
