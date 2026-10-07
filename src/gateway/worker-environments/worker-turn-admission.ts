@@ -12,9 +12,7 @@ import { resolveSessionStorePathForScope } from "../../config/sessions/session-s
 import { createAbortError } from "../../infra/abort-signal.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
-import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
-import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import type {
   WorkerSessionPlacementRecord,
   WorkerSessionPlacementStore,
@@ -389,7 +387,6 @@ export async function claimWorkerTurn(params: {
   identity: ReturnType<typeof resolvePlacementIdentity>;
   placement: ActiveWorkerPlacement;
   runId: string;
-  isCancellationRequested: (claim: WorkerSessionTurnClaim) => boolean;
   signal?: AbortSignal;
   assertCurrent?: () => void;
 }): Promise<{ placement: ActiveWorkerPlacement; turnClaim: WorkerSessionTurnClaim } | null> {
@@ -421,8 +418,7 @@ export async function claimWorkerTurn(params: {
     );
     params.signal?.throwIfAborted();
     params.assertCurrent?.();
-    const activePlacement = params.placements.get(params.identity.sessionId);
-    const activeClaim = activePlacement?.turnClaim;
+    const activeClaim = params.placements.get(params.identity.sessionId)?.turnClaim;
     if (activeClaim?.runId === params.runId) {
       throw error;
     }
@@ -433,7 +429,6 @@ export async function claimWorkerTurn(params: {
         pending.claimId === activeClaim.claimId &&
         pending.runId === activeClaim.runId,
     );
-    const cancelledClaim = activePlacement && projectWorkerSessionTurnClaim(activePlacement);
     if (resultIsReconciling) {
       await waitForPendingWorkerResult({
         placements: params.placements,
@@ -442,25 +437,15 @@ export async function claimWorkerTurn(params: {
       });
       return null;
     }
-    if (!(cancelledClaim && params.isCancellationRequested(cancelledClaim))) {
-      const refreshed = params.placements.get(params.identity.sessionId);
-      if (
-        refreshed?.state !== "active" ||
-        !matchesWorkerPlacementTarget(refreshed, params.placement) ||
-        refreshed.turnClaim
-      ) {
-        throw error;
-      }
-      return { placement: refreshed, turnClaim: await claim() };
+    // Controller admission already settled this session's predecessor; retry only a released claim.
+    const refreshed = params.placements.get(params.identity.sessionId);
+    if (
+      refreshed?.state !== "active" ||
+      !matchesWorkerPlacementTarget(refreshed, params.placement) ||
+      refreshed.turnClaim
+    ) {
+      throw error;
     }
+    return { placement: refreshed, turnClaim: await claim() };
   }
-  await params.placements.waitForTurnClaimRelease(params.identity.sessionId, {
-    timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-    ...(params.signal ? { signal: params.signal } : {}),
-  });
-  const refreshed = params.placements.get(params.identity.sessionId);
-  if (refreshed?.state !== "active" || !matchesWorkerPlacementTarget(refreshed, params.placement)) {
-    throw new Error("Cloud worker placement changed while waiting for the previous turn");
-  }
-  return { placement: refreshed, turnClaim: await claim() };
 }

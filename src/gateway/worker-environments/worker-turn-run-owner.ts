@@ -22,8 +22,16 @@ import {
   markDiagnosticRunProgress,
 } from "../../logging/diagnostic-run-activity.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
-import { registerReplyOperationSuccessorBarrier } from "../../sessions/session-controller.js";
-import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
+import {
+  registerReplyOperationSuccessorBarrier,
+  stopReplyOperationForRestart,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
+import {
+  assertSessionControllerOperation,
+  isCurrentSessionControllerOperation,
+  resolveReplyRunForCurrentSessionId,
+} from "../../sessions/session-controller.state.js";
 import type { SessionWatchdogWait } from "../../sessions/session-controller.watchdog.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
@@ -31,8 +39,6 @@ import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import type { WorkerSessionPlacementStore, WorkerSessionTurnClaim } from "./placement-store.js";
 
 export type ActiveWorkerTurn = {
-  claim: WorkerSessionTurnClaim;
-  sessionKey: string;
   signal: AbortSignal;
   /** Start the worker execution budget when transport dispatch acquires custody. */
   beginExecution: () => void;
@@ -54,7 +60,8 @@ type WorkerRunOwner = WorkerTurnLiveEventOwner & {
   claim: WorkerSessionTurnClaim;
 };
 
-const activeOwners = new Map<string, WorkerRunOwner>();
+// Projection of the admitting controller operation; the operation owns turn liveness.
+const activeOwners = new WeakMap<ReplyOperation, WorkerRunOwner>();
 
 export async function createWorkerTurnRunOwner(params: {
   placements: WorkerSessionPlacementStore;
@@ -64,6 +71,10 @@ export async function createWorkerTurnRunOwner(params: {
   assertCurrent?: () => void;
 }): Promise<ActiveWorkerTurn> {
   const { claim: requestedClaim, turn, sessionKey } = params;
+  const operation = turn.replyOperation;
+  if (!operation) {
+    throw new Error("Worker turn requires its admitted reply operation");
+  }
   const lifecycleGeneration = turn.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
   const claimAuthority = await params.placements.prepareTurnClaimAuthority(requestedClaim);
   const claim = claimAuthority.claim;
@@ -81,27 +92,26 @@ export async function createWorkerTurnRunOwner(params: {
     };
     assertCurrent();
     const controller = new AbortController();
-    const signal = turn.abortSignal
-      ? AbortSignal.any([turn.abortSignal, controller.signal])
-      : controller.signal;
+    const signal = AbortSignal.any([
+      operation.abortSignal,
+      ...(turn.abortSignal ? [turn.abortSignal] : []),
+      controller.signal,
+    ]);
     let closed = false;
     const startedAtMs = Date.now();
     let executionDeadlineAtMs: number | undefined;
-    const operation = turn.replyOperation;
     const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
       sessionId: claim.sessionId,
       sessionKey,
       runId: claim.runId,
-      watchdogAttempt: operation
-        ? operation.watchdog.attachAttempt({
-            assertCurrent: () => {
-              if (closed || signal.aborted || !claimAuthority.isCurrent()) {
-                throw new Error("Worker attempt retired");
-              }
-              assertSessionControllerOperation(operation);
-            },
-          })
-        : undefined,
+      watchdogAttempt: operation.watchdog.attachAttempt({
+        assertCurrent: () => {
+          if (closed || signal.aborted || !claimAuthority.isCurrent()) {
+            throw new Error("Worker attempt retired");
+          }
+          assertSessionControllerOperation(operation);
+        },
+      }),
     });
     const beginExecution = () => {
       assertCurrent();
@@ -120,9 +130,13 @@ export async function createWorkerTurnRunOwner(params: {
       );
     };
     const restartSignal = getGatewayRestartDrainSignal();
-    const onRestart = () => cancel("restart");
+    // Restart drain stops the admitting operation; Stop then cancels this backend.
+    const onRestart = () => {
+      stopReplyOperationForRestart(operation);
+    };
     const isCurrent = () =>
-      activeOwners.get(claim.sessionId) === owner &&
+      activeOwners.get(operation) === owner &&
+      isCurrentSessionControllerOperation(operation) &&
       isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
       claimAuthority.isCurrent();
     const owner: WorkerRunOwner = {
@@ -182,8 +196,9 @@ export async function createWorkerTurnRunOwner(params: {
         closed = true;
         claimAuthority.release();
         closeDiagnosticEmbeddedRunOwner(diagnosticOwner);
-        if (activeOwners.get(claim.sessionId) === owner) {
-          activeOwners.delete(claim.sessionId);
+        // Recovered admission can create a second owner for the same operation.
+        if (activeOwners.get(operation) === owner) {
+          activeOwners.delete(operation);
         }
       },
       queueMessage,
@@ -208,7 +223,7 @@ export async function createWorkerTurnRunOwner(params: {
         return;
       }
       disposed = true;
-      turn.replyOperation?.detachBackend(handle);
+      operation.detachBackend(handle);
       try {
         clearActiveEmbeddedRun(
           claim.sessionId,
@@ -252,23 +267,21 @@ export async function createWorkerTurnRunOwner(params: {
           sessionKey,
           turn.sessionFile,
           turn.agentId,
-          turn.replyOperation,
+          operation,
           lifecycleGeneration,
         );
       },
     );
-    if (turn.replyOperation) {
-      registerReplyOperationSuccessorBarrier({
-        operation: turn.replyOperation,
-        sessionId: claim.sessionId,
-        sessionKeys: [sessionKey],
-        start: settle,
-      });
-    }
+    registerReplyOperationSuccessorBarrier({
+      operation,
+      sessionId: claim.sessionId,
+      sessionKeys: [sessionKey],
+      start: settle,
+    });
     assertCurrent();
     signal.throwIfAborted();
-    activeOwners.set(claim.sessionId, owner);
-    return { claim, sessionKey, signal, beginExecution, dispose: cleanup };
+    activeOwners.set(operation, owner);
+    return { signal, beginExecution, dispose: cleanup };
   } catch (error) {
     cleanup();
     throw error;
@@ -280,7 +293,11 @@ export async function createWorkerTurnRunOwner(params: {
 export function captureWorkerTurnLiveEventOwner(
   identity: Pick<WorkerConnectionIdentity, "sessionId" | "turnClaim">,
 ): WorkerTurnLiveEventOwner | undefined {
-  const owner = identity.sessionId ? activeOwners.get(identity.sessionId) : undefined;
+  const resolved = identity.sessionId
+    ? resolveReplyRunForCurrentSessionId(identity.sessionId)
+    : undefined;
+  // An ambiguous session id selects no owner.
+  const owner = resolved?.kind === "one" ? activeOwners.get(resolved.operation) : undefined;
   return owner &&
     identity.turnClaim?.owner.kind === "worker" &&
     sameWorkerSessionTurnClaim(owner.claim, identity.turnClaim)

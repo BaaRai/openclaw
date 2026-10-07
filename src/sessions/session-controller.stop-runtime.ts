@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunInterruptTargetOperation,
+  type ReplyOperation,
   type ReplyRunInterruptTarget,
 } from "./session-controller.contracts.js";
 import { resolveActiveReplyOperationForSessionId } from "./session-controller.queries.js";
@@ -94,6 +95,17 @@ export function abortActiveReplyRuns(opts: {
         }
         return "continue";
       },
+    }).activeCancelled > 0
+  );
+}
+
+/** Stops one admitted operation for Gateway restart drain; its result records `aborted_for_restart`. */
+export function stopReplyOperationForRestart(operation: ReplyOperation): boolean {
+  return (
+    stopSession({
+      source: "restart",
+      capture: captureSessionControllerStop({ operations: [operation] }),
+      onError: () => "continue",
     }).activeCancelled > 0
   );
 }

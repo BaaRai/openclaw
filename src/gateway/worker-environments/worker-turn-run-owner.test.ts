@@ -468,7 +468,8 @@ describe("cloud worker run ownership", () => {
   it.each(["caller", "abort", "lifecycle", "claim snapshot"] as const)(
     "retains exact construction ownership after delayed preparation: %s",
     async (outcome) => {
-      const { createWorkerTurnRunOwner } = await import("./worker-turn-run-owner.js");
+      const { captureWorkerTurnLiveEventOwner, createWorkerTurnRunOwner } =
+        await import("./worker-turn-run-owner.js");
       await seedActivePlacement();
       const runId = "run-preparing-worker-owner";
       const claim = await placements.claimTurn({
@@ -546,9 +547,11 @@ describe("cloud worker run ownership", () => {
         }
         resume.resolve();
         if (outcome === "claim snapshot") {
-          const owner = await attempt;
-          expect(owner.claim).toEqual(claim);
-          expect(owner.claim).toBe(authority.claim);
+          await attempt;
+          expect(authority.claim).toEqual(claim);
+          expect(
+            captureWorkerTurnLiveEventOwner({ sessionId: SESSION_ID, turnClaim: claim }),
+          ).toBeDefined();
           expect(previous?.abort()).toBe(false);
           first.dispose();
           expect(isEmbeddedAgentRunHandleActive(SESSION_ID)).toBe(true);

@@ -15,7 +15,7 @@ import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { WORKER_ADMISSION_DEADLINE_MS } from "../../worker/worker-connection-contract.js";
 import { StaleWorkerBuildError } from "./admission.js";
 import { raceNodeWorkerOperation } from "./node-worker-abort.js";
-import { placementTurnOwner, sameWorkerSessionTurnClaim } from "./placement-record.js";
+import { placementTurnOwner } from "./placement-record.js";
 import type {
   WorkerSessionPlacementRecord,
   WorkerSessionPlacementStore,
@@ -92,7 +92,6 @@ type WorkerTurnLauncherOptions = {
 };
 
 export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLauncherOptions) {
-  const activeWorkerTurns = new Map<string, ActiveWorkerTurn>();
   const provider: SessionPlacementAdmissionProvider & {
     resolveSandbox(params: {
       agentId: string;
@@ -377,12 +376,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               placement,
               runId: claim.runId,
               assertCurrent: assertClaimCurrent,
-              isCancellationRequested: (activeClaim) => {
-                const active = activeWorkerTurns.get(activeClaim.sessionId);
-                return Boolean(
-                  active?.signal?.aborted && sameWorkerSessionTurnClaim(active.claim, activeClaim),
-                );
-              },
               ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
             });
           }
@@ -450,7 +443,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                 inputTurn.onUserMessagePersisted?.(message);
               },
             };
-            activeWorkerTurns.set(turnClaim.sessionId, activeWorkerTurn);
           }
           const assertPreparationCurrent = () => {
             turn.abortSignal?.throwIfAborted();
@@ -721,9 +713,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
           throw error;
         } finally {
           activeWorkerTurn?.dispose();
-          if (activeWorkerTurn && activeWorkerTurns.get(turnClaim.sessionId) === activeWorkerTurn) {
-            activeWorkerTurns.delete(turnClaim.sessionId);
-          }
         }
       }
     },

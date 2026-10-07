@@ -65,3 +65,4 @@ export {
   waitForReplyRunSuccessorAdmission,
   waitForSessionRunIdle,
 } from "./session-controller.wait.js";
+export { stopReplyOperationForRestart } from "./session-controller.stop-runtime.js";
