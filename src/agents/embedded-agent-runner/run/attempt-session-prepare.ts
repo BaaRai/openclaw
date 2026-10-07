@@ -618,6 +618,7 @@ export async function prepareEmbeddedAttemptSessionManager(input: {
 
   await input.withOwnedTranscriptWrite(async () => {
     await bootstrapHarnessContextEngine({
+      admittedRunContext: attempt.admittedRunContext,
       hadSessionFile: transcriptState.hasBootstrapTranscriptState,
       contextEngine: input.activeContextEngine,
       sessionId: attempt.sessionId,

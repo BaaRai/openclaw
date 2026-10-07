@@ -1,5 +1,9 @@
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import {
+  captureIncognitoSessionBinding,
+  withIncognitoSessionBinding,
+} from "../config/sessions/session-incognito-binding.js";
+import {
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
@@ -16,6 +20,7 @@ import {
   readDatabasePathIdentitySync,
 } from "../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
@@ -27,6 +32,7 @@ import {
   type SessionSharingLookupCaches,
   type SessionMutationAuthorizationParams,
 } from "./session-sharing-authorization.js";
+import { captureIncognitoSessionMutationFacts } from "./session-sharing-incognito.js";
 import {
   authorizeOwnSessionMutation,
   type SessionSharingTarget,
@@ -47,6 +53,68 @@ export async function prepareSessionSharingSource(
   >,
   assertCallerCurrent: () => void,
 ) {
+  const binding = captureIncognitoSessionBinding({
+    agentId: target.agentId,
+    sessionKey: target.storeKey,
+    storePath: target.readSource?.path ?? target.storePath,
+  });
+  if (binding) {
+    const { actor } = binding;
+    const read = captureIncognitoSessionMutationFacts(binding, target.storeKey, true);
+    const source = {
+      agentId: actor.agentId,
+      path: actor.path,
+      databaseIdentity: actor.identity.incarnation,
+    };
+    if (
+      target.readSource &&
+      !isSameSessionSharingSource({ readSource: source, storePath: actor.path }, target)
+    ) {
+      throw new Error("Session sharing source changed");
+    }
+    let active = true;
+    const assertCurrent = () => {
+      if (!active) {
+        throw new Error("Session sharing source is no longer retained");
+      }
+      assertCallerCurrent();
+      read.assertCurrent();
+    };
+    assertCurrent();
+    const done = createDeferredCore();
+    const ready = createDeferredCore<void>();
+    const work = actor.sessions.withSharedState(async () => {
+      assertCurrent();
+      ready.resolve();
+      await done.promise;
+    });
+    void work.catch(ready.reject);
+    try {
+      await ready.promise;
+      assertCurrent();
+    } catch (error) {
+      active = false;
+      done.resolve();
+      await releaseSessionSourceAuthorities([{ release: () => work }], [error]);
+      throw error;
+    }
+    return {
+      actorSource: true,
+      source,
+      get target() {
+        return read.readCurrent().target;
+      },
+      get members() {
+        return [...read.readCurrent().membership];
+      },
+      assertCurrent,
+      release() {
+        active = false;
+        done.resolve();
+        return work;
+      },
+    };
+  }
   const locators = captureSessionStoreReadCandidates(target.storePath);
   const candidate = captureSessionStoreReadCandidate(
     target.readSource?.path ??
@@ -122,6 +190,7 @@ export async function prepareSessionSharingSource(
     }
     const entry = result.entries.find(({ sessionKey }) => sessionKey === target.storeKey)?.entry;
     return {
+      actorSource: false,
       source,
       target: entry ? { ...target, readSource: source, storeKeys: [target.storeKey], entry } : null,
       members:
@@ -134,6 +203,27 @@ export async function prepareSessionSharingSource(
     await releaseSessionSourceAuthorities([retained], [error]);
     throw error;
   }
+}
+
+function captureSessionSharingIncognitoBinding(target: AuthorizedSessionMutationTarget) {
+  return captureIncognitoSessionBinding({
+    agentId: target.agentId,
+    sessionKey: target.sessionKey,
+    storePath:
+      target.resolved?.readSource?.path ??
+      target.resolved?.storePath ??
+      target.absentTarget?.storePath,
+  });
+}
+
+/** Production incognito stays native until acquisition supplies its explicit binding. */
+export function hasNativeIncognitoSessionSharingSource(
+  targets: readonly AuthorizedSessionMutationTarget[],
+): boolean {
+  return targets.some(
+    (target) =>
+      isIncognitoSessionKey(target.sessionKey) && !captureSessionSharingIncognitoBinding(target),
+  );
 }
 
 /** Storage facts are prepared here; the sharing owner supplies every access decision. */
@@ -153,6 +243,22 @@ export function withPreparedSessionSharingSource(params: {
     prepared?: { target: SessionSharingTarget | null; members: readonly string[] },
   ) => void;
 }): SessionSourceAssertion {
+  const boundSources = new Map(
+    params.targets.flatMap((target) => {
+      const binding = captureSessionSharingIncognitoBinding(target);
+      return binding
+        ? [
+            [
+              target,
+              {
+                binding,
+                facts: captureIncognitoSessionMutationFacts(binding, target.sessionKey, true),
+              },
+            ] as const,
+          ]
+        : [];
+    }),
+  );
   const targetChanged = (key: string) => sessionMutationTargetChanged(params.request.method, key);
   const assertSource = () => {
     const error = authorizeOwnSessionMutation({
@@ -170,11 +276,21 @@ export function withPreparedSessionSharingSource(params: {
     params.assertTalkTargetCurrent(cfg);
     const caches = createSessionSharingLookupCaches();
     for (const target of params.targets) {
-      params.assertTargetCurrent(target, target, cfg, caches);
+      const bound = boundSources.get(target)?.facts.readCurrent();
+      params.assertTargetCurrent(
+        target,
+        target,
+        cfg,
+        caches,
+        undefined,
+        bound && {
+          target: bound.target,
+          members: [...bound.membership],
+        },
+      );
     }
   };
-  // Incognito source authority still belongs to its process-local owner.
-  if (params.targets.some((target) => isIncognitoSessionKey(target.sessionKey))) {
+  if (hasNativeIncognitoSessionSharingSource(params.targets)) {
     return Object.assign(assertCurrent, { nativeSource: true });
   }
   const changed = () => targetChanged(params.targets[0]?.sessionKey ?? "");
@@ -190,79 +306,94 @@ export function withPreparedSessionSharingSource(params: {
       throw changed();
     }
   };
-  return Object.assign(assertCurrent, {
-    async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
-      const prepared: Awaited<ReturnType<typeof prepareSessionSharingSource>>[] = [];
-      const release = () => releaseSessionSourceAuthorities(prepared);
-      try {
-        assertSourceCurrent();
-        const targets = params.targets.map((expected) => {
-          const route = expected.resolved ?? expected.absentTarget;
-          if (!route) {
-            throw targetChanged(expected.sessionKey);
-          }
-          return { ...route, storeKey: expected.resolved?.storeKey ?? route.canonicalKey };
-        });
-        for (const target of targets) {
-          prepared.push(await prepareSessionSharingSource(target, assertSourceCurrent));
+  const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
+    const prepared: Awaited<ReturnType<typeof prepareSessionSharingSource>>[] = [];
+    const release = () => releaseSessionSourceAuthorities(prepared);
+    try {
+      assertSourceCurrent();
+      const targets = params.targets.map((expected) => {
+        const route = expected.resolved ?? expected.absentTarget;
+        if (!route) {
+          throw targetChanged(expected.sessionKey);
         }
-        const assertPrepared = (index: number, facts?: SessionSourcePredicateFacts) => {
-          const read = prepared[index]!;
-          if (!facts) {
-            read.assertCurrent();
-          }
-          assertSourceCurrent();
-          const expected = params.targets[index]!;
-          params.assertTargetCurrent(expected, expected, assertSource(), undefined, undefined, {
-            target: facts
-              ? facts.entry
-                ? {
-                    ...targets[index]!,
-                    storeKeys: [targets[index]!.storeKey],
-                    readSource: read.source,
-                    entry: facts.entry,
-                  }
-                : null
-              : read.target,
-            members: facts?.members ?? read.members,
-          });
-        };
-        const assertPreparedCurrent = () => {
-          assertSourceCurrent();
-          for (let index = 0; index < prepared.length; index += 1) {
-            assertPrepared(index);
-          }
-        };
-        assertPreparedCurrent();
-        return {
-          assertCurrent: assertPreparedCurrent,
-          checks: prepared.map((read, index) => ({
-            predicate: {
-              source: read.source,
-              sessionKey: targets[index]!.storeKey,
-              fields: [
-                "sessionId",
-                "lifecycleRevision",
-                "createdActor",
-                "visibility",
-                "incognito",
-                "sandbox",
-              ],
-              expected: read.target?.entry,
-              members: read.members,
-            },
-            refuse: (facts) => {
-              assertPrepared(index, facts);
-              throw targetChanged(params.targets[index]!.sessionKey);
-            },
-          })),
-          release,
-        };
-      } catch (error) {
-        await releaseSessionSourceAuthorities(prepared, [error]);
-        throw error;
+        return { ...route, storeKey: expected.resolved?.storeKey ?? route.canonicalKey };
+      });
+      for (const [index, target] of targets.entries()) {
+        const bound = boundSources.get(params.targets[index]!);
+        prepared.push(
+          await (bound
+            ? withIncognitoSessionBinding(bound.binding, () =>
+                prepareSessionSharingSource(target, assertSourceCurrent),
+              )
+            : prepareSessionSharingSource(target, assertSourceCurrent)),
+        );
       }
-    },
+      const assertPrepared = (index: number, facts?: SessionSourcePredicateFacts) => {
+        const read = prepared[index]!;
+        if (!facts) {
+          read.assertCurrent();
+        }
+        assertSourceCurrent();
+        const expected = params.targets[index]!;
+        params.assertTargetCurrent(expected, expected, assertSource(), undefined, undefined, {
+          target: facts
+            ? facts.entry
+              ? {
+                  ...targets[index]!,
+                  storeKeys: [targets[index]!.storeKey],
+                  readSource: read.source,
+                  entry: facts.entry,
+                }
+              : null
+            : read.target,
+          members: facts?.members ?? read.members,
+        });
+      };
+      const assertPreparedCurrent = () => {
+        assertSourceCurrent();
+        for (let index = 0; index < prepared.length; index += 1) {
+          assertPrepared(index);
+        }
+      };
+      assertPreparedCurrent();
+      return {
+        assertCurrent: assertPreparedCurrent,
+        checks: prepared.flatMap((read, index) =>
+          read.actorSource
+            ? []
+            : [
+                {
+                  predicate: {
+                    source: read.source,
+                    sessionKey: targets[index]!.storeKey,
+                    fields: [
+                      "sessionId",
+                      "lifecycleRevision",
+                      "createdActor",
+                      "visibility",
+                      "incognito",
+                      "sandbox",
+                    ],
+                    expected: read.target?.entry,
+                    members: read.members,
+                  },
+                  refuse: (facts) => {
+                    assertPrepared(index, facts);
+                    throw targetChanged(params.targets[index]!.sessionKey);
+                  },
+                },
+              ],
+        ),
+        release,
+      };
+    } catch (error) {
+      await releaseSessionSourceAuthorities(prepared, [error]);
+      throw error;
+    }
+  };
+  return Object.assign(assertCurrent, {
+    prepareSessionSource: prepare,
+    ...(boundSources.size ? { prepareSessionSourceScope: prepare } : {}),
   });
 }
 

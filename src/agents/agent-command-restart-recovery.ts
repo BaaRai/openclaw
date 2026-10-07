@@ -7,6 +7,11 @@ import type {
   HarnessCompletionRecovery,
   RestartRecoveryTerminalDeliveryEvidenceResult,
 } from "../config/sessions/restart-recovery-types.js";
+import {
+  bindPreparedSessionSourceAssertion,
+  prepareSessionSourceScope,
+  releaseSessionSourceAuthorities,
+} from "../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { isAgentMediatedCompletionSourceTool } from "../sessions/input-provenance.js";
 import type { DeliveryContext } from "../utils/delivery-context.shared.js";
@@ -26,6 +31,31 @@ import {
   type AgentDeliveryEvidence,
 } from "./embedded-agent-runner/delivery-evidence.js";
 import { mergeAttemptToolMediaPayloads } from "./embedded-agent-runner/run/tool-media-payloads.js";
+
+/** Retain command custody while nested consumers prepare their own exact read fences. */
+export async function prepareCommandHarnessCompletionSource(opts: AgentCommandOpts) {
+  const source = opts.assertSourceCurrent;
+  const prepared = await prepareSessionSourceScope(source);
+  if (!source || !prepared) {
+    return undefined;
+  }
+  const assertion = bindPreparedSessionSourceAssertion(source, prepared);
+  try {
+    assertion();
+    return {
+      opts: {
+        ...opts,
+        assertSourceCurrent: Object.assign(assertion, {
+          recoveryReference: source.recoveryReference,
+        }),
+      },
+      release: assertion.release,
+    };
+  } catch (error) {
+    await releaseSessionSourceAuthorities([{ release: assertion.release }], [error]);
+    throw error;
+  }
+}
 
 /** Restore the exact host-owned delivery constraints before starting a recovery turn. */
 export function resolveCommandRecoveryOptions(params: {

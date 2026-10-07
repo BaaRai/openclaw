@@ -21,6 +21,7 @@ import {
   SessionMutationAuthorizationChangedError,
   SessionSharingProfileFactsChangedError,
 } from "./session-mutation-authorization-error.js";
+import type { AuthorizedSessionMutationTarget } from "./session-sharing-authorization.js";
 import {
   authorizeSessionSharingTarget,
   canManageSessionSharing,
@@ -37,6 +38,7 @@ import {
   loadCachedSessionSharingSnapshot,
   type SessionSharingSnapshot,
 } from "./session-sharing-snapshot-cache.js";
+import { hasNativeIncognitoSessionSharingSource } from "./session-sharing-source.js";
 
 function sharingSnapshot(
   target: SessionSharingTarget | null,
@@ -289,9 +291,10 @@ export function createSessionSharingInputAuthority(
   ownedParams: { client: GatewayClient | null; preparedProfiles?: PreparedSessionSharingProfiles },
   authorization: SessionMutationAuthorization,
   readSharing: () => Parameters<Parameters<typeof withSessionSharingTarget>[1]>[0],
+  targets: readonly AuthorizedSessionMutationTarget[],
 ): SessionMutationAuthorization["admittedInputAuthority"] {
   const { withCurrent, withPreparedCurrent } = authorization;
-  if (!withCurrent || !withPreparedCurrent) {
+  if (!withCurrent || !withPreparedCurrent || hasNativeIncognitoSessionSharingSource(targets)) {
     return undefined;
   }
   return {

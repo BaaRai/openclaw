@@ -10,6 +10,7 @@ import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/sc
 import { isSessionMember, type SessionEntry } from "../config/sessions.js";
 import { sessionCreatorProfileId } from "../config/sessions/session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
+import { captureIncognitoSessionBinding } from "../config/sessions/session-incognito-binding.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
@@ -26,6 +27,8 @@ import {
 } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
+import { captureIncognitoSessionMutationFacts } from "./session-sharing-incognito.js";
+import { resolveSessionStoreIdentity } from "./session-store-key.js";
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import {
   withGatewaySessionStoreTarget,
@@ -99,6 +102,13 @@ export function resolveSessionSharingTarget(params: {
   storeCache?: GatewaySessionStoreCache;
   targetDiscoveryCache?: GatewaySessionStoreDiscoveryCache;
 }): SessionSharingTarget | null {
+  if (isIncognitoSessionKey(params.sessionKey)) {
+    const { agentId, canonicalKey } = resolveSessionStoreIdentity(params);
+    const binding = captureIncognitoSessionBinding({ agentId, sessionKey: canonicalKey });
+    if (binding) {
+      return captureIncognitoSessionMutationFacts(binding, canonicalKey, true).readCurrent().target;
+    }
+  }
   const target = resolveGatewaySessionStoreTargetWithStore({
     cfg: params.cfg,
     key: params.sessionKey,

@@ -30,6 +30,7 @@ import { runLocalAgentCommand } from "./agent-command-local.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
 import {
   bindCommandHarnessCompletionAssertion,
+  prepareCommandHarnessCompletionSource,
   resolveCommandRecoveryOptions,
   shouldPersistRestartRecoveryContextClaim,
 } from "./agent-command-restart-recovery.js";
@@ -166,6 +167,7 @@ async function agentCommandInternal(
   let releaseForeground: (() => void) | undefined;
   let maintenanceRequest: SessionMaintenanceRequest | undefined;
   let preparedRunAdmission: ReturnType<typeof prepareAgentCommandExecutionIdentity> | undefined;
+  let completionSource: Awaited<ReturnType<typeof prepareCommandHarnessCompletionSource>>;
   let commandError: unknown;
   try {
     const operatorSession =
@@ -373,6 +375,10 @@ async function agentCommandInternal(
           storePath,
           opts,
         });
+        if (guardedHarnessCompletion) {
+          completionSource = await prepareCommandHarnessCompletionSource(opts);
+          opts = completionSource?.opts ?? opts;
+        }
         if (operatorSession && (!persisted || persisted.sessionId !== sessionId)) {
           throw createSessionWorkStartChangedError(sessionKey);
         }
@@ -586,7 +592,7 @@ async function agentCommandInternal(
       sessionWorkAdmission,
       cleanupInternalModelRunTargets,
       releaseForeground,
-    });
+    }).finally(() => completionSource?.release?.());
     if (maintenanceRequest) {
       scheduleSessionMaintenance(maintenanceRequest);
     }

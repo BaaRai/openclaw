@@ -68,6 +68,11 @@ export function captureIncognitoSessionMutationFacts(
         storeKey: canonicalKey,
         storeKeys: [canonicalKey],
         storePath: actor.path,
+        readSource: {
+          agentId: actor.agentId,
+          path: actor.path,
+          databaseIdentity: actor.identity.incarnation,
+        },
         entry: current.entry,
       };
       return {

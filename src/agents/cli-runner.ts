@@ -492,6 +492,7 @@ async function runPreparedCliAgentOwned(
       });
     }
     await bootstrapHarnessContextEngine({
+      admittedRunContext: params.admittedRunContext,
       hadSessionFile: context.hadSessionFile,
       contextEngine: context.contextEngine,
       sessionId: params.sessionId,
@@ -499,6 +500,9 @@ async function runPreparedCliAgentOwned(
       sessionTarget: params.sessionTarget,
       sessionFile: params.sessionFile,
       sessionManager: params.sessionManager,
+      transcriptReadFence: params.sessionManager
+        ? undefined
+        : params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
       config: context.contextEngineConfig,
       contextEngineHostSupport: buildGenericCliContextEngineHostSupport({
         backendId: context.backendResolved.id,

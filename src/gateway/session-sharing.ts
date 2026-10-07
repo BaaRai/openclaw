@@ -711,14 +711,12 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           );
         },
       };
-      // Native Incognito custody retains its process-local identity and live permission guard.
-      if (!authorizedTargets.some((target) => isIncognitoSessionKey(target.sessionKey))) {
-        authorization.admittedInputAuthority = createSessionSharingInputAuthority(
-          params,
-          authorization,
-          () => consumingSharing!,
-        );
-      }
+      authorization.admittedInputAuthority = createSessionSharingInputAuthority(
+        params,
+        authorization,
+        () => consumingSharing!,
+        authorizedTargets,
+      );
       return authorization;
     })(),
   };

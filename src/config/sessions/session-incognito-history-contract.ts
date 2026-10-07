@@ -12,12 +12,14 @@ import type {
 } from "../../gateway/session-transcript-read.types.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
+import type { HarnessCompletionRecovery } from "./restart-recovery-types.js";
 import type {
   SessionTranscriptBoundedMessageTailOptions,
   SessionTranscriptBoundedMessageTailPage,
   SessionTranscriptMessageEvent,
 } from "./session-accessor.sqlite-projection-read.js";
 import type { SessionTranscriptStats, TranscriptEvent } from "./session-accessor.types.js";
+import type { HarnessCompletionSourceSnapshot } from "./session-harness-completion-source.types.js";
 import type {
   PreparedSessionTranscriptHydration,
   SessionBranchSummaryReadResult,
@@ -82,6 +84,18 @@ type Reads = {
     output: SessionTranscriptProjectionSelectionResults[Key];
   };
 } & {
+  "harness-completion-source": {
+    input: { claim: HarnessCompletionRecovery };
+    output: HarnessCompletionSourceSnapshot;
+  };
+  "completion-source.open": {
+    input: { sourceId: string; claim: HarnessCompletionRecovery };
+    output: void;
+  };
+  "completion-source.release": {
+    input: { sourceId: string };
+    output: void;
+  };
   "conversation-binding": {
     input: { conversationRef: string };
     output: SessionConversationBinding | null;
