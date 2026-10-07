@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -7,8 +6,8 @@ import {
 } from "../infra/kysely-sync.js";
 import {
   getAdmittedSqliteSchemaFacts,
-  getSqliteReadOperationRevision,
-  type SqliteReadOperationRevision,
+  getSqliteReadScopeRevision,
+  type SqliteReadScopeRevision,
 } from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
@@ -23,56 +22,46 @@ import type { DB } from "./openclaw-state-db.generated.js";
 // Read-only clients need schema admission without loading updater publication policy.
 export const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 type StateSchemaVersionDatabase = Pick<DB, "config_machine_state">;
-const admittedContentVersions = new WeakMap<
-  DatabaseSync,
-  SqliteReadOperationRevision & { contentVersion: number }
->();
-const contentVersionQuery = createSqliteQueryCache((db) =>
-  prepareSqliteQuerySync<void, Pick<DB["config_machine_state"], "value_json">>(db, () =>
-    getNodeSqliteKysely<StateSchemaVersionDatabase>(db)
-      .selectFrom("config_machine_state")
-      .select("value_json")
-      .where("state_key", "=", CONTENT_VERSION_KEY),
-  ),
-);
+const contentVersionQuery = createSqliteQueryCache((db) => {
+  const query = prepareSqliteQuerySync<void, Pick<DB["config_machine_state"], "value_json">>(
+    db,
+    () =>
+      getNodeSqliteKysely<StateSchemaVersionDatabase>(db)
+        .selectFrom("config_machine_state")
+        .select("value_json")
+        .where("state_key", "=", CONTENT_VERSION_KEY),
+  );
+  let retained: { revision: SqliteReadScopeRevision; version: number } | undefined;
+  return (published: number) => {
+    const revision = getSqliteReadScopeRevision(db);
+    if (revision && retained?.revision === revision) {
+      return retained.version;
+    }
+    retained = undefined;
+    const version = parseContentVersion(
+      tableExists(db, "config_machine_state") ? query().rows[0]?.value_json : undefined,
+      published,
+    );
+    if (revision && getSqliteReadScopeRevision(db) === revision) {
+      retained = { revision, version };
+    }
+    return version;
+  };
+});
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
 export function readStateSchemaContentVersion(db: DatabaseSync): number {
   const schema = getAdmittedSqliteSchemaFacts(db);
-  const revision = getSqliteReadOperationRevision(db);
-  const admitted = admittedContentVersions.get(db);
-  if (
-    revision &&
-    admitted?.schema === revision.schema &&
-    admitted.dataVersion === revision.dataVersion &&
-    admitted.mutationRevision === revision.mutationRevision
-  ) {
-    return admitted.contentVersion;
-  }
-  const contentVersion = readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
-  if (revision && getSqliteReadOperationRevision(db) === revision) {
-    if (!admitted) {
-      const unregister = registerNodeSqliteDisposeCallback(db, () => {
-        admittedContentVersions.delete(db);
-        unregister();
-      });
-    }
-    admittedContentVersions.set(db, { ...revision, contentVersion });
-  }
-  return contentVersion;
+  return contentVersionQuery(db)(schema?.userVersion ?? readSqliteUserVersion(db));
 }
 
-function readContentVersion(db: DatabaseSync, published: number): number {
-  if (!tableExists(db, "config_machine_state")) {
-    return published;
-  }
-  const row = contentVersionQuery(db)().rows[0];
-  if (!row) {
+function parseContentVersion(valueJson: string | undefined, published: number): number {
+  if (valueJson === undefined) {
     return published;
   }
   let contentVersion: unknown;
   try {
-    contentVersion = JSON.parse(row.value_json);
+    contentVersion = JSON.parse(valueJson);
   } catch (cause) {
     throw new SqliteSchemaMismatchError(
       `Invalid shared state schema content version in ${CONTENT_VERSION_KEY}.`,
