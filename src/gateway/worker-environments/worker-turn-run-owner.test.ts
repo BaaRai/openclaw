@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import {
   isEmbeddedAgentRunHandleActive,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwner,
 } from "../../agents/embedded-agent-runner/runs.js";
+import { steerTestSessionTurn } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
@@ -194,9 +194,10 @@ describe("cloud worker run ownership", () => {
           activeToolName: "sessions_spawn",
           hasActiveEmbeddedRun: true,
         });
-        await expect(
-          queueEmbeddedAgentMessageWithOutcomeAsync(SESSION_ID, "follow up"),
-        ).resolves.toMatchObject({ queued: false, reason: "not_streaming" });
+        await expect(steerTestSessionTurn(SESSION_ID, "follow up")).resolves.toMatchObject({
+          status: "rejected",
+          reason: "injection_unavailable",
+        });
         if (cancellation === "user") {
           expect(resolveActiveEmbeddedRunOwner(SESSION_ID)?.abort()).toBe(true);
           expect(placements.validateTurnClaim(turnClaim)).toBe(true);
