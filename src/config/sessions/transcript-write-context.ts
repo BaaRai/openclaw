@@ -17,6 +17,7 @@ import {
   matchSessionEntryCohortScope,
 } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import {
   captureSessionTranscriptStorageEnvironment,
@@ -24,6 +25,7 @@ import {
   sameSessionTranscriptTargetBinding,
   type SessionTranscriptTargetBinding,
 } from "./transcript-target-binding.js";
+import type { SessionEntry } from "./types.js";
 
 export { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 
@@ -91,7 +93,59 @@ type SessionTranscriptWriteRequest = Pick<
   "sessionFile" | "sessionKey" | "sessionTarget"
 >;
 
-const ownedTranscriptWriteContext = new AsyncLocalStorage<OwnedSessionTranscriptWriteContext>();
+type TranscriptSourcePublication = {
+  target: SessionTranscriptWriteTarget;
+  claimed: boolean;
+  publish?: (source: CapturedSessionEntryReadSource, entry: SessionEntry) => void;
+};
+
+const ownedTranscriptWriteContext = new AsyncLocalStorage<
+  OwnedSessionTranscriptWriteContext & { sourcePublication?: TranscriptSourcePublication }
+>();
+
+/** Bind an initiating write's acknowledged source before fallible publication observers. */
+export async function withSessionTranscriptSourcePublication<T>(
+  target: SessionTranscriptWriteTarget,
+  publish: NonNullable<TranscriptSourcePublication["publish"]>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const parent = ownedTranscriptWriteContext.getStore();
+  const publication: TranscriptSourcePublication = {
+    target: captureWriteTarget(target),
+    claimed: false,
+    publish,
+  };
+  try {
+    return await ownedTranscriptWriteContext.run(
+      {
+        ...parent,
+        withTranscriptWrite: parent ? (write) => parent.withTranscriptWrite(write) : trackAsyncWork,
+        sourcePublication: publication,
+      },
+      run,
+    );
+  } finally {
+    publication.publish = undefined;
+  }
+}
+
+export function captureSessionTranscriptSourcePublication(
+  target: SessionTranscriptWriteTarget,
+): TranscriptSourcePublication["publish"] {
+  const publication = ownedTranscriptWriteContext.getStore()?.sourcePublication;
+  if (
+    !publication ||
+    publication.claimed ||
+    !contextMatches({
+      context: { sessionTarget: publication.target, withTranscriptWrite: trackAsyncWork },
+      sessionTarget: captureWriteTarget(target),
+    })
+  ) {
+    return undefined;
+  }
+  publication.claimed = true;
+  return (source, entry) => publication.publish?.(source, entry);
+}
 
 /** Borrow the selected physical owner only for this exact admitted transcript. */
 export function getOwnedSessionTranscriptReader(scope: SessionTranscriptWriteTarget) {

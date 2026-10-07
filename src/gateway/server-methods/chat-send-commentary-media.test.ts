@@ -41,6 +41,7 @@ import {
   onInternalSessionTranscriptUpdate,
   type InternalSessionTranscriptUpdate,
 } from "../../sessions/transcript-events.js";
+import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { projectChatDisplayMessages } from "../chat-display-projection.js";
 import { cleanupManagedOutgoingMediaRecords } from "../managed-image-attachments.js";
@@ -715,6 +716,7 @@ describe("webchat commentary media", () => {
         hookSpy?.mockRestore();
         publicationSpy?.mockRestore();
         rewriteSpy?.mockRestore();
+        await drainGlobalSingletonLifecycleState();
       }
     });
     await fixture.track(body);

@@ -13,6 +13,7 @@ import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-tr
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
 } from "../../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createAgentRunRestartAbortError } from "../../run-termination.js";
@@ -124,17 +125,19 @@ export async function withInterruptedTurn(
       agentId,
       sessionId: runId,
       sessionKey: `agent:${agentId}:${runId}`,
-      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+      storePath: options.sharedStore
+        ? state.statePath("shared.sqlite")
+        : path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
     };
-    await upsertSessionEntryCore(
-      { ...target, agentId: "main" },
-      {
-        sessionId: target.sessionId,
-        updatedAt: 1,
-        lifecycleRevision: "current-generation",
-        activeWriterRunId: runId,
-      },
-    );
+    if (options.sharedStore) {
+      openOpenClawAgentDatabase({ agentId: "main", path: target.storePath, env: state.env });
+    }
+    await upsertSessionEntryCore(target, {
+      sessionId: target.sessionId,
+      updatedAt: 1,
+      lifecycleRevision: "current-generation",
+      activeWriterRunId: runId,
+    });
     const makeRecorder = () =>
       createUserTurnTranscriptRecorder({
         target: { ...target, sessionEntry: undefined },

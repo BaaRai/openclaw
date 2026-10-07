@@ -25,7 +25,6 @@ import { getOwnedSessionTranscriptReader } from "../../config/sessions/transcrip
 import { createChannelMessageReplyPipeline } from "../../plugin-sdk/channel-outbound.js";
 import { readSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
-import { readAssistantDisplayContent } from "../../shared/assistant-display-content.js";
 import {
   extractAssistantPhaseText,
   extractAssistantTextForPhase,
@@ -42,7 +41,6 @@ import {
   combineNonStreamingReplyParts,
   extractAssistantDisplayText,
   hasAssistantDisplayMediaContent,
-  hasManagedOutgoingAssistantContent,
   isMediaBearingPayload,
   prepareAssistantDisplayText,
   sanitizeAssistantDisplayText,
@@ -61,6 +59,7 @@ import {
 } from "./chat-send-command-replies.js";
 import { createAssistantCommentaryMediaCustody } from "./chat-send-commentary-media.js";
 import { resolveChatReplyDeliveryFromAnchors } from "./chat-send-reply-delivery.js";
+import { retainCommittedChatReplyMedia } from "./chat-send-reply-finalization.js";
 import { createChatReplySessionReader, type ChatReplySession } from "./chat-send-reply-session.js";
 import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
 import {
@@ -572,14 +571,7 @@ export function createChatSendReplyDispatch(params: {
           : `${clientRunId}:assistant-media`,
       ttsSupplement: ttsSupplementMarker,
       config: cfg,
-      onMessageCommitted: (receipt, acceptCompletion) => {
-        const blocks = readAssistantDisplayContent(receipt.message);
-        if (hasManagedOutgoingAssistantContent(blocks)) {
-          acceptCompletion(async () => {
-            await attachManagedOutgoingMediaToMessage({ messageId: receipt.messageId, blocks });
-          });
-        }
-      },
+      onMessageCommitted: retainCommittedChatReplyMedia,
     });
     if (appended.ok) {
       finalizedAgentMediaTranscriptKeys.add(finalizationKey);

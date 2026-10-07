@@ -14,7 +14,6 @@ import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { replaceSessionEntrySync } from "./session-accessor.js";
 import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lifecycle-types.js";
-import * as maintenance from "./session-accessor.sqlite-maintenance.js";
 import { resolveSessionReclamationDatabaseOptions } from "./session-accessor.sqlite-reclamation.js";
 import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
 
@@ -190,23 +189,6 @@ export function maintenancePreparationFixture(state: OpenClawTestState) {
   } satisfies SqliteSessionReclamationPlan;
   const archivedEntries = [{ sessionKey: stale.sessionKey, sessionId: "stale" }];
   return { active, stale, database, plan, archivedEntries };
-}
-
-/** Row changes precede archive publication; join the owner's complete finalization. */
-export function observeSessionMaintenanceCompletion(databasePath: string) {
-  const finalize = maintenance.finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort;
-  const completed = createDeferredCore<Awaited<ReturnType<typeof finalize>>>();
-  const observer = vi
-    .spyOn(maintenance, "finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort")
-    .mockImplementation((scope, ...args) => {
-      const result = finalize(scope, ...args);
-      if (scope.path === databasePath) {
-        completed.resolve(result);
-      }
-      return result;
-    });
-  onTestFinished(() => observer.mockRestore());
-  return completed.promise;
 }
 
 /** Observe committed maintenance rows without imposing a worker-startup deadline. */

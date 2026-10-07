@@ -150,7 +150,9 @@ describe("interrupted canonical user replay", () => {
           await closeOpenClawAgentDatabaseByPathAsync(pathname);
           fs.renameSync(pathname, `${pathname}.retired`);
           fs.copyFileSync(`${pathname}.retired`, pathname);
-          await expect(prepared.prepareInitialUserTurnReplay!()).rejects.toThrow(/database owner/);
+          await expect(prepared.prepareInitialUserTurnReplay!()).rejects.toThrow(
+            selectedOwner ? "Agent database execution admission is closed" : /database owner/,
+          );
         },
         { selectedOwner },
       );
@@ -651,11 +653,11 @@ describe("interrupted canonical user replay", () => {
     await withInterruptedTurn(false, async (fixture) => {
       let owner: SessionManager | undefined;
       let cleanupOwner: unknown;
-      fixture.revoke();
       try {
         await expect(
           fixture.prepare((manager) => {
             owner = manager;
+            fixture.revoke();
           }),
         ).rejects.toThrow("original writer closed");
       } finally {
