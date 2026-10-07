@@ -68,6 +68,8 @@ export type BlockChunkMetadata = {
 
 type BlockChunkDrain = {
   force: boolean;
+  /** Only for cumulative previews that replace previously emitted text. */
+  mutablePreview?: boolean;
   emit: (chunk: string, options?: BlockChunkMetadata) => void;
 };
 
@@ -425,6 +427,7 @@ export class EmbeddedBlockChunker {
               openFence,
             )
           : this.#pickBreakIndex(
+              params,
               view,
               spans,
               unbreakableSpans,
@@ -617,6 +620,7 @@ export class EmbeddedBlockChunker {
   }
 
   #pickBreakIndex(
+    { mutablePreview }: BlockChunkDrain,
     buffer: string,
     spans: BreakSpans,
     unbreakableSpans: UnbreakableSpan[],
@@ -721,16 +725,18 @@ export class EmbeddedBlockChunker {
           fenceSplit: { closeFenceLine, reopenFenceLine, fence },
         };
       }
-      // A streamed trailing cluster can still gain a combining mark or ZWJ
-      // continuation in the next delta. Keep it pending until a following
-      // cluster or final drain establishes the boundary.
+      // Trailing clusters can gain combining marks or ZWJ continuations.
+      // Permanent replies wait for lookahead; cumulative previews can revise them.
+      const waitForBoundary = !finalDrain && !force && !mutablePreview;
       const graphemeSource =
         !finalDrain && /[\uD800-\uDBFF]$/u.test(buffer) ? buffer.slice(0, -1) : buffer;
-      const maxEnd = Math.min(
-        forcedBreakIndex,
-        finalDrain ? graphemeSource.length : graphemeSource.length - 1,
-      );
+      const maxEnd = Math.min(forcedBreakIndex, graphemeSource.length - (waitForBoundary ? 1 : 0));
       const wholeEnd = findGraphemeChunkEnd(graphemeSource, 0, maxEnd, maxEnd, false);
+      if (waitForBoundary && wholeEnd > 0 && buffer.length === forcedBreakIndex) {
+        // Wait for lookahead instead of turning a full chunk into a shorter
+        // prefix and a trailing fragment solely to reserve its last cluster.
+        return { index: 0 };
+      }
       const graphemeBreakIndex =
         wholeEnd ||
         (firstGraphemeClusterLength(graphemeSource) >= forcedBreakIndex ? forcedBreakIndex : 0);
