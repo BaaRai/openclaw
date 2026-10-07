@@ -83,5 +83,6 @@
   "claude-haiku-4.5",
   "claude-opus-4.7",
   "step-3.7-flash",
-  "claude-sonnet-4.5"
+  "claude-sonnet-4.5",
+  "mistral-large-4"
 ]
