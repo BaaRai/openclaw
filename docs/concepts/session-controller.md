@@ -198,6 +198,11 @@ as `interrupt`. A detached attempt has no turn and keeps its native abort.
 `supersede` refuses a backend that already reports itself stopped or aborted, so
 that turn keeps its own terminal outcome.
 
+A turn that calls `sessions_yield` refuses steering from that point, but it still
+owns its session, run IDs, and children until it settles, and only then records
+`yielded` as its result. A Stop or reset that lands first still aborts the
+backend; it, or a failure, replaces the yield as the turn's result.
+
 A run whose abort is frozen is already finalizing and refuses active
 cancellation. User sources still perform independent queue cleanup, controlled
 subagent stopping, and one `command:stop` hook. The operation captures child
