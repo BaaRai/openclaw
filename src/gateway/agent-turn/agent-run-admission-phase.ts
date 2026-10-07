@@ -491,6 +491,7 @@ export async function prepareAgentRunDispatch(
         sessionId: params.request.expectedExistingSessionId ?? params.getAdmittedSessionId(),
         sessionKey: recoverySessionKey,
         storePath: lifecycleStorePath,
+        activeRunAbort,
       });
       const recoveryRevalidation = revalidateAdmission();
       if (recoveryRevalidation !== true) {

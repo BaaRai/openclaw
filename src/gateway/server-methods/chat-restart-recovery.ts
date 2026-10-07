@@ -27,7 +27,9 @@ import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-ke
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
+  getReservedRpcSourceInput,
   getRpcSourceIdentity,
+  hasUnretiredRpcSource,
   listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { findSessionControllerEntry } from "../../sessions/session-controller.state.js";
@@ -166,6 +168,17 @@ function isAdoptedRestartRecoveryClaim(
   );
 }
 
+// A resend prepared for this claim already owns its mailbox input; a same-ID
+// retry joins that owner instead of dispatching again or reporting it pending.
+function hasLiveRestartRecoveryResend(entry: SessionEntry, clientRunId: string): boolean {
+  const runId = entry.restartRecoveryDeliveryRunId;
+  return Boolean(
+    runId &&
+    runId !== clientRunId &&
+    (hasUnretiredRpcSource(runId) || getReservedRpcSourceInput(runId)),
+  );
+}
+
 export async function resolveDurableChatClaim(params: {
   canonicalSessionKey: string;
   cfg: OpenClawConfig;
@@ -181,7 +194,8 @@ export async function resolveDurableChatClaim(params: {
   if (
     isAdoptedRestartRecoveryClaim(entry, params.clientRunId) &&
     entry.status === "running" &&
-    entry.abortedLastRun === true
+    entry.abortedLastRun === true &&
+    !hasLiveRestartRecoveryResend(entry, params.clientRunId)
   ) {
     const recoverySessionError = resolveSessionWorkStartError(params.canonicalSessionKey, entry);
     if (recoverySessionError) {
