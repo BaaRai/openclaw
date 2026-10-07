@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -23,6 +24,10 @@ import type { DB } from "./openclaw-state-db.generated.js";
 // Read-only clients need schema admission without loading updater publication policy.
 export const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 type StateSchemaVersionDatabase = Pick<DB, "config_machine_state">;
+const admittedContentVersions = new WeakMap<
+  DatabaseSync,
+  SqliteReadOperationRevision & { contentVersion: number }
+>();
 const contentVersionQuery = createSqliteQueryCache((db) =>
   prepareSqliteQuerySync<void, Pick<DB["config_machine_state"], "value_json">>(db, () =>
     getNodeSqliteKysely<StateSchemaVersionDatabase>(db)
@@ -31,26 +36,31 @@ const contentVersionQuery = createSqliteQueryCache((db) =>
       .where("state_key", "=", CONTENT_VERSION_KEY),
   ),
 );
-const contentVersionFacts = new WeakMap<
-  DatabaseSync,
-  { revision: SqliteReadOperationRevision; version: number }
->();
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
 export function readStateSchemaContentVersion(db: DatabaseSync): number {
   const schema = getAdmittedSqliteSchemaFacts(db);
   const revision = getSqliteReadOperationRevision(db);
-  const retained = contentVersionFacts.get(db);
-  if (revision && retained?.revision === revision) {
-    return retained.version;
+  const admitted = admittedContentVersions.get(db);
+  if (
+    revision &&
+    admitted?.schema === revision.schema &&
+    admitted.dataVersion === revision.dataVersion &&
+    admitted.mutationRevision === revision.mutationRevision
+  ) {
+    return admitted.contentVersion;
   }
-  const version = readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
+  const contentVersion = readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
   if (revision && getSqliteReadOperationRevision(db) === revision) {
-    contentVersionFacts.set(db, { revision, version });
-  } else {
-    contentVersionFacts.delete(db);
+    if (!admitted) {
+      const unregister = registerNodeSqliteDisposeCallback(db, () => {
+        admittedContentVersions.delete(db);
+        unregister();
+      });
+    }
+    admittedContentVersions.set(db, { ...revision, contentVersion });
   }
-  return version;
+  return contentVersion;
 }
 
 function readContentVersion(db: DatabaseSync, published: number): number {
