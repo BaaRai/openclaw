@@ -17,6 +17,11 @@ export function gateBoundTool(
   if (!execute && !sourcePreparer) {
     return tool;
   }
+  const acceptResult = <T>(result: T): T => {
+    assertActive();
+    observeResult(result);
+    return result;
+  };
   const gated: AnyAgentTool = {
     ...tool,
     ...(execute
@@ -32,10 +37,7 @@ export function gateBoundTool(
               // a tool that started and failed in downstream terminal evidence.
               throw registerTrustedToolNoStartError(error);
             }
-            const result = await execute(...args);
-            assertActive();
-            observeResult(result);
-            return result;
+            return acceptResult(await execute(...args));
           },
         }
       : {}),
@@ -66,10 +68,7 @@ export function gateBoundTool(
         ...prepared,
         execute: async (onImplementationStart) => {
           assertActive();
-          const result = await prepared.execute(onImplementationStart);
-          assertActive();
-          observeResult(result);
-          return result;
+          return acceptResult(await prepared.execute(onImplementationStart));
         },
       };
     });
