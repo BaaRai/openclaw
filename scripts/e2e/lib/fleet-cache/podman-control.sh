@@ -49,7 +49,8 @@ runtime_env=(env -i PATH="$PATH" HOME="$case_dir/home" OPENCLAW_HOME="$case_dir/
   CONTAINERS_STORAGE_CONF="$engine_root/storage.conf" CONTAINERS_CONF="$engine_root/containers.conf")
 
 runtime() { timeout --foreground --kill-after=10s 180s "${runtime_env[@]}" podman "$@"; }
-fleet() { timeout --foreground --kill-after=10s 180s "${runtime_env[@]}" "$node_bin" "$cli_entry" fleet "$@"; }
+# This private control has only synthetic credentials; retain CLI causes for failed admission.
+fleet() { timeout --foreground --kill-after=10s 180s "${runtime_env[@]}" OPENCLAW_DEBUG=1 "$node_bin" "$cli_entry" fleet "$@"; }
 
 capture() {
   fleet status "$tenant" --json
