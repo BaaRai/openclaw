@@ -8,7 +8,11 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
 import { completeUpdateFailureSummary } from "./update-failure-result.js";
-import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import {
+  compactUpdateRunStepCount,
+  encodeRun,
+  type UpdateRunLedgerOptions,
+} from "./update-run-codec.js";
 import type { UpdateRunPhasePatch } from "./update-run-mutation.types.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
@@ -40,13 +44,7 @@ export function upsertStep(record: UpdateRunRecord, input: UpdateRunStep): void 
   } else {
     record.steps.push(step);
   }
-  while (record.steps.length > 128) {
-    const disposable = record.steps.findIndex((entry) => !isRetainedStep(entry));
-    if (disposable < 0) {
-      throw new Error("Update run retained steps exceed the step limit");
-    }
-    record.steps.splice(disposable, 1);
-  }
+  compactUpdateRunStepCount(record.steps);
 }
 
 export function applyUpdateRunPhase(

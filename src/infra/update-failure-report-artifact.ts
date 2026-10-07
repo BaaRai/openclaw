@@ -17,6 +17,7 @@ import { withFileLock } from "./file-lock.js";
 import { writeTextAtomic } from "./json-files.js";
 import { formatUpdateDoctorLintFinding } from "./update-doctor-lint.js";
 import type { PreparedUpdateFailureReport } from "./update-failure-report-prepare.js";
+import { formatUpdateRunTimings, summarizeUpdateRunTimings } from "./update-run-history.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import {
   isUpdateRunReportInProgress,
@@ -27,6 +28,7 @@ import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 
 const DOCTOR_LINT_REPORT_SECTION = "\n## Complete Doctor lint findings (";
+const TIMING_REPORT_SECTION = "\n## Recorded elapsed timings\n";
 const NATIVE_FAILURE_REPORT_SECTION = "\n## Native process diagnostics\n";
 
 function nativeFailureDiagnostics(steps: UpdateRunRecord["steps"]): string {
@@ -41,6 +43,24 @@ function nativeFailureDiagnostics(steps: UpdateRunRecord["steps"]): string {
       : [],
   );
   return diagnostics.length ? `${NATIVE_FAILURE_REPORT_SECTION}\n${diagnostics.join("\n\n")}` : "";
+}
+
+function timingReport(run: UpdateRunRecord | undefined): string {
+  if (!run) {
+    return "";
+  }
+  const timings = formatUpdateRunTimings(summarizeUpdateRunTimings(run.steps));
+  if (!timings.length) {
+    return "";
+  }
+  return [
+    TIMING_REPORT_SECTION,
+    `Run: ${run.runId}`,
+    `Source before: ${JSON.stringify(run.before)}`,
+    `Target: ${JSON.stringify(run.target)}`,
+    `Source after: ${JSON.stringify(run.after)}`,
+    ...timings,
+  ].join("\n");
 }
 
 async function readSavedUpdateReport(filePath: string): Promise<string | undefined> {
@@ -95,7 +115,7 @@ export async function refreshUpdateRunReportArtifact(
     await writeTextAtomic(
       outputPath,
       redactSupportString(
-        `${report.markdown}${appendix}${native}`,
+        `${report.markdown}${timingReport(run)}${appendix}${native}`,
         { env, stateDir },
         { maxLength: Number.MAX_SAFE_INTEGER },
       ),
@@ -197,6 +217,7 @@ export async function writeUpdateRunReportArtifact(params: {
     );
     const body = [
       report.markdown,
+      timingReport(run),
       `${DOCTOR_LINT_REPORT_SECTION}${findings.length})\n`,
       ...findings.map((finding) => `- ${formatUpdateDoctorLintFinding(finding, env)}`),
       ...(native ? [native] : []),

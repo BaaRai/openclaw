@@ -345,6 +345,40 @@ triage and does not rewrite the update outcome. Phase timings, repair attempts, 
 verification facts are included only when observed. Chat reports are limited to 1,500 characters;
 `update.runs.get` preserves the bounded record for detailed inspection.
 
+### Bounded timing history
+
+The ledger reserves compact timestamps and outcomes for major operations (including
+updater-runtime retention, candidate-state snapshot, candidate Doctor, build, and
+runtime staging) independently of verbose warnings and diagnostics. These remain
+ordinary `steps` in the existing JSON shape, attached to the same `runId`, `before`,
+`target`, and `after` source identities. No database or protocol upgrade is needed.
+Repeated step keys still describe the latest recorded attempt, not a sum of retries.
+
+When either the 128-step or 16 KiB step-history bound compacts the record, a retained
+`history:compaction` step records versioned JSON in `detail`: `version: 1`,
+`omittedSteps`, and `compactedDetails`, with an explicit history-only meaning.
+These counters describe recorded omissions/detail reductions, not skipped execution.
+An absent step never proves that validation was skipped, passed, or failed. An
+explicit step `status: "skipped"` remains a distinct observed outcome. Older writers
+cannot preserve these new observations; no marker means compaction is unknown,
+not zero. A full protected safety-receipt set takes priority over timing/compaction
+bookkeeping: a previously writable legacy record must not fail just to add that
+bookkeeping. Its omitted observations remain unknown. Candidate code cannot recover
+timing records an older driver already lost.
+
+Detailed reports include inclusive phase time, the interval union of retained named
+operations clipped to each phase, and the other/unattributed remainder exclusive of
+that union. Nested or overlapping operations are not additive. The remainder is not
+an inferred cause or CPU time; it includes uninstrumented and unretained work.
+Missing, unfinished, or reversed intervals remain unknown. Timing is elapsed
+observation, not proof that all checks inside a command ran.
+
+The saved `update-reports/<runId>.md` report includes the complete timing summary and
+source/run identity outside the short chat-report budget. Existing complete Doctor
+lint inventories, native diagnostics, recovery receipts, and diagnostic artifact
+links keep their existing durable report paths and retention rules. Compact timing
+history does not replace or delete that evidence.
+
 If a stable Gateway is still starting when the readiness allowance ends, the run
 finishes `skipped` with reason `gateway-readiness-unverified`. This means the
 installation completed, readiness was not confirmed, and recovery backups were

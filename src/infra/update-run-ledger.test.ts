@@ -819,14 +819,18 @@ describe("update run ledger", () => {
     clock.mockReturnValue(2_000);
     finishUpdateRun(run.runId, { status: "failed", reason: "restart-unhealthy" }, options);
     const persisted = getUpdateRun(run.runId, options)!;
-    expect(persisted.steps.map(({ step }) => step)).toEqual(phases);
-    expect(persisted.steps.map(({ startedAtMs }) => startedAtMs)).toEqual(
+    const phaseSteps = persisted.steps.filter(({ step }) => phases.some((phase) => phase === step));
+    expect(phaseSteps.map(({ step }) => step)).toEqual(phases);
+    expect(persisted.steps.find(({ step }) => step === "history:compaction")?.detail).toContain(
+      "not skipped execution",
+    );
+    expect(phaseSteps.map(({ startedAtMs }) => startedAtMs)).toEqual(
       phases.map((_, index) => 1_000 + index * 100),
     );
-    expect(persisted.steps.map(({ endedAtMs }) => endedAtMs)).toEqual(
+    expect(phaseSteps.map(({ endedAtMs }) => endedAtMs)).toEqual(
       phases.map((_, index) => (index === phases.length - 1 ? 2_000 : 1_100 + index * 100)),
     );
-    expect(persisted.steps.at(-1)?.status).toBe("failed");
+    expect(phaseSteps.at(-1)?.status).toBe("failed");
     expect(Buffer.byteLength(JSON.stringify(persisted.steps))).toBeLessThanOrEqual(16 * 1024);
   });
 

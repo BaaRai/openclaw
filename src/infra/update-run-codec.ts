@@ -8,9 +8,14 @@ import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-co
 import type { UpdateRuns } from "../state/openclaw-state-db.generated.js";
 import { resolveRequiredHomeDir } from "./home-dir.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
+import {
+  isMajorUpdateOperation,
+  recordUpdateRunCompaction,
+  UPDATE_RUN_COMPACTION_STEP,
+} from "./update-run-history.js";
 import { UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
 import type { UpdateRunRedactionFacts } from "./update-run-mutation.types.js";
-import type { UpdateRunRecord } from "./update-run-record.js";
+import type { UpdateRunRecord, UpdateRunStep } from "./update-run-record.js";
 import { UpdateRunRecordSchema } from "./update-run-schema.js";
 
 const JSON_BYTES = 16 * 1024;
@@ -92,17 +97,40 @@ function mapJsonText(
   return value;
 }
 
-export function isRetainedStep(item: unknown): boolean {
+function isProtectedHistoryStep(item: unknown): boolean {
   return (
     isRecord(item) &&
     typeof item.step === "string" &&
-    (item.termination === "signal" ||
+    (item.step === UPDATE_RUN_COMPACTION_STEP ||
+      item.termination === "signal" ||
       item.step.startsWith("finalize:") ||
       RETAINED_STEP_NAMES.some((name) => name === item.step))
   );
 }
 
-/** Phase history, notice custody, and restoration proof survive diagnostic eviction. */
+function isRetainedStep(step: UpdateRunStep): boolean {
+  return isProtectedHistoryStep(step) || isMajorUpdateOperation(step.step);
+}
+
+function noteCompaction(steps: UpdateRunStep[], omitted: number, details = 0): void {
+  // A full legacy receipt set has no spare slot. Bookkeeping must not make a
+  // previously admissible write fail; absent compaction metadata stays unknown.
+  if (
+    steps.length >= 128 &&
+    !steps.some((step) => step.step === UPDATE_RUN_COMPACTION_STEP) &&
+    steps.every(isRetainedStep)
+  ) {
+    return;
+  }
+  recordUpdateRunCompaction(steps, omitted, details);
+}
+
+function compactOperation(step: UpdateRunStep): UpdateRunStep {
+  const { step: name, status, startedAtMs, endedAtMs, exitCode, termination, signal } = step;
+  return { step: name, status, startedAtMs, endedAtMs, exitCode, termination, signal };
+}
+
+/** Bound non-step metadata; step history has its own retention owner below. */
 function boundedJson(
   input: unknown,
   maxBytes = JSON_BYTES,
@@ -112,41 +140,7 @@ function boundedJson(
   let json = JSON.stringify(value);
   while (Buffer.byteLength(json) > maxBytes) {
     if (Array.isArray(value)) {
-      const disposable = value.findIndex((item) => !isRetainedStep(item));
-      if (disposable >= 0) {
-        value = value.toSpliced(disposable, 1);
-      } else {
-        // Recovery details are the durable backup receipt, not optional diagnostics.
-        const compacted = value.map((item) =>
-          isRecord(item) &&
-          item.termination !== "signal" &&
-          item.step !== "task-delivery-recovery" &&
-          item.step !== "diagnostic:database snapshot" &&
-          item.step !== "diagnostic:database migration writes" &&
-          item.step !== "diagnostic:database rollback" &&
-          !(typeof item.step === "string" && item.step.startsWith("finalize:doctor-lint:"))
-            ? { ...item, detail: undefined, failureFacts: undefined }
-            : item,
-        );
-        if (JSON.stringify(compacted) === json) {
-          // Native output is diagnostic, never a reason to refuse a recovery receipt.
-          const item = value.findLast(
-            (entry): entry is Record<string, unknown> & { stderrTail: string } =>
-              isRecord(entry) &&
-              typeof entry.stderrTail === "string" &&
-              entry.stderrTail.length > 0,
-          );
-          if (!item) {
-            throw new Error("Update run retained step metadata exceeds its byte limit");
-          }
-          value = value.with(value.indexOf(item), {
-            ...item,
-            stderrTail: truncateUtf16Safe(item.stderrTail, Math.floor(item.stderrTail.length / 2)),
-          });
-        } else {
-          value = compacted;
-        }
-      }
+      value = value.slice(1);
     } else if (isRecord(value)) {
       const object = value;
       const arrayField = Object.keys(object)
@@ -170,6 +164,112 @@ function boundedJson(
       throw new Error("Update run retained metadata exceeds its byte limit");
     }
     json = nextJson;
+  }
+  return json;
+}
+
+/** Count and byte compaction share the same custody and omission accounting. */
+export function compactUpdateRunStepCount(steps: UpdateRunStep[]): void {
+  while (steps.length > 128) {
+    const ordinary = steps.findIndex((entry) => !isRetainedStep(entry));
+    if (ordinary >= 0) {
+      steps.splice(ordinary, 1);
+      noteCompaction(steps, 1);
+      continue;
+    }
+    // Bookkeeping must yield even when a previous writer already inserted it.
+    const marker = steps.findIndex((entry) => entry.step === UPDATE_RUN_COMPACTION_STEP);
+    if (marker >= 0) {
+      steps.splice(marker, 1);
+      continue;
+    }
+    const timing = steps.findIndex((entry) => !isProtectedHistoryStep(entry));
+    if (timing < 0) {
+      throw new Error("Update run retained steps exceed the step limit");
+    }
+    steps.splice(timing, 1);
+    noteCompaction(steps, 1);
+  }
+}
+
+function boundedRunSteps(input: UpdateRunStep[]): string {
+  const steps = input.map((step) => ({ ...step }));
+  compactUpdateRunStepCount(steps);
+  let json = JSON.stringify(steps);
+  while (Buffer.byteLength(json) > JSON_BYTES) {
+    const bulkyOperation = steps.findIndex(
+      (step) =>
+        !isProtectedHistoryStep(step) &&
+        isMajorUpdateOperation(step.step) &&
+        (step.detail !== undefined ||
+          step.failureFacts !== undefined ||
+          step.configChange !== undefined ||
+          step.configWriteRefusal !== undefined ||
+          step.snapshotCapacity !== undefined ||
+          step.stderrTail !== undefined),
+    );
+    const disposable = steps.findIndex((step) => !isRetainedStep(step));
+    if (disposable >= 0) {
+      steps.splice(disposable, 1);
+      noteCompaction(steps, 1);
+    } else if (bulkyOperation >= 0) {
+      // Previously this entire operation was evicted. Preserve its compact time
+      // and outcome without reserving unbounded command/Doctor payloads.
+      steps[bulkyOperation] = compactOperation(steps[bulkyOperation]!);
+      noteCompaction(steps, 0, 1);
+    } else {
+      let compacted = 0;
+      for (const step of steps) {
+        // These receipts keep their existing durable safety/rollback contract.
+        if (
+          step.termination === "signal" ||
+          step.step === UPDATE_RUN_COMPACTION_STEP ||
+          step.step === "task-delivery-recovery" ||
+          step.step === "diagnostic:database snapshot" ||
+          step.step === "diagnostic:database migration writes" ||
+          step.step === "diagnostic:database rollback" ||
+          step.step.startsWith("finalize:doctor-lint:")
+        ) {
+          continue;
+        }
+        if (step.detail !== undefined || step.failureFacts !== undefined) {
+          delete step.detail;
+          delete step.failureFacts;
+          compacted++;
+        }
+      }
+      if (compacted) {
+        noteCompaction(steps, 0, compacted);
+      } else {
+        const step = steps.findLast((entry) => Boolean(entry.stderrTail?.length));
+        if (step?.stderrTail) {
+          step.stderrTail = truncateUtf16Safe(
+            step.stderrTail,
+            Math.floor(step.stderrTail.length / 2),
+          );
+          noteCompaction(steps, 0, 1);
+        } else {
+          // Observability cannot crowd out a full legacy safety receipt set.
+          const marker = steps.findIndex((entry) => entry.step === UPDATE_RUN_COMPACTION_STEP);
+          const timing = steps.findIndex((entry) => !isProtectedHistoryStep(entry));
+          if (
+            marker >= 0 &&
+            Buffer.byteLength(JSON.stringify(steps.toSpliced(marker, 1))) <= JSON_BYTES
+          ) {
+            steps.splice(marker, 1);
+          } else if (timing >= 0) {
+            steps.splice(timing, 1);
+            noteCompaction(steps, 1);
+          } else if (marker >= 0) {
+            steps.splice(marker, 1);
+          } else {
+            throw new Error("Update run retained step metadata exceeds its byte limit");
+          }
+        }
+      }
+    }
+    compactUpdateRunStepCount(steps);
+    json = JSON.stringify(steps);
   }
   return json;
 }
@@ -303,7 +403,7 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
     target_json: boundedJson(record.target),
     before_json: boundedJson(record.before),
     after_json: boundedJson(record.after),
-    steps_json: boundedJson(record.steps),
+    steps_json: boundedRunSteps(record.steps),
     verification_json: boundedJson(record.verification),
     repair_json: boundedJson(record.repair),
     confirmed_at_ms: record.confirmedAtMs,

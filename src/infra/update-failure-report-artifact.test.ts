@@ -4,6 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeUpdateRunReportArtifact } from "./update-failure-report-artifact.js";
+import { encodeRun } from "./update-run-codec.js";
+import { decodeRun } from "./update-run-read.kernel.js";
+import type { UpdateRunRecord } from "./update-run-record.js";
+import { renderUpdateRunReport } from "./update-run-report.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -117,4 +121,73 @@ describe("update report artifact ownership", () => {
     expect(reportPath).toBe(path.join(stateDir, "update-reports", `${runId}.md`));
     expect(await fs.readFile(reportPath, "utf8")).toContain("Admitted update");
   });
+});
+
+it("keeps complete lint and diagnostic artifacts alongside source-bound compact timings", async () => {
+  const stateDir = tempDirs.make("update-report-timings-");
+  const result = updateResult("error");
+  const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  result.runId = runId;
+  result.steps[0]!.doctorLintFindings = Array.from({ length: 100 }, (_, i) => ({
+    checkId: "core/config",
+    severity: "error" as const,
+    message: `synthetic finding ${i}`,
+  }));
+  const input: UpdateRunRecord = {
+    runId,
+    createdAtMs: 0,
+    updatedAtMs: 100,
+    trigger: "cli",
+    phase: "finished",
+    status: "failed",
+    reason: "update-refused",
+    origin: {},
+    target: { kind: "git", sha: "b".repeat(40) },
+    before: { sha: "a".repeat(40) },
+    after: { sha: "b".repeat(40) },
+    steps: [
+      { step: "validating", status: "completed", startedAtMs: 0, endedAtMs: 100 },
+      { step: "candidate-doctor", status: "failed", startedAtMs: 10, endedAtMs: 90 },
+      {
+        step: "diagnostic:database rollback",
+        status: "completed",
+        detail: "Retained rollback receipt.",
+      },
+      ...Array.from({ length: 30 }, (_, i) => ({
+        step: `diagnostic:large:${i}`,
+        status: "completed" as const,
+        detail: "🦞".repeat(500),
+      })),
+    ],
+    verification: {},
+    repair: [],
+    confirmedAtMs: null,
+    finishedAtMs: 100,
+    downtimeMs: null,
+  };
+  const env = { OPENCLAW_STATE_DIR: stateDir };
+  const run = decodeRun(encodeRun(input, { env }));
+  const reportPath = await writeUpdateRunReportArtifact({
+    result,
+    report: renderUpdateRunReport(run),
+    readRun: () => run,
+    env,
+  });
+  const report = await fs.readFile(reportPath, "utf8");
+  expect(report).toContain("not skipped validation");
+  expect(report).toContain("Retained rollback receipt.");
+  expect(report).toContain("## Recorded elapsed timings");
+  expect(report).toContain(`Run: ${runId}`);
+  expect(report).toContain(`Source before: {"sha":"${"a".repeat(40)}"}`);
+  expect(report).toContain(`Source after: {"sha":"${"b".repeat(40)}"}`);
+  expect(report).toContain("candidate-doctor: 80 ms (failed)");
+  expect(report).toContain(
+    "100 ms inclusive; 80 ms named-operation union; 20 ms other/unattributed",
+  );
+  expect(report).toContain("Complete Doctor lint findings (100)");
+  expect(report).toContain("synthetic finding 99");
+  const link = /Bounded diagnostic JSON: (.+)/u.exec(report)![1]!;
+  const failurePath = path.resolve(path.dirname(reportPath), link);
+  const failure = await fs.readFile(failurePath, "utf8");
+  expect(failure).toContain("Complete Doctor lint inventory:");
 });

@@ -16,6 +16,11 @@ import {
   UPDATE_DESTINATION_RECOVERY,
 } from "./update-failure-facts-format.js";
 import {
+  formatUpdateRunTimings,
+  readUpdateRunCompaction,
+  summarizeUpdateRunTimings,
+} from "./update-run-history.js";
+import {
   LEGACY_UPDATE_RUN_ADVISORY,
   LEGACY_UPDATE_RUN_EXPIRED_REASON,
 } from "./update-run-legacy-expiry.js";
@@ -284,6 +289,12 @@ export function renderUpdateRunReport(
   if (opts.mode && opts.mode !== "unknown") {
     lines.push(`Update mode: ${opts.mode}`);
   }
+  const compaction = readUpdateRunCompaction(run.steps);
+  if (compaction) {
+    lines.push(
+      `History compacted: ${compaction.omittedSteps} entries omitted; ${compaction.compactedDetails} detail reductions. This is not skipped validation. Missing checks are unknown; use the saved report/artifacts for details.`,
+    );
+  }
   const admission = run.origin.admission;
   if (admission) {
     const candidateVersion = admission.candidateVersion
@@ -405,6 +416,7 @@ export function renderUpdateRunReport(
   if (run.downtimeMs != null) {
     lines.push(`Gateway downtime: ${formatDurationPrecise(run.downtimeMs)}.`);
   }
+  lines.push(...formatUpdateRunTimings(summarizeUpdateRunTimings(run.steps)));
   const skipGuidance =
     run.status === "skipped" &&
     run.reason &&
