@@ -5,7 +5,11 @@ import {
   prepareSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { collectSqliteSchemaIssues } from "../infra/sqlite-schema-contract.js";
-import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  getSqliteReadOperationRevision,
+  type SqliteReadOperationRevision,
+} from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
   createNewerSqliteSchemaVersionError,
@@ -27,11 +31,26 @@ const contentVersionQuery = createSqliteQueryCache((db) =>
       .where("state_key", "=", CONTENT_VERSION_KEY),
   ),
 );
+const contentVersionFacts = new WeakMap<
+  DatabaseSync,
+  { revision: SqliteReadOperationRevision; version: number }
+>();
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
 export function readStateSchemaContentVersion(db: DatabaseSync): number {
   const schema = getAdmittedSqliteSchemaFacts(db);
-  return readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
+  const revision = getSqliteReadOperationRevision(db);
+  const retained = contentVersionFacts.get(db);
+  if (revision && retained?.revision === revision) {
+    return retained.version;
+  }
+  const version = readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
+  if (revision && getSqliteReadOperationRevision(db) === revision) {
+    contentVersionFacts.set(db, { revision, version });
+  } else {
+    contentVersionFacts.delete(db);
+  }
+  return version;
 }
 
 function readContentVersion(db: DatabaseSync, published: number): number {
