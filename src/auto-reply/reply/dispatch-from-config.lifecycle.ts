@@ -14,6 +14,7 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   prepareSessionWorkerPlacementMutationCheckAsync,
+  readSessionWorkerPlacementAsync,
   resolveWorkerPlacementArchiveRestoreError,
   type SessionWorkerPlacementContext,
 } from "../../gateway/worker-environments/session-placement-lifecycle.js";
@@ -93,7 +94,10 @@ async function restoreArchivedDispatchSession(params: {
   }
   const snapshotSessionId = entry.sessionId;
   const snapshotArchivedAt = entry.archivedAt;
-  const canRestore = (currentEntry: SessionEntry) => {
+  const canRestore = (
+    currentEntry: SessionEntry,
+    prepared?: { placement: Awaited<ReturnType<typeof readSessionWorkerPlacementAsync>> },
+  ) => {
     if (
       currentEntry.sessionId !== snapshotSessionId ||
       currentEntry.archivedAt !== snapshotArchivedAt ||
@@ -102,11 +106,13 @@ async function restoreArchivedDispatchSession(params: {
       return false;
     }
     try {
-      const placement = currentEntry.sessionId
-        ? placementContext.workerSessionPlacementService
-            ?.getMany([currentEntry.sessionId])
-            .get(currentEntry.sessionId)
-        : undefined;
+      const placement = prepared
+        ? prepared.placement
+        : currentEntry.sessionId
+          ? placementContext.workerSessionPlacementService
+              ?.getMany([currentEntry.sessionId])
+              .get(currentEntry.sessionId)
+          : undefined;
       return !resolveWorkerPlacementArchiveRestoreError({
         context: placementContext,
         key: sessionKey,
@@ -122,7 +128,15 @@ async function restoreArchivedDispatchSession(params: {
     run: async () => {
       const scope = { sessionKey, storePath };
       const currentEntry = loadSessionEntryReadOnly(scope);
-      if (!currentEntry || !canRestore(currentEntry)) {
+      if (
+        !currentEntry ||
+        !canRestore(currentEntry, {
+          placement: await readSessionWorkerPlacementAsync({
+            context: placementContext,
+            sessionId: currentEntry.sessionId,
+          }),
+        })
+      ) {
         return currentEntry;
       }
       let assertCommitAllowed: (() => void) | undefined;
