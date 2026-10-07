@@ -232,7 +232,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   });
   // Descendant settlement re-arms this wake; an unsettled tree is not yet owed.
   const initialDescendants = await readRequesterDescendants();
-  if (!initialDescendants || (!pauseNotice && initialDescendants.unsettled)) {
+  const hasUnsettledDescendants = !pauseNotice && initialDescendants?.unsettled === true;
+  if (!initialDescendants || (!frozen && hasUnsettledDescendants)) {
     return false;
   }
   const isStoreCurrent = () =>
@@ -288,6 +289,10 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   if (isBatchDeliveryClosed()) {
     // Cancellation already owns the task result; only consume its obsolete wake.
     await completeBatch(settledBatch, selectedState);
+    return false;
+  }
+  // A frozen batch closed by cancellation retires above; otherwise it waits for its tree.
+  if (hasUnsettledDescendants) {
     return false;
   }
   const requiredSettled = settledBatch.filter((entry) => entry.expectsCompletionMessage === true);

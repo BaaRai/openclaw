@@ -280,11 +280,13 @@ export function resumeSubagentRun(runId: string, source: "live" | "restore" = "l
 }
 
 function resumeFinalizedSubagentRun(runId: string, entry: SubagentRunRecord) {
+  // A yielded wake waits only while a delivery owner remains: the session queue, or
+  // this row's own unfinished cleanup. Completed cleanup leaves the wake as the owner.
   const yieldedWakeWaitingForDelivery =
     entry.requesterSettleWake?.requesterYieldBatch === true &&
-    (entry.delivery?.status === "pending" ||
-      entry.delivery?.status === "in_progress" ||
-      entry.delivery?.status === "failed");
+    (entry.delivery?.status === "in_progress" ||
+      (entry.cleanupCompletedAt === undefined &&
+        (entry.delivery?.status === "pending" || entry.delivery?.status === "failed")));
   if (
     entry.requesterSettleWake &&
     typeof entry.execution.endedAt === "number" &&

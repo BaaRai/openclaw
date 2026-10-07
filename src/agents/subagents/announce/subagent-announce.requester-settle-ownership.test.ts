@@ -7,7 +7,7 @@ import {
   markRequesterTurnYieldedWithAuthority,
 } from "../registry/subagent-registry-requester-yield.test-support.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
-import * as requesterTurnLiveness from "../registry/subagent-requester-turn-liveness.js";
+import { holdLiveRequesterTurns } from "../registry/subagent-requester-turn-liveness.test-support.js";
 import { copySubagentRunRuntimeOwner } from "../registry/subagent-run-generation.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 import * as announceOutput from "./subagent-announce-output.js";
@@ -131,14 +131,7 @@ it("holds an adopted child's old wake until its current requester turn yields", 
     requesterSettleWake: { rearmGeneration: 1 },
   });
   const oldWake = structuredClone(child.requesterSettleWake);
-  // The session controller reports the adopting requester turn as still running.
-  const liveTurns = new Set([requesterTurnRunId]);
-  vi.spyOn(requesterTurnLiveness, "isClaimedByLiveRequesterTurn").mockImplementation(
-    (entry) =>
-      entry.expectsCompletionMessage === true &&
-      entry.requesterTurnRunId !== undefined &&
-      liveTurns.has(entry.requesterTurnRunId),
-  );
+  const requesterTurn = holdLiveRequesterTurns(requesterTurnRunId);
   registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([quietChild, child]);
   expect(
     await maybeWakeRequesterAfterAllChildrenSettled({ ...wakeParams(), settledEntry: quietChild }),
@@ -171,7 +164,7 @@ it("holds an adopted child's old wake until its current requester turn yields", 
       schedule: vi.fn(),
     }),
   ).toBe(true);
-  liveTurns.delete(requesterTurnRunId);
+  requesterTurn.end(requesterTurnRunId);
   // Settlement rearms the adopted wake for the new turn's complete child batch.
   const published = runs.get(child.runId)!;
   expect(published.requesterSettleWake?.rearmGeneration).toBe(2);

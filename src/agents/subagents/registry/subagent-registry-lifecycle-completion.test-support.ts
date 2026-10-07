@@ -32,6 +32,7 @@ import {
 } from "./subagent-registry-read.js";
 import { bindSubagentRunRecord } from "./subagent-registry.store.codec.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
+import { holdLiveRequesterTurns } from "./subagent-requester-turn-liveness.test-support.js";
 import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
 type CompletionPolicyOwners = Map<object, Pick<SubagentLifecycleOptions, "runs">>;
@@ -248,6 +249,7 @@ export function registerPrivateCompletionSettlementTests({
         },
         maybeWakeRequesterAfterAllChildrenSettled: async () => false,
       });
+      const requesterTurn = holdLiveRequesterTurns("run-requester");
       try {
         expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(false);
         expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
@@ -287,6 +289,7 @@ export function registerPrivateCompletionSettlementTests({
         expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
         expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
       } finally {
+        requesterTurn.restore();
         controller.clearScheduledResumeTimers();
       }
     },

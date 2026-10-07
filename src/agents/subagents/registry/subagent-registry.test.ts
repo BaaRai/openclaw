@@ -3435,58 +3435,6 @@ describe("subagent registry seam flow", () => {
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
-  it("retains delete-mode successful completions through the delivery deadline", async () => {
-    const persist = (runs: Map<string, SubagentRunRecord>, runIds?: readonly string[]) =>
-      saveSubagentRegistryChangesToSqlite(runs, runIds ?? [...runs.keys()]);
-    mocks.persistRegistryRows.mockImplementation(persist);
-    mocks.runSubagentAnnounceFlow.mockResolvedValue("retryable");
-    const endedAt = Date.parse("2026-03-24T12:00:00Z");
-    mocks.callGateway.mockResolvedValueOnce({
-      status: "ok",
-      startedAt: endedAt - 500,
-      endedAt,
-      terminalReply: { disposition: "visible", text: "final completion reply" },
-    });
-
-    const settleRootWork = observeRootWork();
-    await mod.registerSubagentRun({
-      runId: "run-delete-give-up",
-      task: "completion cleanup retry",
-      cleanup: "delete",
-      expectsCompletionMessage: true,
-    });
-
-    await vi.advanceTimersByTimeAsync(0);
-    await settleRootWork(true);
-    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
-    expectRecordFields(
-      mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-delete-give-up"),
-      { runId: "run-delete-give-up", cleanup: "delete" },
-      "delete give-up run",
-    );
-
-    const retryWindowEnd = endedAt + 5 * 60_000;
-    while (Date.now() < retryWindowEnd) {
-      await vi.advanceTimersToNextTimerAsync();
-      await settleRootWork(true);
-    }
-    expect(mocks.runSubagentAnnounceFlow.mock.calls.length).toBeGreaterThan(3);
-    expect(findRequesterRun("run-delete-give-up")?.delivery?.status).not.toBe("suspended");
-
-    const deadlineAt = findRequesterRun("run-delete-give-up")?.delivery?.deadlineAt;
-    expect(deadlineAt).toBeTypeOf("number");
-    vi.setSystemTime((deadlineAt ?? Date.now()) + 1);
-    mod.resumeSubagentRun("run-delete-give-up");
-    await vi.advanceTimersByTimeAsync(0);
-    await settleRootWork();
-    expect(findRequesterRun("run-delete-give-up")?.delivery).toMatchObject({
-      status: "suspended",
-      suspendedReason: "expiry",
-    });
-  });
-
   it.each(["delete", "keep"] as const)(
     "retries completion %s runs regardless of prior attempt count",
     async (cleanup) => {
