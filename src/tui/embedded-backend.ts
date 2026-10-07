@@ -21,11 +21,7 @@ import {
   resolveSessionAgentId,
 } from "../agents/agent-scope.js";
 import { ensureContextWindowCacheLoaded } from "../agents/context.js";
-import {
-  claimPendingEmbeddedAgentQuestionAnswer,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-} from "../agents/embedded-agent-runner/runs.js";
-import { QuestionAnswerUnconfirmedError } from "../agents/harness/gateway-question-dispatch.js";
+import { claimPendingEmbeddedAgentQuestionAnswer } from "../agents/embedded-agent-runner/runs.js";
 import { resolveThinkingDefault } from "../agents/model-selection.js";
 import { resolvePublishedModelCatalogOwner } from "../agents/prepared-model-catalog-owner.js";
 import {
@@ -114,7 +110,14 @@ import {
   normalizeAgentId,
 } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
-import { resolveActiveSessionRunId } from "../sessions/session-controller.queries.js";
+import {
+  resolveActiveReplyOperationForSessionId,
+  resolveActiveSessionRunId,
+} from "../sessions/session-controller.queries.js";
+import {
+  steerSessionControllerOperation,
+  type SessionControllerSteerResult,
+} from "../sessions/session-controller.steer.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { applyQueueDropPolicy, waitForQueueDebounce } from "../utils/queue-helpers.js";
@@ -352,21 +355,25 @@ export class EmbeddedTuiBackend implements TuiBackend {
       });
       if (queueSettings.mode === "steer") {
         if (activeSessionId) {
-          const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
-            activeSessionId,
-            opts.message,
-            {
-              steeringMode: "all",
-              debounceMs: queueSettings.debounceMs ?? DEFAULT_QUEUE_DEBOUNCE_MS,
-              isInboundUserMessage: true,
-            },
-          ).catch((error: unknown) => {
-            if (error instanceof QuestionAnswerUnconfirmedError) {
-              throw error;
-            }
-            return undefined;
-          });
-          if (outcome?.queued) {
+          let steer: SessionControllerSteerResult | undefined;
+          try {
+            steer = await steerSessionControllerOperation({
+              operation: resolveActiveReplyOperationForSessionId(activeSessionId),
+              text: opts.message,
+              options: {
+                steeringMode: "all",
+                debounceMs: queueSettings.debounceMs ?? DEFAULT_QUEUE_DEBOUNCE_MS,
+                isInboundUserMessage: true,
+              },
+            });
+          } catch {
+            // A failed steer leaves this input to the local followup queue.
+          }
+          if (steer?.status === "indeterminate") {
+            // Consumed without a confirmed commit: queuing it again could duplicate it.
+            throw new Error(steer.errorMessage);
+          }
+          if (steer?.status === "accepted") {
             return { runId: queuedAfter.runId };
           }
         }
