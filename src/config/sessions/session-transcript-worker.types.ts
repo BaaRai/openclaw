@@ -113,7 +113,7 @@ import type {
   SessionStoreTargetReadRequest,
   SessionStoreTargetReadResult,
 } from "./session-store-target-inventory.js";
-import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.kernel.js";
+import type { SessionTranscriptAnchorFacts } from "./session-transcript-anchor-read.types.js";
 import type {
   PreparedSessionTranscriptHydration,
   SessionTranscriptCurrentTurnEntryRead,

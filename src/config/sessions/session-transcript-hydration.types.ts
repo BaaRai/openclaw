@@ -8,6 +8,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
+import type { SessionEntryCohortRequest } from "./session-entry-read.types.js";
 import type {
   PreparedSessionTranscriptHydration,
   SessionTranscriptReadSnapshot,
@@ -80,6 +81,7 @@ export type SessionTranscriptHydrationWorkerInput = {
   afterSeq?: number;
   includeEventJson?: boolean;
   limits?: { maxBytes: number; maxEvents: number };
+  transcript?: SessionEntryCohortRequest["transcript"];
   admission?: UserTurnTranscriptAdmissionReceipt;
 };
 

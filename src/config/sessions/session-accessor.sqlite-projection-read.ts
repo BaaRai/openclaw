@@ -9,6 +9,7 @@ import {
   prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { captureSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
+import { runSqliteReadOperationSync } from "../../infra/sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { TranscriptReadWindow } from "../../sessions/transcript-read-window.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -390,42 +391,41 @@ export function readCurrentProjectionSnapshot<T>(
   if (readerOperation) {
     diagnostics.readerOperation = readerOperation;
   }
-  return runSqliteDeferredTransactionSync(
-    database.db,
-    () => {
-      const snapshot = readProjectionSnapshot(database, resolved.sessionId);
-      if (snapshot.state) {
-        diagnostics.activeEvents = snapshot.state.activeEventCount;
-        diagnostics.activeMessages = snapshot.state.activeMessageCount;
-        diagnostics.indexedSeq = snapshot.state.indexedSeq;
-      }
-      if (snapshot.cold) {
-        throw new SessionTranscriptColdError(resolved.sessionId);
-      }
-      const empty = snapshot.latestSeq === null;
-      const state = empty ? EMPTY_PROJECTION_STATE : snapshot.state;
-      if (
-        !state ||
-        state.needsRebuild ||
-        (!empty && (state.indexedSeq !== snapshot.latestSeq || snapshot.hasUnclassified))
-      ) {
-        return { kind: "unavailable" as const };
-      }
-      return {
-        kind: "value" as const,
-        value: read({
-          database,
-          generation: snapshot.generation,
-          hasUnindexedPrefix: !empty && snapshot.hasUnindexedPrefix,
-          resolved,
-          state,
-        }),
-      };
-    },
-    {
-      databaseLabel: database.path,
-      operationLabel: "sessions.history.read",
-      diagnosticContext: diagnostics,
-    },
-  );
+  const readSnapshot = () => {
+    const snapshot = readProjectionSnapshot(database, resolved.sessionId);
+    if (snapshot.state) {
+      diagnostics.activeEvents = snapshot.state.activeEventCount;
+      diagnostics.activeMessages = snapshot.state.activeMessageCount;
+      diagnostics.indexedSeq = snapshot.state.indexedSeq;
+    }
+    if (snapshot.cold) {
+      throw new SessionTranscriptColdError(resolved.sessionId);
+    }
+    const empty = snapshot.latestSeq === null;
+    const state = empty ? EMPTY_PROJECTION_STATE : snapshot.state;
+    if (
+      !state ||
+      state.needsRebuild ||
+      (!empty && (state.indexedSeq !== snapshot.latestSeq || snapshot.hasUnclassified))
+    ) {
+      return { kind: "unavailable" as const };
+    }
+    return {
+      kind: "value" as const,
+      value: read({
+        database,
+        generation: snapshot.generation,
+        hasUnindexedPrefix: !empty && snapshot.hasUnindexedPrefix,
+        resolved,
+        state,
+      }),
+    };
+  };
+  return database.db.isTransaction
+    ? runSqliteReadOperationSync(database.db, readSnapshot)
+    : runSqliteDeferredTransactionSync(database.db, readSnapshot, {
+        databaseLabel: database.path,
+        operationLabel: "sessions.history.read",
+        diagnosticContext: diagnostics,
+      });
 }

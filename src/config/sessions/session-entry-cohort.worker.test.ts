@@ -9,6 +9,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as entryCache from "./session-accessor.sqlite-entry-cache.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
+import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.js";
 import type { SessionEntryCohortRequest } from "./session-entry-read.types.js";
 import { addSessionMember } from "./session-sharing-store.native.js";
@@ -64,7 +65,12 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       includeMembers: true,
       includeParticipantRecords: true,
       lifecycleSessionKey: sessionKey,
-      transcript: { sessionKey, entryIds: ["question", "missing"], includeHeader: true },
+      transcript: {
+        sessionKey,
+        entryIds: ["question", "missing"],
+        includeHeader: true,
+        includeWatermark: true,
+      },
     };
     const read = (input = request) => operations["session.entry.read"](input, context);
     const first = read();
@@ -77,7 +83,35 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
     expect(first.transcript).toMatchObject({
       header: { id: "cohort" },
       anchors: [{ entryId: "question", sessionId: "cohort" }],
+      watermark: { generation: expect.any(String), maxSeq: 1 },
     });
+    const currentVersion = readTranscriptContextVersionInTransaction(database, scope.sessionId);
+    const replayRequest: SessionEntryCohortRequest = {
+      sessionKeys: [sessionKey],
+      snapshotFields: [],
+      transcript: {
+        sessionKey,
+        entryIds: ["question"],
+        contextValidation: { version: currentVersion },
+        replayValidation: { allowInitial: false, expectedLifecycleRevision: "original" },
+      },
+    };
+    expect(read(replayRequest).transcript).toMatchObject({
+      contextValidated: true,
+      anchors: [{ entryId: "question" }],
+    });
+    expect(
+      read({
+        ...replayRequest,
+        transcript: {
+          ...replayRequest.transcript!,
+          replayValidation: {
+            allowInitial: false,
+            admission: { ...first.transcript!.anchors[0]!, role: "user", logicalTurnId: "cohort" },
+          },
+        },
+      }).transcript,
+    ).toMatchObject({ contextValidated: true, anchors: [] });
     request.expected = {
       incarnation: first.databaseIdentity.incarnation,
       sessions: [{ sessionKey, sessionId: "cohort", lifecycleRevision: "original" }],
@@ -92,6 +126,11 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
         peer
           .prepare("UPDATE session_participants SET contribution_count = 9 WHERE session_key = ?")
           .run(sessionKey);
+        peer
+          .prepare(
+            "UPDATE transcript_rewrite_watermarks SET generation = 'foreign-generation' WHERE session_id = ?",
+          )
+          .run(scope.sessionId);
         return rows;
       });
     const reopen = vi
@@ -131,6 +170,10 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       const current = read();
       expect(current.members?.[sessionKey]).toEqual([]);
       expect(current.participantRecords?.[sessionKey]).toMatchObject([{ contributionCount: 9 }]);
+      expect(current.transcript?.watermark).toEqual({
+        generation: "foreign-generation",
+        maxSeq: 1,
+      });
       expect(
         current.entries.find(({ sessionKey: key }) => key === parentKey)?.entry.updatedAt,
       ).toBe(2);

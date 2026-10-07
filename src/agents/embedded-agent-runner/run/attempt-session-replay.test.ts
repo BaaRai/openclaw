@@ -100,15 +100,124 @@ describe("context engine bootstrap", () => {
 });
 
 describe("interrupted canonical user replay", () => {
-  it("rejects a byte-identical replacement source between replay preparations", async () => {
-    await withInterruptedTurn(false, async (fixture) => {
-      const prepared = await fixture.prepare();
-      const pathname = fixture.target.storePath!;
-      await closeOpenClawAgentDatabaseByPathAsync(pathname);
-      fs.renameSync(pathname, `${pathname}.retired`);
-      fs.copyFileSync(`${pathname}.retired`, pathname);
-      await expect(prepared.prepareInitialUserTurnReplay!()).rejects.toThrow(/database owner/);
-    });
+  it("discards unpersisted assistant mutations before deciding replay", async () => {
+    await withInterruptedTurn(
+      false,
+      async (fixture) => {
+        const original = guardSessionManager(SessionManager.open(fixture.target), {
+          runId: fixture.attempt.runId,
+        });
+        await original.appendMessageAsync(
+          createAssistant(testModel, [{ type: "text", text: "Already completed" }]),
+        );
+        const before = loadTranscriptEventsSync(fixture.target);
+        const manager = await SessionManager.openBoundedAsync(fixture.target, {
+          maxBytes: 8192,
+          maxEvents: 20,
+        });
+        fixture.attempt.sessionManager = manager;
+        const leaf = manager.getLeafEntry();
+        if (leaf?.type !== "message" || leaf.message.role !== "assistant") {
+          throw new Error("Expected the stored final assistant");
+        }
+        const interrupted = createFailureMessage(
+          testModel,
+          createAgentRunRestartAbortError(),
+          true,
+        );
+        Object.assign(interrupted, { __openclaw: { runId: fixture.attempt.runId } });
+        leaf.message = interrupted;
+        const prepared = await fixture.prepare();
+        expect(prepared.prepareInitialUserTurnReplay).toBeUndefined();
+        expect(fixture.attempt.userTurnTranscriptRecorder?.hasPersisted()).toBe(false);
+        expect(manager.getLeafEntry()).toMatchObject({
+          message: { content: [{ type: "text", text: "Already completed" }] },
+        });
+        expect(loadTranscriptEventsSync(fixture.target)).toEqual(before);
+      },
+      { selectedOwner: true, interruptedTurn: false },
+    );
+  });
+
+  it.each([false, true])(
+    "rejects a byte-identical replacement source between replay preparations (selected=%s)",
+    async (selectedOwner) => {
+      await withInterruptedTurn(
+        false,
+        async (fixture) => {
+          const prepared = await fixture.prepare();
+          const pathname = fixture.target.storePath!;
+          await closeOpenClawAgentDatabaseByPathAsync(pathname);
+          fs.renameSync(pathname, `${pathname}.retired`);
+          fs.copyFileSync(`${pathname}.retired`, pathname);
+          await expect(prepared.prepareInitialUserTurnReplay!()).rejects.toThrow(/database owner/);
+        },
+        { selectedOwner },
+      );
+    },
+  );
+
+  it.each([
+    "unchanged",
+    "metadata-append",
+    "local-navigation",
+    "shared-store",
+    "mutable-message",
+    "wrong-hint",
+  ] as const)("consumes a fresh selected transcript after %s", async (change) => {
+    await withInterruptedTurn(
+      false,
+      async (fixture) => {
+        const reload = vi.spyOn(SessionManager.prototype, "reloadPersistedTranscriptAsync");
+        try {
+          const prepared = await fixture.prepare();
+          expect(reload).not.toHaveBeenCalled();
+          expect(fixture.attempt.userTurnTranscriptRecorder?.getAdmissionReceipt()).toMatchObject({
+            agentId: fixture.target.agentId,
+            storePath: fixture.target.storePath,
+          });
+          if (change === "metadata-append") {
+            await SessionManager.open(fixture.target).appendThinkingLevelChange("high");
+          } else if (change === "local-navigation") {
+            await prepared.sessionManager.resetLeafAsync();
+          } else if (change === "mutable-message" || change === "wrong-hint") {
+            const leaf = prepared.sessionManager.getLeafEntry()!;
+            if (
+              change === "mutable-message" &&
+              leaf.type === "message" &&
+              leaf.message.role === "user"
+            ) {
+              leaf.message = { ...leaf.message, content: "Unpersisted replacement" };
+            } else {
+              Object.assign(leaf, { type: "custom", customType: "untrusted-hint" });
+            }
+          }
+          const before = loadTranscriptEventsSync(fixture.target);
+          const consume = await prepared.prepareInitialUserTurnReplay?.();
+          expect(consume).toBeTypeOf("function");
+          const admitted = vi.fn();
+          await consume!(admitted);
+          expect(admitted).toHaveBeenCalledOnce();
+          expect(reload).toHaveBeenCalledTimes(
+            change === "wrong-hint" || change === "local-navigation" ? 1 : 0,
+          );
+          expect(
+            prepared.sessionManager
+              .getBranch()
+              .some(
+                (entry) =>
+                  entry.type === "message" &&
+                  entry.message.role === "user" &&
+                  entry.message.content === fixture.attempt.prompt,
+              ),
+          ).toBe(true);
+          expect(loadTranscriptEventsSync(fixture.target)).toEqual(before);
+        } finally {
+          reload.mockRestore();
+        }
+      },
+      { selectedOwner: true, interruptedTurn: false, sharedStore: change === "shared-store" },
+    );
   });
 
   it.each(["rewrite", "close", "revoke"] as const)(

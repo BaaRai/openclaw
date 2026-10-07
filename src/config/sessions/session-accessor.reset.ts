@@ -30,7 +30,7 @@ import type {
   ReplySessionInitializationCommitResult,
 } from "./session-accessor.types.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
-import { assertSessionEntryCohortScope } from "./session-entry-read-ordered.js";
+import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import {
   SessionEntryLifecycleUpsertConflictError,

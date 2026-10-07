@@ -4,6 +4,7 @@ import {
   appendInterruptedTurnMessage,
 } from "../../../../packages/agent-core/src/turn-interruption.js";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
+import { loadSessionEntryForAdmission } from "../../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { withOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import type { ImageContent } from "../../../llm/types.js";
@@ -112,22 +113,28 @@ export async function withInterruptedTurn(
     settledPrefix?: boolean;
     oversizedMetadata?: boolean;
     compactedInput?: boolean;
+    selectedOwner?: boolean;
+    sharedStore?: boolean;
   } = {},
 ) {
   await withOpenClawTestState({ label: "interrupted-keyed-replay" }, async (state) => {
     const runId = "interrupted-keyed-replay";
+    const agentId = options.sharedStore ? "ops" : "main";
     const target = {
-      agentId: "main",
+      agentId,
       sessionId: runId,
-      sessionKey: `agent:main:${runId}`,
+      sessionKey: `agent:${agentId}:${runId}`,
       storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
     };
-    await upsertSessionEntryCore(target, {
-      sessionId: target.sessionId,
-      updatedAt: 1,
-      lifecycleRevision: "current-generation",
-      activeWriterRunId: runId,
-    });
+    await upsertSessionEntryCore(
+      { ...target, agentId: "main" },
+      {
+        sessionId: target.sessionId,
+        updatedAt: 1,
+        lifecycleRevision: "current-generation",
+        activeWriterRunId: runId,
+      },
+    );
     const makeRecorder = () =>
       createUserTurnTranscriptRecorder({
         target: { ...target, sessionEntry: undefined },
@@ -230,6 +237,14 @@ export async function withInterruptedTurn(
       userTurnTranscriptRecorder: recorder,
     } as EmbeddedRunAttemptParams;
     const lifecycle = createEmbeddedAttemptTranscriptLifecycle(attempt);
+    const selected = options.selectedOwner ? await loadSessionEntryForAdmission(target) : undefined;
+    const sessionReader =
+      selected && "kind" in selected.databaseClaim && selected.databaseClaim.kind === "worker"
+        ? selected.databaseClaim.reader
+        : undefined;
+    if (selected && !sessionReader) {
+      throw new Error("Replay fixture requires a selected worker reader");
+    }
     let active = true;
     const withOwnedTranscriptWrite = <T>(operation: () => Promise<T> | T) =>
       withOwnedSessionTranscriptWrites(
@@ -239,6 +254,7 @@ export async function withInterruptedTurn(
             expectedLifecycleRevision: "current-generation",
             expectedWriterRunId: runId,
           },
+          sessionReader,
           assertCommitAllowed: () => {
             if (!active) {
               throw new Error("original writer closed");
@@ -265,13 +281,14 @@ export async function withInterruptedTurn(
             onSessionManagerCreated: onCreated ?? (() => {}),
             replayAllowedToolNames: new Set(["read"]),
             resolveActiveContextEnginePluginId: () => undefined,
-            sessionAgentId: "main",
+            sessionAgentId: target.agentId,
             withOwnedTranscriptWrite,
           }),
       });
     } finally {
       recorder.finishPendingInput!("interrupted");
       await lifecycle.dispose();
+      await selected?.databaseClaim.release();
       clearEmbeddedSessionPromptStates([target.sessionId]);
     }
   });

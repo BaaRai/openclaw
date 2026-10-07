@@ -1,3 +1,4 @@
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import type {
   SessionTranscriptBoundedActiveContext,
   SessionTranscriptContextVersion,
@@ -9,6 +10,7 @@ import {
   resolveOpaqueSessionFirstKeptEntryId,
   SessionEntryNavigation,
 } from "../../config/sessions/session-entry-navigation.js";
+import type { SessionEntryCohortRequest } from "../../config/sessions/session-entry-read.types.js";
 import {
   captureSessionTranscriptTargetBinding,
   sameSessionTranscriptTargetBinding,
@@ -47,6 +49,11 @@ import type {
   SessionManagerBoundedContext,
   SessionManagerBoundedView,
 } from "./session-manager-view-types.js";
+
+/** @internal Fresh payload adoption and metadata consumption share one history admission. */
+export const sessionManagerReloadTranscriptCohort = Symbol.for(
+  "openclaw.session-manager.reload-transcript-cohort",
+);
 
 export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
   migrated = false;
@@ -125,11 +132,11 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
   }
 
   /** Prepare off-thread and publish the entire view only while this manager is unchanged. */
-  setSessionTargetAsync(
+  async setSessionTargetAsync(
     target: SessionTranscriptRuntimeTarget,
     signal?: AbortSignal,
   ): Promise<void> {
-    return this.hydrateSessionTarget(target, false, signal);
+    await this.hydrateSessionTarget(target, false, signal);
   }
 
   private async hydrateSessionTarget(
@@ -137,7 +144,11 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     preserveCwd: boolean,
     signal?: AbortSignal,
     complete = false,
-  ): Promise<void> {
+    cohort?: {
+      selection: NonNullable<SessionEntryCohortRequest["transcript"]>;
+      consume: (prepared: PreparedSessionTranscriptReload, assertView: () => void) => void;
+    },
+  ): Promise<boolean> {
     this.assertTranscriptViewAvailable();
     const capturedTarget = captureSessionTranscriptTargetBinding(target);
     const retarget =
@@ -149,35 +160,77 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
       this,
       retarget,
     );
+    if (cohort && !hydration.readCohort) {
+      return false;
+    }
     const assertOwned = captureOwnedTranscriptWriteAssertion(hydration.target);
     const revision = ++this.hydrationRevision;
     const prior = this.captureTranscriptView();
     const entryCount = this.fileEntries.length;
     const opaqueCount = this.opaqueFileEntries.length;
     assertOwned();
-    const prepared = await hydration.read().catch((error: unknown) => {
+    const publish = (prepared: PreparedSessionTranscriptReload) => {
+      signal?.throwIfAborted();
       assertOwned();
-      throw error;
-    });
-    signal?.throwIfAborted();
-    assertOwned();
-    hydration.assertCurrent();
-    this.assertTranscriptViewAvailable();
-    const current = this.captureTranscriptView();
-    if (
-      revision !== this.hydrationRevision ||
-      this.fileEntries.length !== entryCount ||
-      this.opaqueFileEntries.length !== opaqueCount ||
-      Object.keys(prior).some((key) => Reflect.get(prior, key) !== Reflect.get(current, key))
-    ) {
-      throw new Error("Session manager changed during transcript hydration");
+      hydration.assertCurrent();
+      this.assertTranscriptViewAvailable();
+      const current = this.captureTranscriptView();
+      if (
+        revision !== this.hydrationRevision ||
+        this.fileEntries.length !== entryCount ||
+        this.opaqueFileEntries.length !== opaqueCount ||
+        Object.keys(prior).some((key) => Reflect.get(prior, key) !== Reflect.get(current, key))
+      ) {
+        throw new Error("Session manager changed during transcript hydration");
+      }
+      this.adoptPreparedTranscriptReload(prepared, undefined, hydration.target);
+      installSessionManagerIncognitoBinding(this, hydration.incognitoBinding);
+      if (!preserveCwd) {
+        this.cwd = this.fileEntries.find((entry) => entry.type === "session")?.cwd ?? this.cwd;
+      }
+      this.hydrationRevision++;
+      const adopted = this.captureTranscriptView();
+      const consumed = cohort?.consume(prepared, () => {
+        assertOwned();
+        hydration.assertCurrent();
+        const current = this.captureTranscriptView();
+        if (
+          Object.keys(adopted).some(
+            (key) => Reflect.get(adopted, key) !== Reflect.get(current, key),
+          )
+        ) {
+          throw new Error("Session manager changed after transcript cohort adoption");
+        }
+      });
+      if (isPromiseLike(consumed)) {
+        void Promise.resolve(consumed).catch(() => {});
+        throw new Error("Transcript cohort consumers must remain synchronous");
+      }
+    };
+    if (cohort && hydration.readCohort) {
+      await hydration.readCohort(cohort.selection, publish);
+    } else {
+      publish(
+        await hydration.read().catch((error: unknown) => {
+          assertOwned();
+          throw error;
+        }),
+      );
     }
-    this.adoptPreparedTranscriptReload(prepared, undefined, hydration.target);
-    installSessionManagerIncognitoBinding(this, hydration.incognitoBinding);
-    if (!preserveCwd) {
-      this.cwd = this.fileEntries.find((entry) => entry.type === "session")?.cwd ?? this.cwd;
-    }
-    this.hydrationRevision++;
+    return true;
+  }
+
+  [sessionManagerReloadTranscriptCohort](
+    selection: NonNullable<SessionEntryCohortRequest["transcript"]>,
+    consume: (prepared: PreparedSessionTranscriptReload, assertView: () => void) => void,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    return this.persistenceTarget && this.boundedContextLimits
+      ? this.hydrateSessionTarget(this.persistenceTarget, true, signal, false, {
+          selection,
+          consume,
+        })
+      : Promise.resolve(false);
   }
 
   /** Reload an existing view without changing the runtime working directory. */

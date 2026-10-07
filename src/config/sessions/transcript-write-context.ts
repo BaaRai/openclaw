@@ -12,6 +12,11 @@ import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
+import {
+  assertSessionEntryCohortScope,
+  matchSessionEntryCohortScope,
+} from "./session-entry-cohort-scope.js";
+import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import {
   captureSessionTranscriptStorageEnvironment,
@@ -74,6 +79,7 @@ export type OwnedSessionTranscriptWriteContext = {
   sessionKey?: string;
   sessionTarget?: SessionTranscriptWriteTarget;
   initialWriter?: InitialSessionTranscriptWriter;
+  sessionReader?: SessionEntryCohortReader;
   /** Revalidate the captured owner, including an absent writer, inside each commit. */
   assertCommitAllowed?: () => void;
   withTranscriptWrite: <T>(run: () => Promise<T> | T) => Promise<T>;
@@ -86,6 +92,31 @@ type SessionTranscriptWriteRequest = Pick<
 >;
 
 const ownedTranscriptWriteContext = new AsyncLocalStorage<OwnedSessionTranscriptWriteContext>();
+
+/** Borrow the selected physical owner only for this exact admitted transcript. */
+export function getOwnedSessionTranscriptReader(scope: SessionTranscriptWriteTarget) {
+  const context = ownedTranscriptWriteContext.getStore();
+  const reader = context?.sessionReader;
+  const original = context?.sessionTarget;
+  if (
+    !reader ||
+    !scope.sessionKey ||
+    !original?.sessionKey ||
+    original.sessionId !== scope.sessionId
+  ) {
+    return undefined;
+  }
+  if (!matchSessionEntryCohortScope(reader, { sessionKey: scope.sessionKey })) {
+    return undefined;
+  }
+  assertSessionEntryCohortScope(reader, { ...original, sessionKey: original.sessionKey });
+  assertSessionEntryCohortScope(reader, {
+    ...captureWriteTarget(scope),
+    sessionKey: scope.sessionKey,
+  });
+  context.assertCommitAllowed?.();
+  return reader;
+}
 
 function captureWriteTarget(target: SessionTranscriptWriteTarget): SessionTranscriptWriteTarget {
   const storePath = target.storePath?.trim();
