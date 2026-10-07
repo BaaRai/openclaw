@@ -527,14 +527,6 @@ describe("X publication production-owner composition", () => {
           if (kind === "allowed") {
             expect(outcomes.get(kind)).toMatchObject({ status: "accepted", publicRead: true });
             const key = await withinTest(childWritten.promise, signal);
-            // Transcript append precedes runtime settlement and its final row publications.
-            const childReleased = getSessionWorkAdmissionRelease({
-              scope: sessionStore,
-              identities: [key],
-            });
-            if (childReleased) {
-              await withinTest(childReleased, signal);
-            }
             const entry = expectDefined(
               loadSessionEntry({ agentId: "main", sessionKey: key, storePath: sessionStore }),
               "committed child row",
