@@ -84,10 +84,7 @@ export interface SubagentLifecycleAnnounceCleanupContext
 
 export interface SubagentLifecycleWakeContext extends SubagentLifecycleCommonContext {
   /** In-flight requester wake evaluations; a trigger during one requests a rerun. */
-  readonly activeRequesterSettleWakes: Map<
-    string,
-    { rearm?: SubagentRunRecord; evaluated?: SubagentRunRecord }
-  >;
+  readonly activeRequesterSettleWakes: Map<string, { rearm?: SubagentRunRecord }>;
   resumeAncestorCleanup(settledEntry: SubagentRunRecord): void;
   runRequesterSettleWake(
     entry: SubagentRunRecord,

@@ -878,6 +878,96 @@ describe("requester settle wake product flow", () => {
     },
   );
 
+  it("re-evaluates a waiting wave when a yielded cohort settles during that evaluation", async () => {
+    vi.setSystemTime(100_000);
+    const context = createGatewayContext();
+    await registry.initSubagentRegistry();
+    await registry.activateSubagentRegistry(() => context);
+    const { withLocalSessionPlacementTurnSettlement } =
+      await import("../../session-placement-admission.js");
+    const settleTurn = async (
+      runId: string,
+      accepted: Array<{ runId: string }>,
+      yielded: boolean,
+    ) =>
+      await withLocalSessionPlacementTurnSettlement(
+        { sessionId: "sess-main", sessionKey: MAIN_REQUESTER_SESSION_KEY, agentId: "main", runId },
+        async () => ({
+          payloads: [],
+          acceptedSessionSpawns: accepted,
+          meta: {
+            durationMs: 1,
+            yielded,
+            executionTrace: { runner: "cli", attempts: [], fallbackUsed: false },
+          },
+        }),
+      );
+    const wave = ["wave-a", "wave-b"].map((name) => ({
+      runId: `run-${name}`,
+      childSessionKey: `agent:main:subagent:${name}`,
+      expectsCompletionMessage: true,
+    }));
+    const cohort = {
+      runId: "run-cohort",
+      childSessionKey: "agent:main:subagent:cohort",
+      expectsCompletionMessage: true,
+    };
+    for (const child of wave) {
+      await spawnVisibleChild({ ...child, requesterTurnRunId: "requester-wave" });
+    }
+    await settleTurn("requester-wave", wave, false);
+    await spawnVisibleChild({ ...cohort, requesterTurnRunId: "requester-cohort" });
+    await createSessionsYieldTool({
+      sessionId: "sess-main",
+      claimYield: async () =>
+        (await registry.markRequesterTurnYielded({
+          requesterSessionKey: MAIN_REQUESTER_SESSION_KEY,
+          requesterAgentId: "main",
+          requesterTurnRunId: "requester-cohort",
+        })) > 0,
+      onYield: () => {},
+    }).execute("yield-cohort", {});
+    await settleTurn("requester-cohort", [cohort], true);
+    emitCompleted(wave[0]!.runId, wave[0]!.childSessionKey, "wave alpha findings");
+    await flushOwnedWork();
+    // Hold the wave's evaluation open after it has read the still-running cohort.
+    const evaluated = createDeferred<boolean>();
+    const release = createDeferred();
+    let held = false;
+    vi.mocked(maybeWakeRequesterAfterAllChildrenSettled).mockImplementation(async (params) => {
+      const woke = await wakeRequester(params);
+      if (params.settledEntry.runId === wave[1]!.runId && !held) {
+        held = true;
+        evaluated.resolve(woke);
+        await release.promise;
+      }
+      return woke;
+    });
+    try {
+      emitCompleted(wave[1]!.runId, wave[1]!.childSessionKey, "wave beta findings");
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+      await expect(evaluated.promise).resolves.toBe(false);
+      emitCompleted(cohort.runId, cohort.childSessionKey, "cohort findings");
+      // The cohort's own wake settles while the wave's evaluation is still held.
+      await vi.waitFor(() => {
+        expect(registry.getSubagentRunByRunId(cohort.runId)?.requesterSettleWake).toBeUndefined();
+        expect(getRequesterWakeCalls()).toHaveLength(1);
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      release.resolve();
+    }
+    await flushOwnedWork();
+    expect(
+      getRequesterWakeCalls().map((request) => request.params?.inputProvenance?.sourceSessionKey),
+    ).toEqual([cohort.childSessionKey, expect.any(String)]);
+    const waveWake = String(getRequesterWakeCalls()[1]?.params?.message);
+    expect(waveWake).toContain("wave alpha findings");
+    expect(waveWake).toContain("wave beta findings");
+  });
+
   registerRequesterWakeSettlementBoundaryTests({
     requesterSessionKey: MAIN_REQUESTER_SESSION_KEY,
     spawnVisibleChild,

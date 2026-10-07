@@ -207,7 +207,7 @@ export function scheduleRequesterSettleWake(
     active.rearm = entry;
     return;
   }
-  const evaluation: { rearm?: SubagentRunRecord; evaluated?: SubagentRunRecord } = {};
+  const evaluation: { rearm?: SubagentRunRecord } = {};
   context.activeRequesterSettleWakes.set(scope, evaluation);
   const stateContext = originalContext ?? captureOpenClawStateWorkerContext();
   const admittedIdentity = captureRequesterSettleRunIdentity(entry);
@@ -260,7 +260,6 @@ export function scheduleRequesterSettleWake(
           ) {
             return;
           }
-          evaluation.evaluated = entry;
           try {
             await params.maybeWakeRequesterAfterAllChildrenSettled({
               requesterSessionKey,
@@ -307,9 +306,9 @@ export function scheduleRequesterSettleWake(
       })
       .finally(() => {
         context.activeRequesterSettleWakes.delete(scope);
-        // A trigger carrying the very row this evaluation read adds nothing new.
+        // The wake depends on sibling and descendant rows too, so any trigger reruns it once.
         const rearm = evaluation.rearm;
-        if (rearm && rearm !== evaluation.evaluated) {
+        if (rearm) {
           scheduleRequesterSettleWake(context, rearm.runId, rearm, stateContext);
         }
       });
