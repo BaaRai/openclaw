@@ -228,6 +228,10 @@ async function getGatewayCatalogPool(
   }
   gatewayCatalog.rotating = (async () => {
     await gatewayCatalog.current?.close();
+    // Retain recovery before the pool serves requests. Shutdown can close the pool after an update
+    // replaced the runtime chunk on disk, so recovery must never load it late.
+    const { recoverPreparedModelRuntimeCatalogWorker } =
+      await import("./prepared-model-runtime.js");
     const signal = getPluginCacheRetirementSignal(cache);
     signal.throwIfAborted();
     const env = input.input.env;
@@ -251,8 +255,6 @@ async function getGatewayCatalogPool(
           if (gatewayCatalog.current === current) {
             gatewayCatalog.current = undefined;
           }
-          const { recoverPreparedModelRuntimeCatalogWorker } =
-            await import("./prepared-model-runtime.js");
           await recoverPreparedModelRuntimeCatalogWorker(borrowers);
         })()),
       close: async (error) => {
