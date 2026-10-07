@@ -4,7 +4,12 @@ import {
   type MainSessionRecoveryPendingTarget,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { settleAcceptedRestartRecovery } from "../../agents/main-session-recovery/main-session-restart-dispatch-settlement.js";
-import type { registerChatAbortController } from "../chat-abort.js";
+
+// The admitted run's abort owner; its stop reason separates a cancellation from a failed start.
+type AdmittedRunAbort = {
+  controller: { signal: AbortSignal };
+  entry?: { adapter: { abortStopReason?: string } };
+};
 
 /**
  * Bind durable recovery admission to the exact outcome recorded if execution never starts.
@@ -17,7 +22,7 @@ export async function admitAgentRestartRecovery(params: {
   sessionId: string;
   sessionKey: string;
   storePath: string;
-  activeRunAbort: ReturnType<typeof registerChatAbortController>;
+  activeRunAbort: AdmittedRunAbort;
 }): Promise<() => Promise<MainSessionRecoveryPendingTarget | undefined>> {
   const admission = await commitMainSessionRecovery({
     command: {

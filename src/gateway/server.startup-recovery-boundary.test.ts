@@ -36,7 +36,7 @@ type Fixture = {
 
 // The provider records every model request and holds requests that contain a held text.
 const requests: string[] = [];
-const holds = new Map<string, ReturnType<typeof createDeferred>>();
+const holds = new Map<string, ReturnType<typeof createDeferred<void>>>();
 
 /** Returns the prompt the model answers in one provider request. */
 function activePrompt(body: string): string {
