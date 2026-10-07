@@ -199,7 +199,8 @@ it(
           defaults: {
             workspace: state.workspaceDir,
             skipBootstrap: true,
-            maxConcurrent: 1,
+            // Spare global capacity: only resend serialization may hold the second session.
+            maxConcurrent: 2,
             model: { primary: provider.modelRef },
             models: {
               [provider.modelRef]: { params: { transport: "sse", openaiWsWarmup: false } },
