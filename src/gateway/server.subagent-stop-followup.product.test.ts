@@ -437,11 +437,13 @@ const resolvedCohortMarker = "ended without a result";
 function startYieldedOnlyChildModel(child: "hold" | "pause") {
   const spawnedChild = createDeferred<{ runId: string; sessionKey: string }>();
   const childStarted = createDeferred();
+  const continued = createDeferred();
   const continuations: string[] = [];
   let parentRequestCount = 0;
   return {
     child: spawnedChild.promise,
     childStarted: childStarted.promise,
+    continued: continued.promise,
     continuations: () => [...continuations],
     handle: async (
       body: string,
@@ -467,6 +469,7 @@ function startYieldedOnlyChildModel(child: "hold" | "pause") {
       }
       if (body.includes(resolvedCohortMarker)) {
         continuations.push(body);
+        continued.resolve();
         return writeVisibleReply(response, "PARENT_RECEIVED_RESOLVED_COHORT", sequence);
       }
       parentRequestCount += 1;
@@ -720,6 +723,10 @@ it.each([
         child.runId,
         (row) => row.execution.status === "terminal" && row.requesterSettleWake === undefined,
       );
+      // The continuation is a later requester turn; the resolved wake only reserves it.
+      if (continuations > 0) {
+        await script.continued;
+      }
       const delivered = script.continuations();
       expect(delivered).toHaveLength(continuations);
       for (const body of delivered) {
