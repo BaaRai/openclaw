@@ -1,7 +1,6 @@
 import path from "node:path";
 import { afterEach, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import type { EmbeddedAgentQueueMessageOutcome } from "../../agents/embedded-agent-runner/runs.js";
 import {
   runInitialModelFallbackAttempt,
   type TestModelFallbackRunnerParams,
@@ -29,12 +28,17 @@ const abortEmbeddedAgentRunMock = vi.fn();
 const compactEmbeddedAgentSessionMock = vi.fn();
 const isEmbeddedAgentRunActiveMock = vi.fn(() => false);
 const isEmbeddedAgentRunStreamingMock = vi.fn(() => false);
-const queueEmbeddedAgentMessageWithOutcomeAsyncMock = vi.fn(
-  async (
-    sessionId: string,
-    _text: string,
-    _options?: unknown,
-  ): Promise<EmbeddedAgentQueueMessageOutcome> => ({
+/** Scripted receipt for the fake reply backend's message injection. */
+type BackendQueueOutcome =
+  | {
+      queued: true;
+      transcriptCommit?: "unconfirmed";
+      errorMessage?: string;
+      [key: string]: unknown;
+    }
+  | { queued: false; reason: string; [key: string]: unknown };
+const backendQueueMessageMock = vi.fn(
+  async (sessionId: string, _text: string, _options?: unknown): Promise<BackendQueueOutcome> => ({
     queued: false,
     sessionId,
     reason: "not_streaming",
@@ -129,18 +133,12 @@ vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
   compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock,
   isSessionRunActive: isEmbeddedAgentRunActiveMock,
   isSessionNativeAttemptStreaming: isEmbeddedAgentRunStreamingMock,
-  queueEmbeddedAgentMessageWithOutcomeAsync: queueEmbeddedAgentMessageWithOutcomeAsyncMock,
   runEmbeddedAgent: runEmbeddedAgentMock,
   waitForSessionRunEnd: waitForEmbeddedAgentRunEndMock,
 }));
 
 vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
   clearActiveEmbeddedRun: vi.fn(),
-  formatEmbeddedAgentQueueFailureSummary: (outcome: { reason?: string; sessionId?: string }) =>
-    outcome.reason && outcome.sessionId
-      ? `queue_message_failed reason=${outcome.reason} sessionId=${outcome.sessionId} gatewayHealth=live`
-      : undefined,
-  queueEmbeddedAgentMessageWithOutcomeAsync: queueEmbeddedAgentMessageWithOutcomeAsyncMock,
 }));
 
 vi.mock("../../cli/command-secret-gateway.js", () => ({
@@ -269,15 +267,12 @@ function makeRunReplyAgentParams(
       kind: "embedded",
       cancel: vi.fn(),
       supportsQueueMessageImages: true,
+      supportsTranscriptCommitWait: true,
       taskSuggestionDeliveryMode: followupRun.run.taskSuggestionDeliveryMode,
       messageInjection: {
         isAvailable: () => true,
         queueMessage: async (text, options) => {
-          const outcome = await queueEmbeddedAgentMessageWithOutcomeAsyncMock(
-            replyOperation.sessionId,
-            text,
-            options,
-          );
+          const outcome = await backendQueueMessageMock(replyOperation.sessionId, text, options);
           if (!outcome.queued) {
             throw new Error(outcome.reason);
           }
@@ -331,8 +326,8 @@ export function resetAgentRunnerMediaTestState() {
   isEmbeddedAgentRunActiveMock.mockReturnValue(false);
   isEmbeddedAgentRunStreamingMock.mockReset();
   isEmbeddedAgentRunStreamingMock.mockReturnValue(false);
-  queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockReset();
-  queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockImplementation(async (sessionId: string) => ({
+  backendQueueMessageMock.mockReset();
+  backendQueueMessageMock.mockImplementation(async (sessionId: string) => ({
     queued: false,
     sessionId,
     reason: "not_streaming",
@@ -391,7 +386,7 @@ export {
   reserveSteerCandidateMock,
   parkedSteerConsumeMock,
   parkedSteerFallbackMock,
-  queueEmbeddedAgentMessageWithOutcomeAsyncMock,
+  backendQueueMessageMock,
   resolveOutboundAttachmentFromUrlMock,
   runEmbeddedAgentMock,
   runReplyAgent,

@@ -38,11 +38,11 @@ import {
   publishCurrentModelGeneration,
   resetModelGenerationFixtureState,
 } from "../model.generation-scope.test-support.js";
-import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
+  steerTestSessionTurn,
 } from "../runs.test-support.js";
 import { resolveEmbeddedRunModelSetup } from "./model-setup.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -637,6 +637,7 @@ describe("model chat and native model ownership", () => {
                 runId: execution.runId,
                 toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
                 queueMessage,
+                guarded: true,
               }),
               kind: "embedded" as const,
               cancel: () => {},
@@ -650,26 +651,18 @@ describe("model chat and native model ownership", () => {
             operation.setPhase("running");
             try {
               await expect(
-                queueEmbeddedAgentMessageWithOutcomeAsync(
-                  execution.sessionId,
-                  "Keep the current task",
-                  {
-                    isInboundUserMessage: true,
-                    toolAuthorityOverlay: caller,
-                  },
-                ),
-              ).resolves.toMatchObject({ queued: true });
+                steerTestSessionTurn(execution.sessionId, "Keep the current task", {
+                  isInboundUserMessage: true,
+                  toolAuthorityOverlay: caller,
+                }),
+              ).resolves.toMatchObject({ status: "accepted" });
               await expect(
-                queueEmbeddedAgentMessageWithOutcomeAsync(
-                  execution.sessionId,
-                  "Use different permissions",
-                  {
-                    isInboundUserMessage: true,
-                    toolAuthorityOverlay: { ...caller, clientCaps: [] },
-                    toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
-                  },
-                ),
-              ).resolves.toMatchObject({ queued: false, reason: "tool_authority_mismatch" });
+                steerTestSessionTurn(execution.sessionId, "Use different permissions", {
+                  isInboundUserMessage: true,
+                  toolAuthorityOverlay: { ...caller, clientCaps: [] },
+                  toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
+                }),
+              ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
               expect(queueMessage).toHaveBeenCalledOnce();
               expect(prepared.toolAuthorityFingerprint).not.toBe(authority.fingerprint());
             } finally {

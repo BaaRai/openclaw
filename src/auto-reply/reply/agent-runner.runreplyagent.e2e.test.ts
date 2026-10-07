@@ -126,7 +126,7 @@ const state = vi.hoisted(() => ({
   compactEmbeddedAgentSessionMock: vi.fn(),
   getChannelPluginMock: vi.fn(),
   materializeMcpAppChannelPresentationMock: vi.fn(),
-  queueEmbeddedAgentMessageMock: vi.fn(),
+  backendQueueMessageMock: vi.fn(),
   activeBackendCancelMock: vi.fn(),
   runEmbeddedAgentMock: vi.fn(),
 }));
@@ -297,35 +297,9 @@ vi.mock("../../agents/embedded-agent-runner/runs.js", async (importOriginal) => 
   const { clearActiveEmbeddedRun, setActiveEmbeddedRun } =
     await importOriginal<typeof import("../../agents/embedded-agent-runner/runs.js")>();
   return {
-    // Queue admission is controlled here; logical-turn registration and retirement stay real.
+    // Logical-turn registration and retirement stay real.
     clearActiveEmbeddedRun,
     setActiveEmbeddedRun,
-    formatEmbeddedAgentQueueFailureSummary: () => "test queue rejection",
-    queueEmbeddedAgentMessageWithOutcomeAsync: async (
-      sessionId: string,
-      prompt: string,
-      options: unknown,
-    ) => {
-      const result = state.queueEmbeddedAgentMessageMock(sessionId, prompt, options);
-      if (typeof result === "object") {
-        return result;
-      }
-      return result
-        ? {
-            queued: true,
-            sessionId,
-            target: "embedded_run",
-            gatewayHealth: "live",
-            enqueuedAtMs: Date.now(),
-          }
-        : {
-            queued: false,
-            sessionId,
-            reason: "no_active_run",
-            target: "none",
-            gatewayHealth: "live",
-          };
-    },
   };
 });
 
@@ -363,11 +337,11 @@ beforeEach(() => {
     payloads: [{ text: "final" }],
     meta: { agentMeta: { usage: { input: 1, output: 1 } } },
   });
-  state.queueEmbeddedAgentMessageMock.mockReset();
+  state.backendQueueMessageMock.mockReset();
   state.activeBackendCancelMock.mockReset();
   state.beforeAgentReplyHasHooksMock.mockReset().mockReturnValue(false);
   state.beforeAgentReplyRunMock.mockReset();
-  state.queueEmbeddedAgentMessageMock.mockReturnValue(false);
+  state.backendQueueMessageMock.mockReturnValue(false);
   state.getChannelPluginMock.mockReset();
   state.materializeMcpAppChannelPresentationMock.mockReset();
   parkedSteer.reset();
@@ -488,8 +462,9 @@ function createMinimalRun(params?: {
           kind: "embedded",
           runId: params?.activeBackendRunId,
           cancel: state.activeBackendCancelMock,
+          supportsTranscriptCommitWait: true,
           claimPendingUserInputAnswer: async (prompt, options) => {
-            const result = (await state.queueEmbeddedAgentMessageMock(
+            const result = (await state.backendQueueMessageMock(
               operation.sessionId,
               prompt,
               options,
@@ -499,7 +474,7 @@ function createMinimalRun(params?: {
           messageInjection: {
             isAvailable: () => true,
             queueMessage: async (prompt, options) => {
-              const result = (await state.queueEmbeddedAgentMessageMock(
+              const result = (await state.backendQueueMessageMock(
                 operation.sessionId,
                 prompt,
                 options,
@@ -670,7 +645,7 @@ describe("runReplyAgent active steering", () => {
 
     await expect(run()).resolves.toBeUndefined();
 
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledOnce();
     active.complete();
   });
@@ -829,7 +804,7 @@ describe("runReplyAgent active steering", () => {
   });
 
   it("offers a route-only mismatch to the pending-input owner", async () => {
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const activeRoute = { provider: "openai", model: "gpt-fallback" };
     const { followupRun, run } = createMinimalRun({
       isActive: true,
@@ -848,7 +823,7 @@ describe("runReplyAgent active steering", () => {
 
     await expect(run()).resolves.toBeUndefined();
 
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledWith(
+    expect(state.backendQueueMessageMock).toHaveBeenCalledWith(
       "session",
       "hello",
       expect.objectContaining({
@@ -897,7 +872,7 @@ describe("runReplyAgent active steering", () => {
   });
 
   it("keeps the continuing Telegram task's typing alive after an accepted steer", async () => {
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const active = createReplyOperation({
       sessionKey: "main",
       sessionId: "session",
@@ -944,7 +919,7 @@ describe("runReplyAgent active steering", () => {
       (hookName) => hookName === "before_agent_reply",
     );
     state.beforeAgentReplyRunMock.mockResolvedValue(undefined);
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const { run } = createMinimalRun({
       opts: { [REPLY_OPERATION_RUN_STATE]: runState },
       isActive: true,
@@ -970,8 +945,8 @@ describe("runReplyAgent active steering", () => {
 
       expect(runState.admission).toEqual({ status: "accepted", mode: "steer" });
       expect(state.beforeAgentReplyRunMock).not.toHaveBeenCalled();
-      expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledOnce();
-      expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledWith(
+      expect(state.backendQueueMessageMock).toHaveBeenCalledOnce();
+      expect(state.backendQueueMessageMock).toHaveBeenCalledWith(
         "session",
         "hello",
         expect.objectContaining({ steeringMode: "all" }),
@@ -991,7 +966,7 @@ describe("runReplyAgent active steering", () => {
       handled: true,
       reply: { text: "claimed steer" },
     });
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const active = createReplyOperation({
       sessionKey: "main",
       sessionId: "session",
@@ -1014,7 +989,7 @@ describe("runReplyAgent active steering", () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(state.beforeAgentReplyRunMock).not.toHaveBeenCalled();
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledOnce();
+    expect(state.backendQueueMessageMock).toHaveBeenCalledOnce();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(active.phase).toBe("running");
     expect(active.result).toBeNull();
@@ -1032,7 +1007,7 @@ describe("runReplyAgent active steering", () => {
       (hookName) => hookName === "before_agent_reply",
     );
     state.beforeAgentReplyRunMock.mockResolvedValue(undefined);
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(false);
+    state.backendQueueMessageMock.mockReturnValueOnce(false);
     state.runEmbeddedAgentMock.mockImplementationOnce(runHookBackedEmbeddedAgent);
     const { followupRun, run } = createMinimalRun({
       isActive: true,
@@ -1050,7 +1025,7 @@ describe("runReplyAgent active steering", () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(state.beforeAgentReplyRunMock).not.toHaveBeenCalled();
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledOnce();
+    expect(state.backendQueueMessageMock).toHaveBeenCalledOnce();
     expect(parkedSteer.fallback).toHaveBeenCalledOnce();
     expect(parkedSteer.consume).not.toHaveBeenCalled();
     active.complete();
@@ -1081,7 +1056,7 @@ describe("runReplyAgent active steering", () => {
 
     await expect(run()).resolves.toEqual(expect.objectContaining({ text: "model reply" }));
 
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(state.beforeAgentReplyRunMock).toHaveBeenCalledOnce();
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
   });
@@ -1102,7 +1077,7 @@ describe("runReplyAgent active steering", () => {
     await expect(run()).resolves.toBeUndefined();
 
     expect(runState.admission).toEqual({ status: "accepted", mode: "steer" });
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
@@ -1156,7 +1131,7 @@ describe("runReplyAgent active steering", () => {
       },
     });
     const events: string[] = [];
-    state.queueEmbeddedAgentMessageMock.mockImplementationOnce(
+    state.backendQueueMessageMock.mockImplementationOnce(
       async (_sessionId: string, _prompt: string, options: unknown) => {
         expect(requireRecord(options, "embedded queue options")).toMatchObject({
           steeringMode: "all",
@@ -1280,7 +1255,7 @@ describe("runReplyAgent active steering", () => {
     // A native command continuation whose target-slot adoption was skipped
     // (#104844) still carries its slash-source reservation; steering must
     // target the operation that owns this session's run slot.
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const targetOwner = createReplyOperation({
       sessionKey: "main",
       sessionId: "target-active-session",
@@ -1301,7 +1276,7 @@ describe("runReplyAgent active steering", () => {
 
     await expect(run()).resolves.toBeUndefined();
 
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledWith(
+    expect(state.backendQueueMessageMock).toHaveBeenCalledWith(
       "target-active-session",
       "hello",
       expect.objectContaining({ steeringMode: "all" }),
@@ -1320,7 +1295,7 @@ describe("runReplyAgent active steering", () => {
     active.setPhase("running");
     const finalizerError = new Error("dedupe finalizer failed");
     const events: string[] = [];
-    state.queueEmbeddedAgentMessageMock.mockImplementationOnce(
+    state.backendQueueMessageMock.mockImplementationOnce(
       (_sessionId: string, _prompt: string, options: unknown) => {
         expect(requireRecord(options, "embedded queue options")).toMatchObject({
           steeringMode: "all",
@@ -1348,7 +1323,7 @@ describe("runReplyAgent active steering", () => {
     expect(parkedSteer.consume).toHaveBeenCalledOnce();
     expect(parkedSteer.fallback).not.toHaveBeenCalled();
     active.complete();
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledTimes(1);
+    expect(state.backendQueueMessageMock).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(typing.cleanup).toHaveBeenCalledTimes(1);
@@ -1370,7 +1345,7 @@ describe("runReplyAgent active steering", () => {
     );
     state.beforeAgentReplyRunMock.mockResolvedValue(undefined);
     state.runEmbeddedAgentMock.mockImplementationOnce(runHookBackedEmbeddedAgent);
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce({
+    state.backendQueueMessageMock.mockReturnValueOnce({
       queued: false,
       sessionId: "session",
       reason,
@@ -1422,7 +1397,7 @@ describe("runReplyAgent active steering", () => {
       resetTriggered: false,
     });
     active.setPhase("running");
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce({
+    state.backendQueueMessageMock.mockReturnValueOnce({
       queued: true,
       sessionId: "session",
       target: "embedded_run",
@@ -1463,7 +1438,7 @@ describe("runReplyAgent active steering", () => {
     });
     active.setPhase("running");
     const activeAbortByUser = vi.spyOn(active, "abortByUser");
-    state.queueEmbeddedAgentMessageMock.mockImplementationOnce(() => {
+    state.backendQueueMessageMock.mockImplementationOnce(() => {
       active.complete();
       expect(() =>
         createReplyOperation({
@@ -1698,7 +1673,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
   });
 
   it("drops heartbeat runs before steering active streams", async () => {
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
+    state.backendQueueMessageMock.mockReturnValueOnce(true);
     const { run, typing } = createMinimalRun({
       opts: { isHeartbeat: true },
       isActive: true,
@@ -1710,7 +1685,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
     const result = await run();
 
     expect(result).toBeUndefined();
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(typing.cleanup).toHaveBeenCalledTimes(1);
@@ -2884,7 +2859,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     expect(duplicate.sourceTurnId).toBe(sourceTurnId);
     expect(onAdopted).not.toHaveBeenCalled();
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(await readStoredMainSession(storePath)).toMatchObject({
       status: "running",
@@ -2931,7 +2906,7 @@ describe("runReplyAgent pending final delivery capture", () => {
 
     expect(duplicate.sourceTurnId).toBe(sourceTurnId);
     expect(onAdopted).not.toHaveBeenCalled();
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+    expect(state.backendQueueMessageMock).not.toHaveBeenCalled();
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
     const stored = await readStoredMainSession(storePath);
     expect(stored).toMatchObject({

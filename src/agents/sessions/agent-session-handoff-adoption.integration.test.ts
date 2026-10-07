@@ -22,11 +22,11 @@ import type { ReplyBackendHandle } from "../../sessions/session-controller.contr
 import { createReplyOperation } from "../../sessions/session-controller.js";
 import type { EmbeddedAgentQueueHandle } from "../embedded-agent-runner/run-state.js";
 import { steerActiveSessionWithOptionalDeliveryWait } from "../embedded-agent-runner/run/attempt-queue-message.js";
-import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   testing as embeddedRunsTesting,
+  steerTestSessionTurn,
 } from "../embedded-agent-runner/runs.test-support.js";
 import {
   createAssistant,
@@ -171,18 +171,8 @@ describe("AgentSession handoff adoption integration", () => {
       supportsQueueMessageImages: true,
       messageInjection: {
         isAvailable: () => true,
-        queueMessage: async (text, options) => {
-          const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, text, options);
-          if (!outcome.queued) {
-            throw new Error(outcome.errorMessage ?? outcome.reason);
-          }
-          return outcome.transcriptCommit === "unconfirmed"
-            ? {
-                transcriptCommit: outcome.transcriptCommit,
-                errorMessage: outcome.errorMessage ?? "transcript commitment unconfirmed",
-              }
-            : undefined;
-        },
+        // The reply backend forwards to the exact native attempt it fronts.
+        queueMessage: (text, options) => queueMessage(text, options),
       },
       cancel: () => {},
     };
@@ -288,10 +278,11 @@ describe("AgentSession handoff adoption integration", () => {
 
       clearActiveEmbeddedRun(sessionId, queueHandle, queueKey);
       await expect(
-        queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, "stale owner probe", {
-          waitForTranscriptCommit: true,
-        }),
-      ).resolves.toMatchObject({ queued: false, reason: "transcript_commit_wait_unsupported" });
+        steerTestSessionTurn(sessionId, "stale owner probe", { waitForTranscriptCommit: true }),
+      ).resolves.toMatchObject({
+        status: "rejected",
+        reason: "injection_unavailable",
+      });
       activeOperation.complete();
       releaseOwner();
       await vi.waitFor(() => expect(finalDelivery).toHaveBeenCalledExactlyOnceWith(finalText));

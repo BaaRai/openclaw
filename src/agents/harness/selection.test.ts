@@ -61,11 +61,11 @@ import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
-import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
+  steerTestSessionTurn,
 } from "../embedded-agent-runner/runs.test-support.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 import { attachToolAllowlistIntersection } from "../tool-policy.js";
@@ -1528,11 +1528,12 @@ describe("runAgentHarnessAttempt", () => {
         runId: prepared.runId,
         toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
         queueMessage: delivered,
+        guarded: true,
       });
       setActiveEmbeddedRun(prepared.sessionId, handle, prepared.sessionKey, prepared.sessionFile);
       try {
         await expect(
-          queueEmbeddedAgentMessageWithOutcomeAsync(prepared.sessionId, "Continue", {
+          steerTestSessionTurn(prepared.sessionId, "Continue", {
             isInboundUserMessage: true,
             toolAuthorityOverlay: {
               senderIsOwner: false,
@@ -1543,7 +1544,7 @@ describe("runAgentHarnessAttempt", () => {
               senderId: "test-denied-sender",
             },
           }),
-        ).resolves.toMatchObject({ queued: true });
+        ).resolves.toMatchObject({ status: "accepted" });
         expect(delivered).toHaveBeenCalledOnce();
       } finally {
         clearActiveEmbeddedRun(prepared.sessionId, handle, prepared.sessionKey);

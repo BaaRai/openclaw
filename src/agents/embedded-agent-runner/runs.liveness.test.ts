@@ -31,14 +31,12 @@ import {
   withGatewayToolCallerIdentity,
 } from "../tools/gateway-caller-context.js";
 import { resolveActiveEmbeddedRunRecoveryBlocker } from "./run-state.js";
-import {
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  type EmbeddedAgentQueueHandle,
-} from "./runs.js";
+import { type EmbeddedAgentQueueHandle } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   testing,
+  steerTestSessionTurn,
 } from "./runs.test-support.js";
 
 const sessionId = "runtime-liveness-session";
@@ -68,6 +66,14 @@ beforeEach(async () => {
     kind: "embedded" as const,
     runId,
     queueMessage,
+    messageInjectionV2: {
+      version: 2 as const,
+      isAvailable: () => true,
+      queueMessage: async (text: string, _options: unknown, assertCurrent: () => void) => {
+        assertCurrent();
+        return queueMessage(text);
+      },
+    },
     isStreaming: () => true,
     isCompacting: () => false,
     ownsLiveness: () => runtimeOwnsLiveness,
@@ -124,11 +130,8 @@ describe("runtime-owned embedded liveness", () => {
     await vi.advanceTimersByTimeAsync(RUN_STALE_TAKEOVER_MS + 1);
 
     expect(isReplyRunEvidenceStale(operation)).toBe(false);
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, "continue"),
-    ).resolves.toMatchObject({
-      queued: true,
-      target: "embedded_run",
+    await expect(steerTestSessionTurn(sessionId, "continue")).resolves.toMatchObject({
+      status: "accepted",
     });
     expect(queueMessage).toHaveBeenCalledOnce();
     await expect(
@@ -256,10 +259,8 @@ describe("runtime-owned embedded liveness", () => {
       return true;
     };
     await vi.advanceTimersByTimeAsync(RUN_STALE_TAKEOVER_MS + 1);
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, "continue"),
-    ).resolves.toMatchObject({
-      queued: false,
+    await expect(steerTestSessionTurn(sessionId, "continue")).resolves.toMatchObject({
+      status: "rejected",
       reason: "no_active_run",
     });
     expect(queueMessage).not.toHaveBeenCalled();

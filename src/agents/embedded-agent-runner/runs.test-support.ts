@@ -1,8 +1,12 @@
-import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
+import type {
+  ReplyMessageInjectionOptions,
+  ReplyOperation,
+} from "../../sessions/session-controller.contracts.js";
 import {
   createReplyOperation,
   resolveActiveReplyOperationForSessionId,
 } from "../../sessions/session-controller.js";
+import { steerSessionControllerOperation } from "../../sessions/session-controller.steer.js";
 import { getActiveNativeAttempt } from "./run-state.js";
 import { setActiveEmbeddedRun, clearActiveEmbeddedRun } from "./runs.js";
 const fixtureOperations = new Set<ReplyOperation>();
@@ -49,6 +53,18 @@ export function registerTestEmbeddedRun(
     }
   }
 }
+/** Steers a session's active turn the way in-process callers do: through its controller. */
+export function steerTestSessionTurn(
+  sessionId: string,
+  text: string,
+  options: ReplyMessageInjectionOptions = {},
+) {
+  return steerSessionControllerOperation({
+    operation: resolveActiveReplyOperationForSessionId(sessionId),
+    text,
+    options,
+  });
+}
 export function clearTestEmbeddedRun(...args: Parameters<typeof clearActiveEmbeddedRun>): void {
   const [sessionId, handle] = args;
   const operation =
@@ -62,12 +78,13 @@ export function clearTestEmbeddedRun(...args: Parameters<typeof clearActiveEmbed
 }
 import type { EmbeddedAgentQueueHandle } from "./run-state.js";
 
-
 type RunHandle = EmbeddedAgentQueueHandle;
 
 export function createEmbeddedRunHandle(
   overrides: {
     abort?: () => void;
+    /** Expose guarded V2 injection over queueMessage, as host-authority runtimes do. */
+    guarded?: boolean;
     isAbortable?: boolean;
     isCompacting?: boolean;
     isStreaming?: boolean;
@@ -83,11 +100,28 @@ export function createEmbeddedRunHandle(
   // Minimal handle fixture with overrideable lifecycle probes for registry
   // behavior; individual tests supply queue/abort behavior when needed.
   const abort = overrides.abort ?? (() => {});
+  const queueMessage = overrides.queueMessage ?? (async () => {});
   return {
     runId: overrides.runId,
     toolAuthorityFingerprint: overrides.toolAuthorityFingerprint,
-    queueMessage: overrides.queueMessage ?? (async () => {}),
+    queueMessage,
     ...(overrides.messageInjection ? { messageInjection: overrides.messageInjection } : {}),
+    ...(overrides.guarded
+      ? {
+          messageInjectionV2: {
+            version: 2 as const,
+            isAvailable: () => true,
+            queueMessage: async (
+              text: string,
+              options: Parameters<RunHandle["queueMessage"]>[1],
+              assertCurrent: () => void,
+            ) => {
+              assertCurrent();
+              return queueMessage(text, options);
+            },
+          },
+        }
+      : {}),
     isStreaming: () => overrides.isStreaming ?? true,
     ...(overrides.isStopped ? { isStopped: overrides.isStopped } : {}),
     ...(overrides.isAbortable !== undefined

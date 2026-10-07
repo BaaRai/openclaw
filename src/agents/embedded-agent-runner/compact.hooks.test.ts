@@ -118,14 +118,11 @@ import {
   mockPendingContextEngineCompaction,
   mockPendingNativeCompaction,
 } from "./compact.hooks.pending.test-support.js";
-import {
-  abortEmbeddedAgentRun,
-  isEmbeddedAgentRunHandleActive,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-} from "./runs.js";
+import { abortEmbeddedAgentRun, isEmbeddedAgentRunHandleActive } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
+  steerTestSessionTurn,
 } from "./runs.test-support.js";
 
 export type CompactionMemorySyncFixture = {
@@ -3325,14 +3322,16 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       expect(isEmbeddedAgentRunHandleActive(TEST_SESSION_ID)).toBe(true);
 
       // An unreadable compaction state fails closed: the caller keeps the same
-      // structured rejection a genuinely compacting run returns, and the probe
+      // structured rejection a run that cannot take steering returns, and the probe
       // exception never reaches the steering caller.
-      await expect(
-        queueEmbeddedAgentMessageWithOutcomeAsync("session-faulty-probe", "steer"),
-      ).resolves.toMatchObject({ queued: false, reason: "compacting" });
-      await expect(
-        queueEmbeddedAgentMessageWithOutcomeAsync(TEST_SESSION_ID, "steer"),
-      ).resolves.toMatchObject({ queued: false, reason: "compacting" });
+      await expect(steerTestSessionTurn("session-faulty-probe", "steer")).resolves.toMatchObject({
+        status: "rejected",
+        reason: "injection_unavailable",
+      });
+      await expect(steerTestSessionTurn(TEST_SESSION_ID, "steer")).resolves.toMatchObject({
+        status: "rejected",
+        reason: "injection_unavailable",
+      });
 
       // A restart sweep walks past the unreadable handle and cancels the
       // compaction that is really running behind it.

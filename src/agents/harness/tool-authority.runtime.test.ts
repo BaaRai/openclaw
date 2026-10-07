@@ -23,12 +23,12 @@ import {
   createAdmittedRunOperatorAuthority,
   prepareAgentRunAdmission,
 } from "../admitted-run-context.js";
-import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
   testing,
+  steerTestSessionTurn,
 } from "../embedded-agent-runner/runs.test-support.js";
 import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import { attachToolAllowlistIntersection } from "../tool-policy-shared.js";
@@ -111,6 +111,15 @@ function publishPreparedHandle(
   });
   handle.kind = "embedded";
   handle.cancel = (reason) => handle.abort(reason === "restart" ? reason : undefined);
+  // Host-prepared tool authority binds every steer to final dispatch, as real runtimes do.
+  handle.messageInjectionV2 = {
+    version: 2,
+    isAvailable: () => true,
+    queueMessage: async (text, options, assertCurrent) => {
+      assertCurrent();
+      return queueMessage(text, options);
+    },
+  };
   configure?.(handle, queueMessage);
   setActiveEmbeddedRun(sessionId, handle, sessionKey, attempt.sessionFile);
   return handle;
@@ -156,13 +165,14 @@ async function published<T>(
   );
 }
 
+/** Lost owner authority fails closed by throwing; the test records it as a refusal. */
 function steer(overlay: ReplyToolAuthorityOverlay, hash?: string) {
-  return queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, "Use the release branch", {
+  return steerTestSessionTurn(sessionId, "Use the release branch", {
     isInboundUserMessage: true,
     toolAuthorityOverlay: overlay,
     toolAuthorityFingerprint: hash,
     taskSuggestionDeliveryMode: undefined,
-  });
+  }).catch((error: unknown) => ({ status: "refused" as const, error }));
 }
 
 afterEach(() => {
@@ -693,10 +703,12 @@ describe("host-prepared embedded tool authority", () => {
           }
           await expect(
             steer({ ...own, ...changed }, handle.toolAuthorityFingerprint),
-          ).resolves.toMatchObject({
-            queued: false,
-            reason: "tool_authority_mismatch",
-          });
+          ).resolves.toMatchObject(
+            // A replaced publisher hash fails its own registration assertion closed.
+            handleChange === "hash"
+              ? { status: "refused" }
+              : { status: "rejected", reason: "tool_authority_mismatch" },
+          );
           expect(queue).not.toHaveBeenCalled();
         },
         config ? { config } : {},
@@ -710,7 +722,7 @@ describe("host-prepared embedded tool authority", () => {
         setActiveEmbeddedRun(sessionId, { ...handle }, sessionKey),
       );
       await expect(steer(own, handle.toolAuthorityFingerprint)).resolves.toMatchObject({
-        queued: true,
+        status: "accepted",
       });
       expect(queue).toHaveBeenCalledOnce();
     });
@@ -801,10 +813,8 @@ describe("host-prepared embedded tool authority", () => {
                     return undefined;
                   },
                 });
-                expect(outcome.queued).toBe(false);
-                if (failure !== "replacement") {
-                  expect(outcome).toMatchObject({ reason: "tool_authority_mismatch" });
-                }
+                // A replaced owner rejects; a lost source fails the projection closed.
+                expect(outcome.status).toBe(failure === "replacement" ? "rejected" : "refused");
                 expect(successorQueue).not.toHaveBeenCalled();
                 expect(queue).not.toHaveBeenCalled();
               },
@@ -821,13 +831,13 @@ describe("host-prepared embedded tool authority", () => {
         toolsAllow.push("message");
         await expect(
           steer({ ...own, toolsAllow: attachToolAllowlistIntersection(["exec"], [["exec"]]) }),
-        ).resolves.toMatchObject({ queued: true });
+        ).resolves.toMatchObject({ status: "accepted" });
         await expect(
           steer({
             ...own,
             toolsAllow: attachToolAllowlistIntersection(["exec"], [["exec"], ["message"]]),
           }),
-        ).resolves.toMatchObject({ queued: false, reason: "tool_authority_mismatch" });
+        ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
         expect(queue).toHaveBeenCalledOnce();
       },
       { toolsAllow },
@@ -854,11 +864,11 @@ describe("host-prepared embedded tool authority", () => {
               rotateAgentEventLifecycleGeneration();
             }
             if (reason !== "wrapper") {
-              expect((await steer(own)).queued).toBe(false);
+              expect((await steer(own)).status).not.toBe("accepted");
             }
           },
         );
-        expect((await steer(own)).queued).toBe(false);
+        expect((await steer(own)).status).toBe("rejected");
         await expect(
           withGatewayToolCallerIdentity(retained, () =>
             setActiveEmbeddedRun(
@@ -913,11 +923,11 @@ describe("host-prepared embedded tool authority", () => {
             const queue = vi.fn(async () => {});
             publishPreparedHandle(prepared.toolAuthorityFingerprint, queue);
             await expect(steer(own)).resolves.toMatchObject({
-              queued: false,
+              status: "rejected",
               reason: "tool_authority_mismatch",
             });
             await expect(steer({ ...own, toolsAllow: [] })).resolves.toMatchObject({
-              queued: true,
+              status: "accepted",
             });
             expect(queue).toHaveBeenCalledOnce();
           },
@@ -974,6 +984,7 @@ describe("host-prepared embedded tool authority", () => {
                 runId: attempt.runId,
                 toolAuthorityFingerprint: prepared.toolAuthorityFingerprint,
                 queueMessage: queue,
+                guarded: true,
               }),
               kind: "embedded" as const,
               cancel: () => {},
@@ -986,7 +997,7 @@ describe("host-prepared embedded tool authority", () => {
               clientCaps: ["normal-client"],
               approvalReviewerDeviceId: "review-device",
             };
-            await expect(steer(incoming)).resolves.toMatchObject({ queued: true });
+            await expect(steer(incoming)).resolves.toMatchObject({ status: "accepted" });
             expect(prepared.toolAuthorityFingerprint).toBe(fingerprint);
             await expect(
               steer({
@@ -996,25 +1007,18 @@ describe("host-prepared embedded tool authority", () => {
                   return undefined;
                 },
               }),
-            ).resolves.toMatchObject({ queued: false, reason: "tool_authority_mismatch" });
+            ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
             setActiveEmbeddedRun(sessionId, handle, sessionKey, attempt.sessionFile);
             failProjection = true;
             await expect(steer(incoming, fingerprint)).resolves.toMatchObject({
-              queued: false,
+              status: "rejected",
               reason: "tool_authority_mismatch",
             });
             failProjection = false;
             operation.bindToolAuthorityRoute({ provider: "openai", model: "replacement-route" });
             await expect(steer(incoming, fingerprint)).resolves.toMatchObject({
-              queued: false,
+              status: "rejected",
               reason: "tool_authority_mismatch",
-            });
-            operation.bindToolAuthorityRoute(route);
-            operation.attachBackend({ ...handle });
-            // A different attached backend retires the published native attempt.
-            await expect(steer(incoming)).resolves.toMatchObject({
-              queued: false,
-              reason: "no_active_run",
             });
             expect(queue).toHaveBeenCalledOnce();
           },

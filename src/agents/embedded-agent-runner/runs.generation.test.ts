@@ -32,7 +32,6 @@ import { getEmbeddedRunAttachment, type EmbeddedAgentQueueHandle } from "./run-s
 import {
   clearActiveEmbeddedRun as retireActiveEmbeddedRun,
   prepareEmbeddedAgentRunCompletionClaim,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunHandleSessionId,
   resolveActiveEmbeddedRunSessionIdBySessionFile as resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
   resolveActiveEmbeddedRunOwnerByRunId,
@@ -42,6 +41,7 @@ import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   testing,
+  steerTestSessionTurn,
 } from "./runs.test-support.js";
 
 const sessionId = "session";
@@ -363,9 +363,9 @@ describe("embedded run registry lifecycle generations", () => {
       priorLifecycleGeneration,
     );
 
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, "still live"),
-    ).resolves.toMatchObject({ queued: true, target: "embedded_run" });
+    await expect(steerTestSessionTurn(sessionId, "still live")).resolves.toMatchObject({
+      status: "accepted",
+    });
     expect(currentQueueMessage).toHaveBeenCalledOnce();
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledWith("restart");
@@ -398,9 +398,9 @@ describe("embedded run registry lifecycle generations", () => {
       priorLifecycleGeneration,
     );
 
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync("stale-session", "should not arrive"),
-    ).resolves.toMatchObject({ queued: false, reason: "no_active_run" });
+    await expect(steerTestSessionTurn("stale-session", "should not arrive")).resolves.toMatchObject(
+      { status: "rejected", reason: "no_active_run" },
+    );
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(listActiveSessionRunIds()).not.toContain("stale-session");
@@ -509,9 +509,9 @@ describe("embedded run registry lifecycle generations", () => {
     );
     clearActiveEmbeddedRun("shared-session", staleHandle, "agent:main:stale");
 
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync("shared-session", "now current"),
-    ).resolves.toMatchObject({ queued: true, target: "embedded_run" });
+    await expect(steerTestSessionTurn("shared-session", "now current")).resolves.toMatchObject({
+      status: "accepted",
+    });
     expect(currentQueueMessage).toHaveBeenCalledOnce();
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledOnce();
@@ -558,9 +558,9 @@ describe("embedded run registry lifecycle generations", () => {
 
     rotateAgentEventLifecycleGeneration();
 
-    await expect(
-      queueEmbeddedAgentMessageWithOutcomeAsync("shared-session", "current survives"),
-    ).resolves.toMatchObject({ queued: true, target: "embedded_run" });
+    await expect(steerTestSessionTurn("shared-session", "current survives")).resolves.toMatchObject(
+      { status: "accepted" },
+    );
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(currentAbort).not.toHaveBeenCalled();
     expect(currentQueueMessage).toHaveBeenCalledOnce();

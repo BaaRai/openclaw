@@ -463,7 +463,12 @@ describe("prepareEmbeddedAttemptStream", () => {
     );
     mocks.subscribe.mockImplementation(actual.subscribeEmbeddedAgentSession);
     const toolAuthorityFingerprint = "test-steering";
-    const steeringOptions = { isInboundUserMessage: true, toolAuthorityFingerprint };
+    const steeringOptions = {
+      isInboundUserMessage: true,
+      toolAuthorityFingerprint,
+      // Source-bound steering requires the guarded runtime to recheck final dispatch.
+      assertCurrent: () => {},
+    };
     const prepared = prepareCatalogExecutor({
       activeSession: session,
       hookRunner: { hasHooks: (name: string) => name === "before_agent_finalize" } as never,
@@ -479,20 +484,17 @@ describe("prepareEmbeddedAttemptStream", () => {
     try {
       await settled.promise;
       expect(getActiveNativeAttempt(sessionId)).toBe(prepared.queueHandle);
-      const { queueGuardedEmbeddedAgentMessageWithOutcomeAsync: queueMessage } =
-        await vi.importActual<typeof import("../runs.js")>("../runs.js");
-      const expected = { queued: false, reason: "not_streaming", gatewayHealth: "live" };
+      const { steerTestSessionTurn: queueMessage } = await import("../runs.test-support.js");
+      const expected = { status: "rejected", reason: "injection_unavailable" };
       // The nonwaiting call makes the old late-admission bug fail without a delivery timeout.
       await expect(
-        queueMessage(sessionId, "Start the next turn.", steeringOptions, () => true),
+        queueMessage(sessionId, "Start the next turn.", steeringOptions),
       ).resolves.toMatchObject(expected);
       await expect(
-        queueMessage(
-          sessionId,
-          "Wait for the next turn.",
-          { ...steeringOptions, waitForTranscriptCommit: true },
-          () => true,
-        ),
+        queueMessage(sessionId, "Wait for the next turn.", {
+          ...steeringOptions,
+          waitForTranscriptCommit: true,
+        }),
       ).resolves.toMatchObject(expected);
       const nestedEnd = createDeferredCore<Awaited<ReturnType<typeof queueMessage>>>();
       unsubscribeNested = session.subscribe((event) => {
@@ -500,7 +502,7 @@ describe("prepareEmbeddedAttemptStream", () => {
           return undefined;
         }
         unsubscribeNested?.();
-        return queueMessage(sessionId, "Stale owner.", steeringOptions, () => true).then(
+        return queueMessage(sessionId, "Stale owner.", steeringOptions).then(
           nestedEnd.resolve,
           nestedEnd.reject,
         );
@@ -531,7 +533,12 @@ describe("prepareEmbeddedAttemptStream", () => {
       return createAssistantResultStream(createAssistant(model, [{ type: "text", text: "Done." }]));
     });
     const toolAuthorityFingerprint = "test-steering";
-    const steeringOptions = { isInboundUserMessage: true, toolAuthorityFingerprint };
+    const steeringOptions = {
+      isInboundUserMessage: true,
+      toolAuthorityFingerprint,
+      // Source-bound steering requires the guarded runtime to recheck final dispatch.
+      assertCurrent: () => {},
+    };
     const prepared = prepareCatalogExecutor({
       activeSession: session,
       attempt: {
@@ -540,8 +547,7 @@ describe("prepareEmbeddedAttemptStream", () => {
         toolAuthorityFingerprint,
       },
     });
-    const { queueGuardedEmbeddedAgentMessageWithOutcomeAsync: queueMessage } =
-      await vi.importActual<typeof import("../runs.js")>("../runs.js");
+    const { steerTestSessionTurn: queueMessage } = await import("../runs.test-support.js");
     const events: string[] = [];
     let queued: Awaited<ReturnType<typeof queueMessage>> | undefined;
     // Register after preparation so an accidental raw agent_end closure is observable.
@@ -558,13 +564,12 @@ describe("prepareEmbeddedAttemptStream", () => {
           "session-output-schema",
           "Continue this turn.",
           steeringOptions,
-          () => true,
         );
       }
     });
     try {
       await session.prompt("Begin this turn.");
-      expect(queued).toMatchObject({ queued: true });
+      expect(queued).toMatchObject({ status: "accepted" });
       expect(requests).toHaveLength(2);
       expect(JSON.stringify(requests[1]?.messages)).toContain("Continue this turn.");
       expect(events).toEqual(["agent_end", "agent_end", "agent_settled"]);
@@ -579,7 +584,12 @@ describe("prepareEmbeddedAttemptStream", () => {
   it("rejects registered steering after a real turn handoff", async () => {
     const session = await createTurnHandoffSession();
     const toolAuthorityFingerprint = "test-steering";
-    const steeringOptions = { isInboundUserMessage: true, toolAuthorityFingerprint };
+    const steeringOptions = {
+      isInboundUserMessage: true,
+      toolAuthorityFingerprint,
+      // Source-bound steering requires the guarded runtime to recheck final dispatch.
+      assertCurrent: () => {},
+    };
     const prepared = prepareCatalogExecutor({
       activeSession: session,
       attempt: {
@@ -592,16 +602,15 @@ describe("prepareEmbeddedAttemptStream", () => {
     const unsubscribe = session.subscribe((event) => {
       events.push(event.type);
     });
-    const { queueGuardedEmbeddedAgentMessageWithOutcomeAsync: queueMessage } =
-      await vi.importActual<typeof import("../runs.js")>("../runs.js");
+    const { steerTestSessionTurn: queueMessage } = await import("../runs.test-support.js");
     try {
       await session.prompt("Hand off this turn.");
       expect(events).toContain("agent_handoff");
       expect(events).not.toContain("agent_settled");
       expect(getActiveNativeAttempt("session-output-schema")).toBe(prepared.queueHandle);
       await expect(
-        queueMessage("session-output-schema", "Too late.", steeringOptions, () => true),
-      ).resolves.toMatchObject({ queued: false, reason: "not_streaming", gatewayHealth: "live" });
+        queueMessage("session-output-schema", "Too late.", steeringOptions),
+      ).resolves.toMatchObject({ status: "rejected", reason: "injection_unavailable" });
       expect(session.getSteeringMessages()).toEqual([]);
     } finally {
       unsubscribe();
