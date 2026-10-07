@@ -1,9 +1,18 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import * as sessionEvents from "../config/sessions/session-accessor.sqlite-events.js";
+import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
+import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
 import { resetClientVoiceConfirmationStateForTest } from "./client-voice-confirmation.test-support.js";
 import * as voiceSessionReads from "./client-voice-session-read.js";
+import { seedSession } from "./client-voice-session.fixture.test-support.js";
 import {
+  appendClientVoiceTranscript,
   closeClientVoiceSession,
   closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
@@ -21,6 +30,83 @@ describe("client voice session recovery", () => {
     resetClientVoiceConfirmationStateForTest();
     await home.restore();
   });
+
+  it.each([
+    { phase: "recovery", replacement: false },
+    { phase: "recovery", replacement: true },
+    { phase: "publication", replacement: false },
+    { phase: "publication", replacement: true },
+  ])(
+    "does not open a displaced metadata file after $phase (replacement=$replacement)",
+    async ({ phase, replacement }) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      await seedSession(target.sessionKey);
+      const voiceSessionId = createOrResumeClientVoiceSession({
+        ...target,
+        origin: "client",
+        now: 1,
+      });
+      const metadataPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      const displace = async () => {
+        await closeOpenClawAgentDatabasesAsync(home.home);
+        await fs.rename(metadataPath, `${metadataPath}.displaced`);
+        if (replacement) {
+          await fs.writeFile(metadataPath, new Uint8Array());
+        }
+      };
+      const lookup = voiceSessionReads.lookupClientVoiceSessions;
+      const publish = sessionEvents.publishTranscriptUpdate;
+      const boundary =
+        phase === "recovery"
+          ? vi
+              .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
+              .mockImplementationOnce(async (...args) => {
+                const candidates = await lookup(...args);
+                await displace();
+                return candidates;
+              })
+          : vi
+              .spyOn(sessionEvents, "publishTranscriptUpdate")
+              .mockImplementationOnce(async (...args) => {
+                const result = await publish(...args);
+                await displace();
+                return result;
+              });
+      try {
+        if (phase === "recovery") {
+          const warn = vi.fn();
+          expect(
+            await closeStaleClientVoiceSessions({
+              agentId: "main",
+              config: {},
+              now: 6 * 60 * 60_000 + 2,
+              warn,
+            }),
+          ).toBe(0);
+          expect(warn).toHaveBeenCalledOnce();
+        } else {
+          await expect(
+            appendClientVoiceTranscript({
+              ...target,
+              sessionTarget: { sessionKey: target.sessionKey },
+              voiceSessionId,
+              entryId: "before-replacement",
+              role: "user",
+              text: "persisted before replacement",
+            }),
+          ).rejects.toThrow(/identity|ENOENT/);
+        }
+        expect(boundary).toHaveBeenCalledOnce();
+        if (replacement) {
+          expect(await fs.readFile(metadataPath)).toHaveLength(0);
+        } else {
+          await expect(fs.stat(metadataPath)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      } finally {
+        boundary.mockRestore();
+      }
+    },
+  );
 
   it("closes stale records and leaves recent records open", async () => {
     const stale = createOrResumeClientVoiceSession({
@@ -96,6 +182,33 @@ describe("client voice session recovery", () => {
       release.resolve();
       await stale;
       barrier.mockRestore();
+    }
+  });
+
+  it("keeps stale recovery bound to its source after the lookup yields", async () => {
+    const now = 6 * 60 * 60_000 + 2;
+    const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
+    const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
+    const successor = path.join(home.home, "successor");
+    const env = captureEnv(["OPENCLAW_STATE_DIR"]);
+    const lookup = voiceSessionReads.lookupClientVoiceSessions;
+    const read = vi
+      .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
+      .mockImplementationOnce(async (...args) => {
+        const candidates = await lookup(...args);
+        setTestEnvValue("OPENCLAW_STATE_DIR", successor);
+        createOrResumeClientVoiceSession({ ...target, voiceSessionId, now: 1 });
+        return candidates;
+      });
+    try {
+      expect(await closeStaleClientVoiceSessions({ agentId: "main", config: {}, now })).toBe(1);
+      expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("open");
+      env.restore();
+      expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("closed");
+    } finally {
+      read.mockRestore();
+      env.restore();
+      await cleanupSessionStateForTest({ stateDir: successor, rootPath: successor });
     }
   });
 });

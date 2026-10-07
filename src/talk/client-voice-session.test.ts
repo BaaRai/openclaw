@@ -51,9 +51,14 @@ vi.mock("../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/sessions/session-accessor.js")>();
   return { ...actual, appendTranscriptMessage: sessionAccessorMocks.appendTranscriptMessage };
 });
-vi.mock("../channels/message/runtime.js", () => ({
-  sendDurableMessageBatchCore: sendDurableMessageBatch,
-}));
+vi.mock("../channels/message/runtime.js", async (importOriginal) => {
+  const { durableMessageBatchMayHaveReachedRecipient } =
+    await importOriginal<typeof import("../channels/message/runtime.js")>();
+  return {
+    sendDurableMessageBatchCore: sendDurableMessageBatch,
+    durableMessageBatchMayHaveReachedRecipient,
+  };
+});
 
 const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
 let tempDir: string;
