@@ -6,14 +6,12 @@ import "./subagent-registry.persistence.mocks.test-support.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { announceSpy, createSubagentPersistenceRuntime, useSubagentPersistenceFixture } from "./subagent-registry.persistence-fixture.test-support.js";
-import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   patchSessionEntryCore,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import { callGateway } from "../../../gateway/call.js";
-import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseAsync } from "../../../state/openclaw-state-db.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { persistSubagentSessionTiming } from "./subagent-registry-helpers.js";
@@ -24,8 +22,6 @@ import type { SubagentRunFixture } from "./subagent-registry.persistence.test-su
 import {
   canonicalSubagentRunFixtures,
   createCanonicalSubagentRunFixture,
-  expectDeferredSubagentAnnouncement,
-  gateSubagentRequesterSettlement,
   readSubagentSessionStore,
   removeSubagentSessionEntry,
   writeSubagentSessionEntry,
@@ -387,115 +383,6 @@ describe("subagent registry persistence", () => {
       ],
       pending: [],
     });
-  });
-
-  it.each([
-    {
-      name: "retries cleanup announce after announce flow rejects",
-      runId: "run-reject",
-      cleanup: "keep",
-      reject: true,
-    },
-    {
-      name: "keeps delete-mode runs retryable when announce is deferred",
-      runId: "run-4",
-      cleanup: "delete",
-      reject: false,
-    },
-  ] as const)("$name", async ({ runId, cleanup, reject }) => {
-    const childSessionKey = `agent:main:subagent:${runId}`;
-    await persistRuns([endedRun(runId, { childSessionKey, cleanup })]);
-    const announcement = createDeferred<"retryable">();
-    const releaseAnnouncement = () =>
-      reject ? announcement.reject(new Error("announce boom")) : announcement.resolve("retryable");
-    const requesterSettle = await import("../announce/subagent-announce.requester-settle-wake.js");
-    const settlement = gateSubagentRequesterSettlement(
-      requesterSettle.maybeWakeRequesterAfterAllChildrenSettled,
-    );
-    vi.spyOn(requesterSettle, "maybeWakeRequesterAfterAllChildrenSettled").mockImplementation(
-      settlement.run,
-    );
-    announceSpy.mockImplementationOnce(() => announcement.promise);
-    let retryReady = false;
-    let readiness: Promise<void> | undefined;
-    try {
-      await restartRegistry();
-      await vi.waitFor(
-        () => expect(announceSpy, "first announcement admitted").toHaveBeenCalledOnce(),
-        {
-          timeout: 5_000,
-          interval: 1,
-        },
-      );
-      readiness = vi
-        .waitFor(
-          () => {
-            expectDeferredSubagentAnnouncement(loadSubagentRegistryFromSqlite().get(runId), runId);
-          },
-          { timeout: 5_000, interval: 1 },
-        )
-        .then(() => {
-          retryReady = true;
-        });
-      await vi.dynamicImportSettled();
-      const held = loadSubagentRegistryFromSqlite().get(runId);
-      expect(held?.cleanupHandled, "serialized lock is not retry readiness").toBe(false);
-      expect(
-        getSubagentRunByChildSessionKey(childSessionKey)?.cleanupHandled,
-        "acknowledged runtime lock remains held; decoded durable row is restart-ready",
-      ).toBe(true);
-      expect(
-        held?.delivery?.attemptCount,
-        "no deferral before announcement settles",
-      ).toBeUndefined();
-      expect(held?.delivery?.payload).toBeUndefined();
-      expect(held?.delivery?.nextAttemptAt).toBeUndefined();
-      expect(retryReady, "retry readiness must remain pending while announcement is held").toBe(
-        false,
-      );
-      releaseAnnouncement();
-      await readiness;
-      expect(announceSpy, "first attempt deferred").toHaveBeenCalledOnce();
-      await fixture.settle();
-
-      announceSpy.mockResolvedValueOnce("delivered");
-      const beforeRetry = Date.now();
-      await restartRegistry();
-      await vi.waitFor(
-        () => expect(settlement.run, "retry reached requester settlement").toHaveBeenCalledOnce(),
-        {
-          timeout: 5_000,
-          interval: 1,
-        },
-      );
-      expect(announceSpy, "explicit retry delivered").toHaveBeenCalledTimes(2);
-      const delivered = loadSubagentRegistryFromSqlite().get(runId);
-      expect(delivered, "delivery precedes requester settlement").toMatchObject({
-        delivery: { status: "delivered" },
-      });
-      expect(delivered?.cleanupCompletedAt).toBeGreaterThanOrEqual(beforeRetry);
-      expect(
-        getActiveGatewayRootWorkCount(),
-        "held settlement still owns root work",
-      ).toBeGreaterThan(0);
-      if (cleanup === "delete") {
-        expect(
-          delivered?.requesterSettleWake?.retireAfterSettle,
-          "delete waits for real settlement",
-        ).toBe(true);
-      }
-      await settlement.release();
-      expect(settlement.run).toHaveBeenCalledOnce();
-      const afterSecond = readPersistedRun(runId);
-      if (cleanup === "delete") {
-        expect(afterSecond, "settled delete retires its durable row").toBeUndefined();
-      } else {
-        expect(afterSecond?.cleanupCompletedAt).toBeGreaterThanOrEqual(beforeRetry);
-      }
-    } finally {
-      releaseAnnouncement();
-      await Promise.all([announcement.promise.catch(() => {}), readiness, settlement.release()]);
-    }
   });
 
   it("settles orphaned restored runs through canonical completion", async () => {

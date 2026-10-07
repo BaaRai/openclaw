@@ -3516,8 +3516,6 @@ describe("subagent registry seam flow", () => {
           : {}),
         delivery: {
           status: "pending",
-          attemptCount: 3,
-          lastAttemptAt: Date.parse("2026-03-24T11:59:40Z"),
           ...(cleanup === "keep"
             ? {
                 lastError: "gateway request timeout for agent",
@@ -3970,7 +3968,6 @@ describe("subagent registry seam flow", () => {
         endedAt: now - 8 * 24 * 60 * 60_000,
         completion: { required: true, resultText: "large final payload" },
         delivery: {
-          lastAttemptAt: now - 7 * 24 * 60 * 60_000 - 1,
           suspendedAt: now - 7 * 24 * 60 * 60_000 - 1,
         },
       }),
@@ -4040,7 +4037,6 @@ describe("subagent registry seam flow", () => {
         createdAt: now - 8 * 24 * 60 * 60_000,
         endedAt: now - 8 * 24 * 60 * 60_000,
         delivery: {
-          lastAttemptAt: now - 7 * 24 * 60 * 60_000 - 1,
           suspendedAt: now - 7 * 24 * 60 * 60_000 - 1,
         },
       }),

@@ -206,45 +206,4 @@ describe("announce loop guard (#18264)", () => {
     expect(completed.cleanupCompletedAt).toBeGreaterThanOrEqual(beforeInit);
     expect(mocks.persistRegistryRows).toHaveBeenCalledWith(expect.any(Map), [entry.runId]);
   });
-
-  test("announce rejection resets cleanupHandled so retries can resume", async () => {
-    mocks.runSubagentAnnounceFlow.mockRejectedValueOnce(new Error("announce failed"));
-
-    const now = Date.now();
-    const runId = "test-announce-rejection";
-    mocks.loadSubagentRegistryFromSqlite.mockReturnValue(
-      new Map([
-        [
-          runId,
-          {
-            runId,
-            childSessionKey: "agent:main:subagent:child-1",
-            requesterSessionKey: "agent:main:main",
-            requesterDisplayKey: "agent:main:main",
-            task: "rejection test",
-            cleanup: "keep" as const,
-            createdAt: now - 30_000,
-            execution: {
-              status: "terminal" as const,
-              startedAt: now - 20_000,
-              endedAt: now - 10_000,
-            },
-            cleanupHandled: false,
-            completion: { required: false },
-            delivery: { status: "pending" as const },
-          },
-        ],
-      ]),
-    );
-
-    await hydrateAndActivateRegistry();
-    await flushAsync();
-
-    const stored = await waitForRun(
-      runId,
-      (run) => run.cleanupHandled === false && run.delivery?.attemptCount === 1,
-    );
-    expect(stored.cleanupCompletedAt).toBeUndefined();
-    expect(stored.delivery?.lastAttemptAt).toBeTypeOf("number");
-  });
 });

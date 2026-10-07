@@ -80,7 +80,6 @@ it.each([
   "pending",
   "exact private retry",
   "pending RPC",
-  "retry backoff",
   "declined",
   "failed persistence",
   "admitted",
@@ -128,7 +127,7 @@ it.each([
     entry.delivery = { status: "pending" };
     entry.cleanupHandled = true;
     entry.cleanupCompletedAt = endedAt;
-    entry.requesterSettleWake = { attemptCount: 0 };
+    entry.requesterSettleWake = {};
     entries.push(entry);
   }
   const entry = entries[0]!;
@@ -224,9 +223,6 @@ it.each([
       admitted.resolve();
       if (attempts.length === 1) {
         await execute.promise;
-        if (phase === "retry backoff") {
-          throw new Error("temporary requester delivery failure");
-        }
       }
       assertCurrent();
       options?.onExecutionStarted?.();
@@ -242,11 +238,6 @@ it.each([
     if (phase !== "pending") {
       await registryTesting.sweepOnceForTests();
       await admitted.promise;
-    }
-    if (phase === "retry backoff") {
-      execute.resolve();
-      await fixture.settle();
-      expect(subagentRuns.get(entry.runId)?.requesterSettleWake?.status).toBe("pending");
     }
     if (phase === "failed persistence") {
       rejectRegistryWrites(
@@ -284,7 +275,7 @@ it.each([
         cfg: getRuntimeConfig(),
         sessionKey: requesterKey,
         agentId: "main",
-        ...(phase === "exact private retry" || phase === "retry backoff"
+        ...(phase === "exact private retry"
           ? { requesterTurnRunId: attempts[0] }
           : phase === "unrelated turn"
             ? { requesterTurnRunId: "later-human-turn" }

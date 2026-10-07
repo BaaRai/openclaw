@@ -17,11 +17,11 @@ import {
 } from "../../../sessions/session-controller.lifecycle.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import * as killScope from "./subagent-control-kill-scope.js";
 import {
   setActiveEmbeddedRun,
   clearActiveEmbeddedRun,
 } from "./subagent-control-native.test-support.js";
-import * as killScope from "./subagent-control-kill-scope.js";
 import * as killSession from "./subagent-control-session.js";
 import { killAllControlledSubagentRuns } from "./subagent-control.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";

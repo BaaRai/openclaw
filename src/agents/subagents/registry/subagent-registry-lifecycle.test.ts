@@ -2358,8 +2358,6 @@ describe("subagent registry lifecycle hardening", () => {
             },
           },
         });
-        expect(deleteSnapshot?.delivery?.attemptCount).toBeUndefined();
-        expect(deleteSnapshot?.delivery?.lastAttemptAt).toBeUndefined();
       } finally {
         announceRelease.resolve("delivered");
         await join();
@@ -3803,7 +3801,6 @@ describe("subagent registry lifecycle hardening", () => {
       requesterFinished.resolve("delivered");
       await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       expect(readLifecycleRun(entry).delivery?.status).toBe("delivered");
-      expect(readLifecycleRun(entry).delivery?.nextAttemptAt).toBeUndefined();
       expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
       expect(completionDeliveryMocks.blockSubagentCompletionDelivery).not.toHaveBeenCalled();
     } finally {
@@ -4031,7 +4028,6 @@ describe("subagent registry lifecycle hardening", () => {
         disposition: "intentional_non_delivery",
       });
       expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
-      expect(readLifecycleRun(entry).delivery?.nextAttemptAt).toBeUndefined();
     } finally {
       announce.resolve();
       controller.clearScheduledResumeTimers();
@@ -4055,7 +4051,7 @@ describe("subagent registry lifecycle hardening", () => {
         expectsCompletionMessage: true,
         retainAttachmentsOnKeep: true,
         completion: { required: true, resultText: "child timed out" },
-        delivery: { status: "pending", attemptCount: 1 },
+        delivery: { status: "pending" },
       });
       entry.delivery!.payload = loadPendingFinalDeliveryPayload(entry);
       const announce = createDeferredCore();
@@ -4128,9 +4124,7 @@ describe("subagent registry lifecycle hardening", () => {
         await waitForLifecycleState(() =>
           expect(readLifecycleRun(entry).delivery?.status).toBe("delivered"),
         );
-        expect
-          .soft(readLifecycleRun(entry).delivery)
-          .toMatchObject({ payload: undefined, attemptCount: undefined });
+        expect.soft(readLifecycleRun(entry).delivery).toMatchObject({ payload: undefined });
         await waitForLifecycleState(() =>
           expect(readLifecycleRun(entry).requesterSettleWake).toBeUndefined(),
         );
@@ -4163,7 +4157,6 @@ describe("subagent registry lifecycle hardening", () => {
           announcedAt: 12_345,
           payload: undefined,
           lastError: undefined,
-          attemptCount: undefined,
         });
       } finally {
         announce.resolve();
@@ -4189,7 +4182,6 @@ describe("subagent registry lifecycle hardening", () => {
     expect(readLifecycleRun(entry).delivery?.announcedAt).toBe(12_345);
     expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
     expect(readLifecycleRun(entry).delivery?.payload).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.attemptCount).toBeUndefined();
     expect(readLifecycleRun(entry).delivery?.status === "delivered").toBe(true);
     expect(helperMocks.logAnnounceGiveUp).not.toHaveBeenCalled();
 
@@ -4794,7 +4786,6 @@ describe("requester settle wake trigger", () => {
     });
     expect(readLifecycleRun(entry).requesterSettleWake).toEqual({
       status: "pending",
-      attemptCount: 0,
     });
   });
 
@@ -4820,7 +4811,6 @@ describe("requester settle wake trigger", () => {
     expect(runs.has(entry.runId)).toBe(true);
     expect(readLifecycleRun(entry).requesterSettleWake).toEqual({
       status: "pending",
-      attemptCount: 0,
       retireAfterSettle: true,
     });
     expect(settleWake).toHaveBeenCalledTimes(1);
@@ -4929,7 +4919,7 @@ describe("requester settle wake trigger", () => {
       childSessionKey: "agent:main:subagent:later-wave",
       endedAt: 8_000,
     });
-    later.requesterSettleWake = { attemptCount: 0 };
+    later.requesterSettleWake = {};
     const runs = new Map([
       [first.runId, first],
       [later.runId, later],
@@ -4969,13 +4959,12 @@ describe("requester settle wake trigger", () => {
     ]);
     expect(readLifecycleRun(later).requesterSettleWake).toEqual({
       status: "pending",
-      attemptCount: 0,
     });
   });
 
   it("does not resume a persisted settle wake until its registry row is terminal", async () => {
     const entry = createRunEntry({
-      requesterSettleWake: { attemptCount: 0 },
+      requesterSettleWake: {},
     });
     const settleWake = vi.fn(async () => false);
     const controller = createLifecycleController({
@@ -5189,7 +5178,6 @@ describe("requester settle wake trigger", () => {
       lastError: "cancelled_by_message_sending_hook; delivery_suppressed",
     });
     expect(readLifecycleRun(entry).delivery?.deliveredAt).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.nextAttemptAt).toBeUndefined();
     expect(maybeWakeRequesterAfterAllChildrenSettled).not.toHaveBeenCalled();
   });
 
@@ -5764,7 +5752,6 @@ describe("requester settle wake trigger", () => {
     expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
     expect(readLifecycleRun(entry).requesterSettleWake).toEqual({
       status: "pending",
-      attemptCount: 0,
     });
     expect(settleWake).toHaveBeenCalledTimes(1);
     expect(settleWake).toHaveBeenCalledWith(
@@ -5966,128 +5953,5 @@ describe("requester settle wake trigger", () => {
       resetGatewayWorkAdmission();
     }
   });
-
-  it.each([
-    { replaceQueued: false, canonicalBindings: false },
-    { replaceQueued: true, canonicalBindings: false },
-    { replaceQueued: true, canonicalBindings: true },
-  ])(
-    "reserves Gateway roots before the limiter (queued row replaced: $replaceQueued, canonical bindings: $canonicalBindings)",
-    async ({ replaceQueued, canonicalBindings }) => {
-      resetGatewayWorkAdmission();
-      const entries = [0, 1, 2].map((index) =>
-        createRunEntry({
-          runId: `run-restored-admission-${index}`,
-          requesterSessionKey: `agent:main:requester-${index}`,
-          endedAt: 4_000,
-          requesterSettleWake: { attemptCount: 2 },
-        }),
-      );
-      const bindExecutionResolver = (entry: SubagentRunRecord, owner: () => undefined) => {
-        const resolve = vi.fn(() => {
-          throw new Error("execution resolver is retired");
-        });
-        bindGatewayContextResolver(resolve, owner);
-        bindGatewayContextResolver(entry, resolve);
-        return resolve;
-      };
-      const originalOwner = () => undefined;
-      const executionResolvers = canonicalBindings
-        ? entries.map((entry) => bindExecutionResolver(entry, originalOwner))
-        : [];
-      const runs = new Map(entries.map((entry) => [entry.runId, entry] as const));
-      const releases = new Map<string, () => void>();
-      const settleWake = vi.fn(async (params: RequesterSettleWakeParams) => {
-        await new Promise<void>((resolve) => {
-          releases.set(params.settledEntry.runId, resolve);
-        });
-        // Retired bindings leave delivery pending; limiter admission needs only their owner identity.
-        if (!canonicalBindings) {
-          await params.completeBatch(
-            [params.settledEntry],
-            params.settledEntry.requesterSettleWake?.rearmGeneration,
-          );
-        }
-        return false;
-      });
-      const controller = createLifecycleController({
-        entry: entries[0]!,
-        runs,
-        maybeWakeRequesterAfterAllChildrenSettled: settleWake,
-      });
-
-      try {
-        await runWithGatewayIndependentRootWorkAdmission(async () => {
-          for (const entry of entries) {
-            controller.resumeRequesterSettleWake(entry.runId, entry, "restore");
-          }
-        });
-        await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(2));
-        // The third callback is queued behind the two wake executions, but its
-        // Gateway root is already reserved and therefore visible to drain.
-        expect(getActiveGatewayRootWorkCount()).toBe(3);
-        expect(getActiveGatewayRootWorkHolders()).toEqual(["subagents:lifecycle-wake (3)"]);
-        const queued = entries[2]!;
-        const current = replaceQueued
-          ? { ...structuredClone(queued), generation: (queued.generation ?? 0) + 1 }
-          : queued;
-        if (replaceQueued) {
-          runs.set(current.runId, current);
-          if (canonicalBindings) {
-            executionResolvers.push(bindExecutionResolver(current, () => undefined));
-          }
-          controller.resumeRequesterSettleWake(current.runId, current, "restore");
-          if (canonicalBindings) {
-            // The replacement Gateway owns a fresh lane while both original slots remain occupied.
-            await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(3));
-            expect(settleWake.mock.calls[2]![0].settledEntry).toBe(current);
-          }
-        }
-        markGatewayRestartDraining();
-        expect(getActiveGatewayRootWorkCount()).toBe(replaceQueued ? 4 : 3);
-        releases.get(entries[0]!.runId)?.();
-        await waitForLifecycleState(() => expect(settleWake).toHaveBeenCalledTimes(3));
-        expect(settleWake.mock.calls[2]![0].settledEntry).toBe(current);
-        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(2));
-        expect(runs.get(current.runId)?.requesterSettleWake).toEqual({
-          status: "pending",
-          attemptCount: 2,
-        });
-        controller.resumeRequesterSettleWake(current.runId, current, "restore");
-        expect(settleWake).toHaveBeenCalledTimes(3);
-
-        releases.get(current.runId)?.();
-        if (canonicalBindings) {
-          await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(1));
-          expect(runs.get(current.runId)?.requesterSettleWake).toEqual({
-            status: "pending",
-            attemptCount: 2,
-          });
-        } else {
-          await waitForLifecycleState(() =>
-            expect(runs.get(current.runId)?.requesterSettleWake).toBeUndefined(),
-          );
-        }
-        expect(runs.get(entries[1]!.runId)?.requesterSettleWake).toBeDefined();
-        releases.get(entries[1]!.runId)?.();
-        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-        if (replaceQueued) {
-          expect(queued.requesterSettleWake).toEqual({ status: "pending", attemptCount: 2 });
-        }
-        executionResolvers.forEach((resolve) => expect(resolve).not.toHaveBeenCalled());
-      } finally {
-        while (releases.size > 0) {
-          const pending = Array.from(releases.values());
-          releases.clear();
-          pending.forEach((release) => release());
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
-        }
-        controller.clearScheduledResumeTimers();
-        resetGatewayWorkAdmission();
-      }
-    },
-  );
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

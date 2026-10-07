@@ -553,7 +553,6 @@ describe("subagent registry lifecycle error grace", () => {
         runId: run.runId,
         delivery: run.delivery?.status,
         disposition: run.delivery?.disposition,
-        nextAttemptAt: run.requesterSettleWake?.nextAttemptAt,
         rearmGeneration: run.requesterSettleWake?.rearmGeneration,
       })),
     ).toEqual([
@@ -561,14 +560,12 @@ describe("subagent registry lifecycle error grace", () => {
         runId: "run-yield-alpha",
         delivery: "delivered",
         disposition: "delivered",
-        nextAttemptAt: undefined,
         rearmGeneration: undefined,
       },
       {
         runId: "run-yield-beta",
         delivery: "delivered",
         disposition: "delivered",
-        nextAttemptAt: undefined,
         rearmGeneration: undefined,
       },
     ]);

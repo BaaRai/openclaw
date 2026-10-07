@@ -87,10 +87,8 @@ it.each([false, true])(
       payload: loadPendingFinalDeliveryPayload(input.subagent),
     };
     input.subagent.requesterSettleWake = overlappingWake
-      ? { status: "pending", attemptCount: 0 }
+      ? {}
       : {
-          status: "pending",
-          attemptCount: 0,
           requesterYieldBatch: true,
           rearmGeneration: 1,
           batchRunIds: [input.subagent.runId],
@@ -117,7 +115,7 @@ it.each([false, true])(
 
       replacement.subagent.requesterStorePath = "replacement-store";
       replacement.subagent.delivery = { status: "pending" };
-      replacement.subagent.requesterSettleWake = { attemptCount: 0 };
+      replacement.subagent.requesterSettleWake = {};
       seedSubagentCompletionDelivery({ subagent: replacement.subagent });
       publishCommittedRecords(replacement.subagent);
       expect(

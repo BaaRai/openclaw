@@ -68,8 +68,6 @@ function createRun(overrides: Partial<SubagentRunRecord> = {}): SubagentRunRecor
     delivery: {
       status: "pending",
       createdAt: 270,
-      lastAttemptAt: 280,
-      attemptCount: 2,
       lastError: "retry later",
       payload: {
         requesterSessionKey: "agent:main:main",
@@ -506,7 +504,6 @@ describe("subagent registry sqlite store", () => {
         delivery: {
           status: "pending",
           createdAt: 270,
-          attemptCount: 0,
           payload: {
             requesterSessionKey: "agent:main:main",
             requesterDisplayKey: "main",

@@ -568,13 +568,12 @@ describe("requester settle wake product flow", () => {
   );
 
   it.each([
-    { runtime: "cli", acceptNextChild: true, attachRequesterFinal: false },
-    { runtime: "cli", acceptNextChild: false, attachRequesterFinal: false },
-    { runtime: "native", acceptNextChild: true, attachRequesterFinal: false },
-    { runtime: "cli", acceptNextChild: true, attachRequesterFinal: true },
+    { runtime: "cli", attachRequesterFinal: false },
+    { runtime: "native", attachRequesterFinal: false },
+    { runtime: "cli", attachRequesterFinal: true },
   ] as const)(
-    "preserves serial continuation without replaying an accepted wave ($runtime, next child accepted=$acceptNextChild, requester final=$attachRequesterFinal)",
-    async ({ runtime, acceptNextChild, attachRequesterFinal }) => {
+    "preserves serial continuation without replaying an accepted wave ($runtime, requester final=$attachRequesterFinal)",
+    async ({ runtime, attachRequesterFinal }) => {
       vi.setSystemTime(100_000);
       const context = createGatewayContext();
       await registry.initSubagentRegistry();
@@ -746,16 +745,14 @@ describe("requester settle wake product flow", () => {
             if (!firstWakeReturned) {
               // Gateway preflight uses this exact idempotency key as the run ID.
               const requesterTurnRunId = request.params.idempotencyKey;
-              if (acceptNextChild) {
-                const firstEndedAt = registry.getSubagentRunByRunId(alpha.runId)?.execution.endedAt;
-                expect(firstEndedAt).toEqual(expect.any(Number));
-                vi.setSystemTime(firstEndedAt! + 1);
-                await spawnVisibleChild({ ...beta, requesterTurnRunId });
-                expect(registry.getSubagentRunByRunId(beta.runId)?.createdAt).toBeGreaterThan(
-                  firstEndedAt!,
-                );
-              }
-              const result = await yieldTurn(requesterTurnRunId, acceptNextChild ? [beta] : []);
+              const firstEndedAt = registry.getSubagentRunByRunId(alpha.runId)?.execution.endedAt;
+              expect(firstEndedAt).toEqual(expect.any(Number));
+              vi.setSystemTime(firstEndedAt! + 1);
+              await spawnVisibleChild({ ...beta, requesterTurnRunId });
+              expect(registry.getSubagentRunByRunId(beta.runId)?.createdAt).toBeGreaterThan(
+                firstEndedAt!,
+              );
+              const result = await yieldTurn(requesterTurnRunId, [beta]);
               firstWakeReturned = true;
               return { runId: requesterTurnRunId, status: "ok", result };
             }
@@ -779,71 +776,36 @@ describe("requester settle wake product flow", () => {
             await flushOwnedWork();
             await vi.waitFor(() => {
               expect(firstWakeReturned).toBe(true);
-              if (!acceptNextChild) {
-                expect(
-                  registry.getSubagentRunByRunId(alpha.runId)?.requesterSettleWake,
-                ).toMatchObject({
-                  status: "pending",
-                  attemptCount: 1,
-                  nextAttemptAt: expect.any(Number),
-                });
-              }
             });
             await vi.advanceTimersByTimeAsync(0);
             expect(getRequesterWakeCalls()).toHaveLength(1);
             expect(visibleFinals).toBe(0);
             expect(append).not.toHaveBeenCalled();
-            if (acceptNextChild) {
-              expect(
-                countActiveDescendantRunsFromRuns(subagentRuns, MAIN_REQUESTER_SESSION_KEY, "main"),
-              ).toBe(1);
-              expect(registry.getSubagentRunByRunId(beta.runId)).toMatchObject({
-                requesterTurnRunId: undefined,
-                requesterSettleWake: {
-                  batchRunIds: [beta.runId],
-                  requesterYieldBatch: true,
-                },
-              });
-              emitCompleted(beta.runId, beta.childSessionKey, "beta findings");
-            } else {
-              expect(registry.getSubagentRunByRunId(beta.runId)).toBeUndefined();
-            }
-            // Cross both native retry deadlines; a transferred obligation must not
-            // start an extra parent turn, while an empty failed handoff must recover.
+            expect(
+              countActiveDescendantRunsFromRuns(subagentRuns, MAIN_REQUESTER_SESSION_KEY, "main"),
+            ).toBe(1);
+            expect(registry.getSubagentRunByRunId(beta.runId)).toMatchObject({
+              requesterTurnRunId: undefined,
+              requesterSettleWake: {
+                batchRunIds: [beta.runId],
+                requesterYieldBatch: true,
+              },
+            });
+            emitCompleted(beta.runId, beta.childSessionKey, "beta findings");
+            // A transferred obligation must not start an extra parent turn later.
             await flushOwnedWork();
-            const retryHorizon = Date.now() + 151_000;
-            if (!acceptNextChild) {
-              const retryAt = registry.getSubagentRunByRunId(alpha.runId)?.requesterSettleWake
-                ?.nextAttemptAt;
-              expect(retryAt).toEqual(expect.any(Number));
-              // The retry starts real worker I/O. Join it before advancing fake time
-              // across that worker's timeout, while retaining the full no-replay window.
-              await vi.advanceTimersByTimeAsync(retryAt! - Date.now());
-              await flushOwnedWork();
-            }
-            await vi.advanceTimersByTimeAsync(retryHorizon - Date.now());
+            await vi.advanceTimersByTimeAsync(151_000);
             await registry.testing.sweepOnceForTests();
             await vi.advanceTimersByTimeAsync(0);
             await flushOwnedWork();
-            for (const child of acceptNextChild ? [alpha, beta] : [alpha]) {
+            for (const child of [alpha, beta]) {
               await waitForDeliveredCleanup(child.runId);
             }
-            const wakeIdentities = getRequesterWakeCalls().map((request) => ({
-              sourceSessionKey: request.params?.inputProvenance?.sourceSessionKey,
-              idempotencyKey: request.params?.idempotencyKey,
-            }));
-            expect(wakeIdentities).toEqual([
-              {
-                sourceSessionKey: alpha.childSessionKey,
-                idempotencyKey: expect.not.stringContaining(":retry-"),
-              },
-              {
-                sourceSessionKey: acceptNextChild ? beta.childSessionKey : alpha.childSessionKey,
-                idempotencyKey: acceptNextChild
-                  ? expect.not.stringContaining(":retry-")
-                  : expect.stringContaining(":retry-"),
-              },
-            ]);
+            expect(
+              getRequesterWakeCalls().map(
+                (request) => request.params?.inputProvenance?.sourceSessionKey,
+              ),
+            ).toEqual([alpha.childSessionKey, beta.childSessionKey]);
             expect(visibleFinals).toBe(1);
             expect(sendMessageMock).not.toHaveBeenCalled();
             expect(

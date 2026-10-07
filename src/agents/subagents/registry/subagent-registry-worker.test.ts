@@ -21,10 +21,7 @@ import {
 } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { readSubagentRunAnnounceResultUsing } from "../announce/subagent-announce-result.js";
-import {
-  mutateRequesterSettleWakeBatch,
-  settleRequesterCompletionBatch,
-} from "../completion/subagent-completion-admission.store.js";
+import { settleRequesterCompletionBatch } from "../completion/subagent-completion-admission.store.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
@@ -287,7 +284,7 @@ it("serializes opposite multi-row orders without a lock-order deadlock", async (
   ]);
 });
 
-it("settles a requester cohort while many children finish, wake, and one is killed", async () => {
+it("settles a requester cohort while many children finish and one is killed", async () => {
   const children = Array.from({ length: 18 }, (_, index) => ({
     ...entry(`child-${index}`),
     completion: { required: true },
@@ -335,31 +332,17 @@ it("settles a requester cohort while many children finish, wake, and one is kill
       row.completion = { required: true, capturedAt: 2, resultText: `result ${child.runId}` };
     }),
   );
-  const wakes = children.map((child) =>
-    mutateRequesterSettleWakeBatch({
-      entries: [child],
-      context,
-      assertCurrent: () => {},
-      onCommitted: () => {},
-      onPublished: () => {},
-      operation: {
-        kind: "transition",
-        state: { status: "dispatching", attemptCount: 1, rearmGeneration: 1 },
-      },
-    }),
-  );
-  const settlement = Promise.all(wakes).then(() =>
+  const settlement = Promise.all(completions).then(() =>
     settleRequesterCompletionBatch({
       entries: children.map(({ runId }) => {
         const subagent = subagentRuns.get(runId);
         if (!subagent) {
           throw new Error("Requester wake lost its acknowledged child");
         }
-        return { subagent };
+        return subagent;
       }),
       context,
       outcome: { delivered: true, path: "direct" },
-      isCurrent: () => true,
     }),
   );
   const killed = manager.markSubagentRunTerminated({
@@ -367,7 +350,7 @@ it("settles a requester cohort while many children finish, wake, and one is kill
     reason: "synthetic kill",
     suppressTaskDelivery: true,
   });
-  const results = await Promise.allSettled([...completions, ...wakes, settlement, killed]);
+  const results = await Promise.allSettled([...completions, settlement, killed]);
   expect(results.filter((result) => result.status === "rejected")).toEqual([]);
   const saved = loadSubagentRegistryFromSqlite();
   expect(saved.size).toBe(children.length + 1);
@@ -651,7 +634,7 @@ it("retains prepared announcement authority across bookkeeping and revokes it fo
 it("retains the execution's Gateway binding through immutable metadata publications", async () => {
   const child = entry("bound");
   child.execution = { status: "terminal", endedAt: 2 };
-  child.requesterSettleWake = { attemptCount: 0 };
+  child.requesterSettleWake = {};
   const gateway = createGatewayContext();
   let gatewayOpen = true;
   const resolver = () => (gatewayOpen ? gateway : undefined);
@@ -690,9 +673,7 @@ it("retains the execution's Gateway binding through immutable metadata publicati
   gatewayOpen = false;
   const replacementGateway = createGatewayContext();
   const replacementResolver = () => replacementGateway;
-  await expect(
-    recoverSubagentRunGatewayOwner(published, replacementResolver, () => {}),
-  ).resolves.toBe(true);
+  await expect(recoverSubagentRunGatewayOwner(published, replacementResolver)).resolves.toBe(true);
   const recovered = subagentRuns.get(child.runId)!;
   expect(isSameSubagentRunOwner(recovered, alias)).toBe(false);
   expect(getGatewayContextResolver(initial)?.()).toBeUndefined();

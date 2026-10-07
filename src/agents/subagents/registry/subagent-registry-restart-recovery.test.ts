@@ -423,21 +423,18 @@ describe("interrupted requester-settle continuation ownership", () => {
   }
 
   it.each([
-    { backoff: 0, privateCompletion: false, physicalLocator: false },
-    { backoff: 0, privateCompletion: false, physicalLocator: true },
-    { backoff: 120_000, privateCompletion: false, physicalLocator: false },
-    { backoff: 120_000, privateCompletion: true, physicalLocator: false },
+    { privateCompletion: false, physicalLocator: false },
+    { privateCompletion: false, physicalLocator: true },
+    { privateCompletion: true, physicalLocator: false },
   ])(
-    "keeps the exact saved wake owned before admission (backoff $backoff, private $privateCompletion, physical locator $physicalLocator)",
-    async ({ backoff, privateCompletion, physicalLocator }) => {
+    "keeps the exact saved wake owned before admission (private $privateCompletion, physical locator $physicalLocator)",
+    async ({ privateCompletion, physicalLocator }) => {
       const { child, worker } = cohort();
       if (physicalLocator) {
         mocks.storePath = child.requesterStorePath!;
       }
-      child.requesterSettleWake!.nextAttemptAt = Date.now() + backoff;
       if (privateCompletion) {
         child.completionTarget = "parent";
-        child.requesterSettleWake!.attemptCount = 2;
       }
       expect(await recover(worker)).toEqual({ status: "handled" });
       expect(worker.execution.outcome).toBeUndefined();
@@ -447,10 +444,8 @@ describe("interrupted requester-settle continuation ownership", () => {
   );
 
   it.each([
-    "different attempt",
     "non-yield batch",
     "rearmed",
-    "unstarted",
     "consumed",
     "missing member",
     "different session",
@@ -466,14 +461,8 @@ describe("interrupted requester-settle continuation ownership", () => {
     if (scenario === "non-yield batch") {
       child.requesterSettleWake!.requesterYieldBatch = undefined;
     }
-    if (scenario === "different attempt") {
-      child.requesterSettleWake!.attemptCount++;
-    }
     if (scenario === "rearmed") {
       child.requesterSettleWake!.rearmGeneration!++;
-    }
-    if (scenario === "unstarted") {
-      child.requesterSettleWake!.attemptCount = 0;
     }
     if (scenario === "consumed") {
       child.requesterSettleWake = undefined;

@@ -214,139 +214,39 @@ describe("subagent registry persistence resume", () => {
     });
   });
 
-  it.each(["inactive drain error"] as const)(
-    "settles or preserves a delivered wake after %s",
-    async (failure) => {
-      const admission = await import("../../../process/gateway-work-admission.js");
-      const restarting = failure.startsWith("restart");
-      const waitingForActivation = failure === "restart before activation";
-      let firstGatewayOpen = true;
-      const firstGateway = {
-        resolveGatewayContext: () => (firstGatewayOpen ? (firstGateway as never) : undefined),
-      };
-      const replacementGateway = {
-        resolveGatewayContext: () => replacementGateway as never,
-      };
-      if (restarting) {
-        vi.useFakeTimers();
-      }
-      try {
-        await withRegistryState(async () => {
-          const endedAt = Date.now();
-          const run = createDeliveredWake("run-rejected-requester-wake", {
-            status: restarting && !waitingForActivation ? "dispatching" : "pending",
-            attemptCount: waitingForActivation ? 2 : restarting ? 1 : 0,
-            ...(restarting ? { replayCount: 1, nextAttemptAt: endedAt + 30_000 } : {}),
-            batchRunIds: ["run-rejected-requester-wake"],
-            requesterYieldBatch: true,
-            afterRequesterYield: true,
-            rearmGeneration: 1,
-          });
-          const wakeRequester = vi.fn<WakeRequester>(async (params) => {
-            if (!restarting) {
-              throw new admission.GatewayDrainingError();
-            }
-            expect(getGatewayContextResolver(params.settledEntry!)?.()).toBe(replacementGateway);
-            await params.completeBatch(
-              [params.settledEntry],
-              run.requesterSettleWake?.rearmGeneration,
-              {
-                delivered: true,
-                path: "direct",
-              },
-            );
-            return true;
-          });
-          vi.spyOn(
-            requesterSettleModule,
-            "maybeWakeRequesterAfterAllChildrenSettled",
-          ).mockImplementation(wakeRequester);
-          saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-
-          await mod.initSubagentRegistry();
-          if (restarting) {
-            await mod.activateSubagentRegistry(() => firstGateway as never);
-          } else {
-            await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
-          }
-          if (failure === "restart throwing source") {
-            bindGatewayContextResolver(
-              mod.getSubagentRunByRunId(run.runId)!,
-              await withGatewayToolCallerIdentity(
-                {
-                  agentId: "main",
-                  sessionKey: run.requesterSessionKey,
-                  gatewayContextResolver: () => {
-                    if (!firstGatewayOpen) {
-                      throw new Error("retired source");
-                    }
-                    return firstGateway as never;
-                  },
-                },
-                () => getGatewayToolCallerIdentity()?.gatewayContextResolver,
-              ),
-            );
-          }
-
-          if (restarting) {
-            // The earlier delivery released its root; the real deadline timer must
-            // cross fresh admission rather than inheriting live requester authority.
-            const previousWork = settleOwnedWork;
-            settleOwnedWork = undefined;
-            await previousWork?.();
-            admission.markGatewayRestartDraining();
-            if (failure !== "restart before deadline" && !waitingForActivation) {
-              await vi.advanceTimersByTimeAsync(30_000);
-            }
-            expect(wakeRequester).not.toHaveBeenCalled();
-            expect(mod.getSubagentRunByRunId(run.runId)?.requesterSettleWake).toEqual(
-              run.requesterSettleWake,
-            );
-            registryStateDbModule.closeOpenClawStateDatabaseForTest();
-            closeSeedStateDatabase();
-            const persisted = readPersistedRun(run.runId);
-            expect(persisted?.requesterSettleWake).toEqual(run.requesterSettleWake);
-            expect(persisted?.requesterTurnRunId).toBeUndefined();
-
-            const retiredRun = mod.getSubagentRunByRunId(run.runId)!;
-            const retiredResolver = getGatewayContextResolver(retiredRun);
-            firstGatewayOpen = false;
-            if (failure === "restart admission") {
-              await mod.resetSubagentRegistryForTests({ persist: false });
-            }
-            admission.resetGatewayWorkAdmission();
-            settleOwnedWork = observeRootWork();
-            if (waitingForActivation) {
-              await vi.advanceTimersByTimeAsync(30_000);
-              expect(wakeRequester).not.toHaveBeenCalled();
-              expect(readPersistedRun(run.runId)?.requesterSettleWake).toEqual(
-                run.requesterSettleWake,
-              );
-            }
-            await mod.initSubagentRegistry();
-            await mod.activateSubagentRegistry(() => replacementGateway as never);
-            const recoveredRun = mod.getSubagentRunByRunId(run.runId);
-            expect(recoveredRun).not.toBe(retiredRun);
-            await mod.activateSubagentRegistry(() => replacementGateway as never);
-            expect(mod.getSubagentRunByRunId(run.runId)).toBe(recoveredRun);
-            expect(retiredResolver?.()).toBeUndefined();
-            await mod.testing.runSweeperTickForTests();
-            await vi.advanceTimersByTimeAsync(failure === "restart before deadline" ? 30_000 : 0);
-          }
-          await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
-          expect(wakeRequester).toHaveBeenCalledOnce();
-          const restored = readPersistedRun(run.runId);
-          expect(restored?.delivery).toMatchObject({ status: "delivered" });
-          expect(restored?.requesterSettleWake).toBeUndefined();
-          await mod.testing.sweepOnceForTests();
-          expect(wakeRequester).toHaveBeenCalledOnce();
+  it("settles a delivered wake after an inactive drain error", async () => {
+    const admission = await import("../../../process/gateway-work-admission.js");
+    try {
+      await withRegistryState(async () => {
+        const run = createDeliveredWake("run-rejected-requester-wake", {
+          batchRunIds: ["run-rejected-requester-wake"],
+          requesterYieldBatch: true,
+          afterRequesterYield: true,
+          rearmGeneration: 1,
         });
-      } finally {
-        admission.resetGatewayWorkAdmission();
-        vi.useRealTimers();
-      }
-    },
-  );
+        const wakeRequester = vi.fn<WakeRequester>(async () => {
+          throw new admission.GatewayDrainingError();
+        });
+        vi.spyOn(
+          requesterSettleModule,
+          "maybeWakeRequesterAfterAllChildrenSettled",
+        ).mockImplementation(wakeRequester);
+        saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+
+        await mod.initSubagentRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
+        expect(wakeRequester).toHaveBeenCalledOnce();
+        const restored = readPersistedRun(run.runId);
+        expect(restored?.delivery).toMatchObject({ status: "delivered" });
+        expect(restored?.requesterSettleWake).toBeUndefined();
+        await mod.testing.sweepOnceForTests();
+        expect(wakeRequester).toHaveBeenCalledOnce();
+      });
+    } finally {
+      admission.resetGatewayWorkAdmission();
+    }
+  });
 
   it.each([
     { status: "suspended" as const, disposition: undefined, queueId: undefined },

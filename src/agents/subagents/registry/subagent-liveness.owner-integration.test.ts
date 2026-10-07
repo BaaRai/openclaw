@@ -227,7 +227,7 @@ it("retains quiet admitted execution in listing, admission count, and requester 
       outcome: { status: "ok" },
       cleanupCompletedAt: start + 2,
       expectsCompletionMessage: false,
-      requesterSettleWake: { attemptCount: 0 },
+      requesterSettleWake: {},
     });
     const sibling = subagentRuns.get("settled-sibling")!;
     const completeBatch = vi.fn();

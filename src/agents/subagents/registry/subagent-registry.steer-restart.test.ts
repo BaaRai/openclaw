@@ -495,8 +495,6 @@ describe("subagent registry steer restarts", () => {
       draft.cleanupHandled = true;
       draft.delivery = {
         status: "suspended",
-        attemptCount: 2,
-        lastAttemptAt: endedAt,
         enqueuedAt: endedAt,
         deliveredAt: endedAt,
         announcedAt: endedAt,
@@ -836,57 +834,6 @@ describe("subagent registry steer restarts", () => {
       expect(countMatching(childRunIds, (id) => id === "run-child")).toBe(1);
     } finally {
       await settleRootWork();
-    }
-  });
-
-  it("retries completion delivery beyond three attempts and suspends at its deadline", async () => {
-    {
-      vi.useFakeTimers();
-      const settleRootWork = observeRootWork();
-      try {
-        announceSpy.mockResolvedValue("retryable");
-
-        await registerCompletionModeRun(
-          "run-completion-retry",
-          "agent:main:subagent:completion",
-          "completion retry",
-        );
-
-        emitLifecycleEnd("run-completion-retry");
-
-        await vi.advanceTimersByTimeAsync(0);
-        await settleRootWork(true);
-        expect(announceSpy).toHaveBeenCalledTimes(1);
-        expect(listMainRuns()[0]?.delivery?.attemptCount).toBe(1);
-
-        const retryWindowEnd = Date.now() + 5 * 60_000;
-        while (Date.now() < retryWindowEnd) {
-          const nextAttemptAt = expectDefined(
-            listMainRuns()[0]?.delivery?.nextAttemptAt,
-            "scheduled completion retry",
-          );
-          expect(nextAttemptAt).toBeGreaterThan(Date.now());
-          await vi.advanceTimersByTimeAsync(Math.min(nextAttemptAt, retryWindowEnd) - Date.now());
-          await settleRootWork(true);
-        }
-        expect(announceSpy.mock.calls.length).toBeGreaterThan(3);
-        expect(listMainRuns()[0]?.delivery?.status).not.toBe("suspended");
-
-        const deadlineAt = listMainRuns()[0]?.delivery?.deadlineAt;
-        expect(deadlineAt).toBeTypeOf("number");
-        vi.setSystemTime((deadlineAt ?? Date.now()) + 1);
-        mod.resumeSubagentRun("run-completion-retry");
-        await vi.advanceTimersByTimeAsync(0);
-        await settleRootWork(true);
-        const run = listMainRuns()[0];
-        expect(run?.delivery?.status).toBe("suspended");
-        expect(run?.delivery?.suspendedAt).toBeTypeOf("number");
-        expect(run?.delivery?.suspendedReason).toBe("expiry");
-        expect(run?.cleanupCompletedAt).toBeUndefined();
-      } finally {
-        vi.useRealTimers();
-        await settleRootWork();
-      }
     }
   });
 

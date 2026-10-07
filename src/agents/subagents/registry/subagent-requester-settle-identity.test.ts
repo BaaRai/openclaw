@@ -9,18 +9,13 @@ import {
 } from "./subagent-requester-settle-identity.js";
 
 describe("requester settle wake identity", () => {
-  // The control scope must recognize exactly the key dispatch used, or a retried
-  // settle turn loses authority over its own children.
+  // The control scope must recognize exactly the key dispatch used, or a settle
+  // turn loses authority over its own children.
   it.each([
-    { name: "private batch", yieldedFinalDeliverable: undefined, suffix: false, pause: false },
-    {
-      name: "deliverable yielded batch",
-      yieldedFinalDeliverable: true as const,
-      suffix: true,
-      pause: false,
-    },
-    { name: "paused private batch", yieldedFinalDeliverable: undefined, suffix: true, pause: true },
-  ])("matches the dispatched retry key: $name", ({ yieldedFinalDeliverable, suffix, pause }) => {
+    { name: "private batch", yieldedFinalDeliverable: undefined, pause: false },
+    { name: "deliverable yielded batch", yieldedFinalDeliverable: true as const, pause: false },
+    { name: "paused private batch", yieldedFinalDeliverable: undefined, pause: true },
+  ])("matches the dispatched key: $name", ({ yieldedFinalDeliverable, pause }) => {
     const entry = makeSettledChild({
       runId: "run-b",
       requesterAgentId: "main",
@@ -38,11 +33,8 @@ describe("requester settle wake identity", () => {
       requesterAgentId: "main",
       batchRunIds: ["run-b"],
       rearmGeneration: 1,
-      attemptIndex: 1,
-      sharedAttemptKey: yieldedFinalDeliverable !== true,
       pause,
     }).runId;
-    expect(dispatched.endsWith(":retry-1")).toBe(suffix);
     expect(
       isRequesterSettleWakeForRun({
         entry,

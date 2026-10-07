@@ -198,7 +198,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
   it.each([
     "replaced execution",
     "cancelled",
-    "dispatching",
     "different-turn",
     "different-cohort",
     "ordinary-cohort",
@@ -211,8 +210,6 @@ describe("adoptSubagentRunForRequesterTurnInRuns", () => {
       params.runs.set(child.runId, { ...child, generation: 2 });
     } else if (reason === "cancelled") {
       child.killIntent = { requestedAt: 2_000, reason: "operator stop" };
-    } else if (reason === "dispatching") {
-      child.requesterSettleWake = { attemptCount: 1 };
     } else if (reason === "different-cohort" || reason === "ordinary-cohort") {
       child.requesterSettleWake = {
         batchRunIds: [child.runId, "another-child"],
@@ -473,7 +470,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
     [
       "valid receipt",
       (entry: SubagentRunRecord) => {
-        entry.requesterSettleWake = { attemptCount: 0 };
+        entry.requesterSettleWake = {};
       },
     ],
     [
@@ -613,7 +610,6 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
       for (const entry of entries) {
         expect(runs.get(entry.runId)!.requesterSettleWake).toEqual({
           status: "pending",
-          attemptCount: 0,
           batchRunIds,
           requesterYieldBatch: true,
           yieldedFinalDeliverable: true,
