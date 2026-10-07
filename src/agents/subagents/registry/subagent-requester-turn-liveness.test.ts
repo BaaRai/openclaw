@@ -27,6 +27,9 @@ it("keeps a requester turn live between backend detach and operation settlement"
   expect(isClaimedByLiveRequesterTurn(child)).toBe(true);
   operation.detachBackend(backend);
   expect(isClaimedByLiveRequesterTurn(child)).toBe(true);
+  // A yield records the outcome before the turn ends; its turn-end transfer still owns the child.
+  operation.yield();
+  expect(isClaimedByLiveRequesterTurn(child)).toBe(true);
   operation.complete();
   expect(isClaimedByLiveRequesterTurn(child)).toBe(false);
 });
