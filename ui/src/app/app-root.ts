@@ -528,6 +528,7 @@ export class OpenClawApp extends OpenClawLightDomElement {
           .themeMode=${context.theme.resolvedMode}
           fullscreen
         ></openclaw-terminal-panel>
+        <openclaw-toast-host></openclaw-toast-host>
         ${
           !gatewayConnected && gatewaySnapshot.lastError === null
             ? renderConnectingSplash(gatewayStartupStatus)
