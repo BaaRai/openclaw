@@ -8,7 +8,6 @@ export {
   abortEmbeddedAgentRun,
   preemptAndDrainEmbeddedHeartbeatRun,
   isEmbeddedAgentRunHandleActive,
-  queueEmbeddedAgentMessageWithOutcome,
   resolveActiveEmbeddedRunSessionIdBySessionFile,
 } from "./embedded-agent-runner/runs.js";
 export type {

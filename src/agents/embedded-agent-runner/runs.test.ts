@@ -1,20 +1,9 @@
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
-import {
-  onDiagnosticEvent,
-  setDiagnosticsEnabledForProcess,
-} from "../../infra/diagnostic-events.js";
+import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import {
-  getDiagnosticSessionState,
-  resetDiagnosticSessionStateForTest,
-} from "../../logging/diagnostic-session-state.js";
-import {
-  diagnosticLogger,
-  logMessageQueued,
-  logSessionStateChange,
-} from "../../logging/diagnostic.js";
+import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { createReplyOperation, isSessionRunActive } from "../../sessions/session-controller.js";
 import { isSessionRunCompactionBlocked } from "../../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -27,12 +16,10 @@ import {
   isEmbeddedAgentRunHandleActive,
   markActiveEmbeddedRunAbandoned,
   prepareEmbeddedAgentRunCompletionClaim,
-  queueEmbeddedAgentMessageWithOutcome,
   resolveActiveEmbeddedRunOwner,
   resolveActiveEmbeddedRunOwnerByRunId,
   resolveEmbeddedRunAbandonment,
   setActiveEmbeddedRun as setDetachedEmbeddedRun,
-  supersedeEmbeddedAgentRunByRunId,
 } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
@@ -207,77 +194,6 @@ describe("embedded run ownership", () => {
     operation.complete();
     expect(isEmbeddedAgentRunHandleActive("session-restart-finalizing")).toBe(false);
     expect(isSessionRunActive("session-restart-finalizing")).toBe(false);
-  });
-
-  it("supersedes an exact reply backend only after recording its terminal owner", () => {
-    const operation = createReplyOperation({
-      sessionKey: "agent:main:cli-writer",
-      sessionId: "session-cli-writer",
-      resetTriggered: false,
-    });
-    const order: string[] = [];
-    operation.attachBackend({
-      kind: "cli",
-      runId: "run-cli-writer",
-      cancel: (reason) => order.push(`cancel:${reason}`),
-    });
-
-    expect(supersedeEmbeddedAgentRunByRunId("run-cli-writer", () => order.push("record"))).toBe(
-      true,
-    );
-    expect(order).toEqual(["record", "cancel:superseded"]);
-    expect(supersedeEmbeddedAgentRunByRunId("missing-run", vi.fn())).toBe(false);
-  });
-
-  it.each([
-    {
-      name: "stopped",
-      configure: (handle: ReturnType<typeof createEmbeddedRunHandle>) => {
-        handle.isStopped = () => true;
-      },
-    },
-    {
-      name: "aborted",
-      configure: (handle: ReturnType<typeof createEmbeddedRunHandle>) => {
-        handle.isAborted = () => true;
-      },
-    },
-    {
-      name: "non-abortable",
-      configure: (handle: ReturnType<typeof createEmbeddedRunHandle>) => {
-        handle.isAbortable = () => false;
-      },
-    },
-  ])("does not supersede a $name exact embedded owner", ({ configure }) => {
-    const cancel = vi.fn();
-    const abort = vi.fn();
-    const beforeCancel = vi.fn();
-    const handle = createEmbeddedRunHandle({ abort, runId: "run-terminal" });
-    handle.cancel = cancel;
-    configure(handle);
-    setActiveEmbeddedRun("session-terminal", handle);
-
-    expect(supersedeEmbeddedAgentRunByRunId("run-terminal", beforeCancel)).toBe(false);
-    expect(beforeCancel).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
-    expect(abort).not.toHaveBeenCalled();
-  });
-
-  it("fails closed when an exact embedded lifecycle probe throws", () => {
-    const warn = vi.spyOn(diagnosticLogger, "warn").mockImplementation(() => undefined);
-    const cancel = vi.fn();
-    const beforeCancel = vi.fn();
-    const handle = createEmbeddedRunHandle({ runId: "run-throwing" });
-    handle.cancel = cancel;
-    handle.isStopped = () => {
-      throw new Error("probe failed");
-    };
-    setActiveEmbeddedRun("session-throwing", handle);
-
-    expect(supersedeEmbeddedAgentRunByRunId("run-throwing", beforeCancel)).toBe(false);
-    expect(beforeCancel).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("lifecycle_check_failed"));
   });
 
   it("expires reply-owned stuck recovery as run_stalled instead of user abort", async () => {
@@ -605,62 +521,6 @@ describe("embedded run ownership", () => {
     expect(identity?.abort()).toBe(false);
     expect(firstAbort).not.toHaveBeenCalled();
     expect(secondAbort).not.toHaveBeenCalled();
-  });
-
-  it("clears steering backlog when the run ends", () => {
-    setDiagnosticsEnabledForProcess(true);
-    const depths: Array<number | undefined> = [];
-    const unsubscribe = onDiagnosticEvent((event) => {
-      if (event.type === "message.queued" && event.source === "embedded-agent-runner") {
-        depths.push(event.queueDepth);
-      }
-    });
-    const handle = createRunHandle(),
-      sessionFile = "/tmp/diagnostic-session.jsonl";
-    logMessageQueued({ sessionId, source: "test-turn" });
-    logSessionStateChange({ sessionId, state: "processing" });
-    setActiveEmbeddedRun(sessionId, handle, sessionKey, sessionFile);
-    try {
-      expect(queueEmbeddedAgentMessageWithOutcome(sessionId, "first").queued).toBe(true);
-      expect(queueEmbeddedAgentMessageWithOutcome(sessionId, "second").queued).toBe(true);
-      expect(getDiagnosticSessionState({ sessionId }).sessionFile).toBe(sessionFile);
-    } finally {
-      clearActiveEmbeddedRun(sessionId, handle);
-      logSessionStateChange({ sessionId, state: "idle" });
-      unsubscribe();
-    }
-    expect(getDiagnosticSessionState({ sessionId }).queueDepth).toBe(0);
-    expect(depths).toEqual([1, 1]);
-  });
-  it.each([
-    ["stopped", { isStopped: (): boolean => true }],
-    ["aborted", { isAborted: (): boolean => true }],
-    ["frozen", { isAbortable: (): boolean => false }],
-    [
-      "throwing",
-      {
-        isStopped: (): never => {
-          throw new Error("probe failed");
-        },
-      },
-    ],
-  ] as const)("does not supersede a %s owner", (state, probes) => {
-    const warn =
-      state === "throwing"
-        ? vi.spyOn(diagnosticLogger, "warn").mockImplementation(() => {})
-        : undefined;
-    const abort = vi.fn(),
-      cancel = vi.fn(),
-      beforeCancel = vi.fn();
-    const handle = { ...createRunHandle({ abort, runId: "terminal" }), ...probes, cancel };
-    setActiveEmbeddedRun(sessionId, handle);
-    expect(supersedeEmbeddedAgentRunByRunId("terminal", beforeCancel)).toBe(false);
-    expect(beforeCancel).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
-    expect(abort).not.toHaveBeenCalled();
-    if (warn) {
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("lifecycle_check_failed"));
-    }
   });
 
   it("publishes completion authority and fences later session owners", async () => {

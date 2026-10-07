@@ -13,6 +13,7 @@ import type {
   CodexBundleMcpThreadConfig,
   LoadCodexBundleMcpThreadConfigParams,
 } from "../agents/codex-mcp-config.types.js";
+import { log as runnerLog } from "../agents/embedded-agent-runner/logger.js";
 import type {
   EmbeddedRunAttemptParams as CoreEmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
@@ -21,7 +22,6 @@ import {
   abortAndDrainEmbeddedAgentRun,
   abortEmbeddedAgentRun,
   clearActiveEmbeddedRun,
-  queueEmbeddedAgentMessageWithOutcome,
   setActiveEmbeddedRun,
   type EmbeddedAgentQueueMessageOptions,
 } from "../agents/embedded-agent-runner/runs.js";
@@ -42,11 +42,17 @@ import {
   prepareWatchedSessionsPromptAsync,
 } from "../agents/watched-sessions-prompt.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { formatErrorMessage as formatError } from "../infra/errors.js";
 import { resolveExecModePolicy } from "../infra/exec-approvals-core.js";
 import { maxAsk, minSecurity } from "../infra/exec-approvals-policy.js";
 import type { ImageContent } from "../llm/types.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
-import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../sessions/session-controller.queries.js";
+import { captureReplyMessageInjectionTarget } from "../sessions/session-controller.message-injection.js";
+import {
+  resolveActiveReplyOperationForSessionId,
+  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
+} from "../sessions/session-controller.queries.js";
+import { steerSessionControllerOperation } from "../sessions/session-controller.steer.js";
 
 export { projectAgentActivityItem } from "../agents/agent-activity-presentation.js";
 export { projectAgentToolActivity } from "../infra/agent-activity-events.js";
@@ -350,16 +356,35 @@ export {
 
 /**
  * @deprecated Active-run queueing is an internal runtime concern. This legacy
- * boolean API only reports immediate queue eligibility and cannot observe async
- * runtime rejection; runtime-owned delivery paths should use acceptance-aware
- * steering instead of public SDK queueing.
+ * boolean API only reports whether the session's active turn could take a steer
+ * now; it cannot observe the later runtime outcome and never retries a refusal.
  */
 export function queueAgentHarnessMessage(
   sessionId: string,
   text: string,
   options?: EmbeddedAgentQueueMessageOptions,
 ): boolean {
-  return queueEmbeddedAgentMessageWithOutcome(sessionId, text, options).queued;
+  const operation = resolveActiveReplyOperationForSessionId(sessionId);
+  if (!captureReplyMessageInjectionTarget(operation)) {
+    return false;
+  }
+  void steerSessionControllerOperation({
+    operation,
+    text,
+    options: options ?? { steeringMode: "all" },
+    abortOnUnconfirmedTranscript: false,
+  }).then(
+    (steer) => {
+      if (steer.status !== "accepted") {
+        runnerLog.debug(
+          `queue message not accepted: sessionId=${sessionId} status=${steer.status}`,
+        );
+      }
+    },
+    (error: unknown) =>
+      runnerLog.debug(`queue message rejected: sessionId=${sessionId} err=${formatError(error)}`),
+  );
+  return true;
 }
 export { finalizeAgentToolAvailability } from "../agents/agent-tool-availability.js";
 export { disposeRegisteredAgentHarnesses } from "../agents/harness/registry.js";

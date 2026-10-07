@@ -157,7 +157,16 @@ settlement rather than letting older backlog take the slot.
 Steering does **not** require token streaming and is not universally forbidden
 during compaction. Guarded V2 injection can revalidate dispatch during compaction;
 legacy handles and runtimes that reject that capability still queue the input.
-The runtime owns whether a particular native turn accepts steering.
+The runtime owns whether a particular native turn accepts steering. A request
+to wait for transcript commitment is refused unless the backend declares
+`supportsTranscriptCommitWait`.
+
+In-process steering (`sessions_send`, the embedded TUI, Talk, and the SDK
+`queueAgentHarnessMessage`) uses the same path as channel input. The caller
+reserves a steer input on the exact turn's own mailbox. That input waits behind
+older queued inputs, then injects into the turn it captured. A refusal retires
+the reservation and leaves the caller's own fallback in charge. A detached
+attempt has no turn, so nothing can steer it.
 
 Collecting or steering requires compatible sender authority, tool permissions,
 visibility, and delivery contracts. Mismatch must not let an input borrow the
@@ -183,6 +192,11 @@ policy table:
 A Stop that targets a subagent session with no running turn, but with a paused
 (`sessions_yield`) or queued registry row, kills that exact row. The kill retires
 the row's owed inputs; a later follow-up registers its own obligation.
+
+The SDK `abortAgentHarnessRun` and `abortAndDrainAgentHarnessRun` stop a turn
+as `interrupt`. A detached attempt has no turn and keeps its native abort.
+`supersede` refuses a backend that already reports itself stopped or aborted, so
+that turn keeps its own terminal outcome.
 
 A run whose abort is frozen is already finalizing and refuses active
 cancellation. User sources still perform independent queue cleanup, controlled

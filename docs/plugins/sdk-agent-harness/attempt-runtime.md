@@ -53,6 +53,11 @@ Pass the resolved agent ID as the fifth `setActiveEmbeddedRun` argument so raw
 live host binding inherit its validated agent; an ambient caller alone does not
 supply ownership. Outside that binding, omitted ownership uses the qualified
 session key or the configured default agent for session activity.
+`queueAgentHarnessMessage` steers through the session controller: it returns
+`true` only when the session's active turn can take a steer now, and it never
+retries a later refusal. A detached attempt has no turn, so the call returns
+`false` for it. Backends that accept `waitForTranscriptCommit: true` must set
+`supportsTranscriptCommitWait`; otherwise core refuses that wait.
 Unscoped V1 injection retains its existing behavior. Source-bound controls
 require V2 and reject visibly before queue or I/O when only V1 is available;
 they never fall back to an unchecked V1 callback. Existing deprecation windows

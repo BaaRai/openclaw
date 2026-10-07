@@ -27,12 +27,10 @@ import type {
 } from "../../sessions/session-controller.contracts.js";
 import {
   abortActiveReplyRuns,
-  abortReplyRunBySessionId,
   isReplyRunEvidenceStaleBySessionId,
   resolveActiveReplyOperationForSessionId,
   resolveActiveSessionRunId,
   resolveReplyBackendQueueMessageMismatch,
-  supersedeReplyRunByRunId,
   type ReplyOperation,
   waitForReplyOperationOwnerSettlement,
 } from "../../sessions/session-controller.js";
@@ -45,6 +43,10 @@ import {
   isReplyRunEvidenceStale,
   resolveReplyRunForCurrentSessionId,
 } from "../../sessions/session-controller.state.js";
+import {
+  captureSessionControllerStop,
+  stopSession,
+} from "../../sessions/session-controller.stop.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { QuestionAnswerUnconfirmedError } from "../harness/gateway-question-dispatch.js";
 import { resolveSessionPlacementForcedTerminalSettlement } from "../session-placement-forced-terminal-settlement.js";
@@ -80,7 +82,6 @@ import {
 import {
   canSteerEmbeddedRunDuringCompaction,
   isEmbeddedRunHandleAbortable,
-  isEmbeddedRunHandleSupersedable,
 } from "./runs.probes.js";
 import { createEmbeddedRunsTestApi } from "./runs.test-cleanup.js";
 
@@ -339,38 +340,6 @@ export function restoreEmbeddedRunTimeoutAbandonment(
   return true;
 }
 
-/**
- * @deprecated Prefer queueEmbeddedAgentMessageWithOutcomeAsync when callers need to
- * know whether steering was accepted. This sync helper is fire-and-forget after
- * initial eligibility and only logs later runtime rejection.
- */
-export function queueEmbeddedAgentMessageWithOutcome(
-  sessionId: string,
-  text: string,
-  options?: ReplyMessageInjectionOptions,
-): EmbeddedAgentQueueMessageOutcome {
-  const prepared = prepareEmbeddedAgentQueueMessage(sessionId, options);
-  if (prepared.kind === "complete") {
-    return prepared.outcome;
-  }
-  logActiveRunMessageAccepted(sessionId);
-  void prepared.queueMessage(text, prepared.options).catch((err: unknown) => {
-    const message = `queue message rejected after enqueue: sessionId=${sessionId} err=${formatErrorMessage(err)}`;
-    if (err instanceof QuestionAnswerUnconfirmedError) {
-      diag.warn(message);
-    } else {
-      diag.debug(message);
-    }
-  });
-  return {
-    queued: true,
-    sessionId,
-    target: "embedded_run",
-    gatewayHealth: "live",
-    enqueuedAtMs: Date.now(),
-  };
-}
-
 function logActiveRunMessageAccepted(sessionId: string): void {
   // Active-run steering is consumed by the current turn, not queued as another
   // turn for the single idle transition to drain. Keep the event and activity.
@@ -455,28 +424,6 @@ function resolveEmbeddedInjection(
   }
 }
 
-/** Cancels one exact process-local run after recording its superseded terminal owner. */
-export function supersedeEmbeddedAgentRunByRunId(runId: string, beforeCancel: () => void): boolean {
-  const normalizedRunId = runId.trim();
-  if (!normalizedRunId) {
-    return false;
-  }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle;
-  if (handle) {
-    if (!isEmbeddedRunHandleSupersedable(normalizedRunId, handle)) {
-      return false;
-    }
-    beforeCancel();
-    if (handle.cancel) {
-      handle.cancel("superseded");
-    } else {
-      handle.abort();
-    }
-    return true;
-  }
-  return supersedeReplyRunByRunId(normalizedRunId, beforeCancel);
-}
-
 function clearEmbeddedRunAbortability(handle: EmbeddedAgentQueueHandle): void {
   getEmbeddedRunAttachment(handle)?.humanInputWaits?.clear();
   if (!handle.runId || ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(handle.runId)?.handle !== handle) {
@@ -499,29 +446,43 @@ export async function claimPendingEmbeddedAgentQuestionAnswer(
   text: string,
 ): Promise<{ runId: string } | null> {
   const handle = getActiveNativeAttempt(sessionId);
-  if (!handle?.runId?.trim() || handle.messageInjectionV2?.version !== 2) {
+  const guarded = handle?.messageInjectionV2;
+  if (!handle?.runId?.trim() || guarded?.version !== 2 || !guarded.claimPendingUserInputAnswer) {
     return null;
   }
   const runId = handle.runId;
   const registration = getEmbeddedRunAttachment(handle);
-  const injection = resolveEmbeddedInjection(sessionId, handle);
-  if (!injection?.claimPendingUserInputAnswer) {
-    return null;
-  }
+  let isCurrent: () => boolean;
   try {
+    const operation = resolveActiveReplyOperationForSessionId(sessionId);
+    const ownedOperation =
+      operation && getAttachedBackend(operation) === handle ? operation : undefined;
+    // The captured native attempt, its tool authority, and any owning turn must all stay current.
+    isCurrent = () =>
+      getActiveNativeAttempt(sessionId) === handle &&
+      getEmbeddedRunAttachment(handle) === registration &&
+      (!ownedOperation ||
+        (resolveActiveReplyOperationForSessionId(sessionId) === ownedOperation &&
+          getAttachedBackend(ownedOperation) === handle));
     registration?.toolAuthority?.assertActive();
+    if (!guarded.isAvailable() || !isCurrent()) {
+      return null;
+    }
   } catch {
-    return null;
-  }
-  if (
-    getActiveNativeAttempt(sessionId) !== handle ||
-    getEmbeddedRunAttachment(handle) !== registration
-  ) {
     return null;
   }
   // V2 carries the captured owner assertion through persistence and final dispatch.
   // An unconfirmed answer must propagate; queue fallback could replay accepted input.
-  const claimed = await injection.claimPendingUserInputAnswer(text, { isInboundUserMessage: true });
+  const assertCurrent = createMessageInjectionAuthority(() => {
+    registration?.toolAuthority?.assertActive();
+    return isCurrent();
+  });
+  const claimed = await guarded.claimPendingUserInputAnswer(
+    text,
+    { isInboundUserMessage: true },
+    assertCurrent,
+    "run",
+  );
   if (!claimed) {
     return null;
   }
@@ -741,6 +702,16 @@ function prepareEmbeddedAgentQueueMessage(
   };
 }
 
+/** Interrupt aborts the exact turn and keeps its waiting inputs and children. */
+function interruptSessionTurn(operation: ReplyOperation): boolean {
+  return stopSession({
+    source: "interrupt",
+    capture: captureSessionControllerStop({ operations: [operation] }),
+    // The controller result distinguishes a committed abort from an observer failure.
+    onError: () => "continue",
+  }).aborted;
+}
+
 function revokeCompletionClaim(sessionId: string, runId?: string): void {
   const claim = EMBEDDED_RUN_COMPLETION_CLAIMS.get(sessionId);
   if (claim && (runId === undefined || claim.runId === runId)) {
@@ -766,12 +737,14 @@ export function abortEmbeddedAgentRun(
 ): boolean {
   if (typeof sessionId === "string" && sessionId.length > 0) {
     const handle = getActiveNativeAttempt(sessionId);
-    const operation = handle ? getEmbeddedRunAttachment(handle)?.operation : undefined;
+    const operation = handle
+      ? getEmbeddedRunAttachment(handle)?.operation
+      : resolveActiveReplyOperationForSessionId(sessionId);
     if (operation) {
-      return operation.abortByUser();
+      return interruptSessionTurn(operation);
     }
     if (!handle) {
-      return abortReplyRunBySessionId(sessionId);
+      return false;
     }
     if (
       !isEmbeddedRunHandleAbortable(sessionId, handle, "all") ||
@@ -1124,7 +1097,7 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
       decision.action === "stop" ||
       decision.action === "expire_cleanup";
   } else if (operation) {
-    aborted = operation.abortByUser();
+    aborted = interruptSessionTurn(operation);
   } else if (handle) {
     handle.abort();
     aborted = true;

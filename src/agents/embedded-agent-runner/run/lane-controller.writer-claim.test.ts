@@ -67,7 +67,7 @@ describe("embedded run durable writer admission", () => {
           | undefined
       )?.activeWriterRunId;
     const cancelA = vi.fn(() => takeoverOrder.push(`cancel:${readWriter()}`));
-    setActiveEmbeddedRun(
+    const operationA = setActiveEmbeddedRun(
       sessionId,
       {
         kind: "embedded",
@@ -132,7 +132,8 @@ describe("embedded run durable writer admission", () => {
       unsubscribe();
     }
 
-    expect(cancelA).toHaveBeenCalledWith("superseded");
+    // Supersede is a controller Stop source: the incumbent turn records it as its outcome.
+    expect(operationA.result).toEqual({ kind: "aborted", code: "aborted_for_supersession" });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("live=true"));
     expect(takeoverOrder).toEqual(["record:run-b", "cancel:run-b"]);
     expect(supersededOutcome).toMatchObject({

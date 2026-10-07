@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunInterruptTargetOperation,
+  type ReplyBackendHandle,
   type ReplyOperation,
   type ReplyRunInterruptTarget,
 } from "./session-controller.contracts.js";
@@ -53,6 +54,10 @@ export function supersedeReplyRunByRunId(runId: string, beforeCancel: () => void
     if (normalizeOptionalString(backend?.runId) !== expectedRunId) {
       continue;
     }
+    if (hasReplyBackendStopped(backend)) {
+      // A backend that already ended its turn keeps its own terminal outcome.
+      return false;
+    }
     return stopSession({
       source: "supersede",
       capture: captureSessionControllerStop({ operations: [operation] }),
@@ -61,6 +66,15 @@ export function supersedeReplyRunByRunId(runId: string, beforeCancel: () => void
     }).aborted;
   }
   return false;
+}
+
+/** A throwing lifecycle probe cannot prove live work, so it counts as stopped. */
+function hasReplyBackendStopped(backend: ReplyBackendHandle | undefined): boolean {
+  try {
+    return backend?.isStopped?.() === true || backend?.isAborted?.() === true;
+  } catch {
+    return true;
+  }
 }
 
 export function abortReplyRunBySessionId(sessionId: string): boolean {

@@ -1,9 +1,19 @@
 /**
  * Tests agent harness runtime helpers and task dispatch behavior.
  */
-import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import {
+  createEmbeddedRunHandle,
+  registerTestEmbeddedRun,
+  testing as embeddedRunsTesting,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "../sessions/session-controller.mailbox.js";
+import {
+  abortAgentHarnessRun,
   agentHarnessStructuredInput,
   attachModelProviderRequestTransport,
   buildAgentHarnessUserInputAnswers,
@@ -231,6 +241,44 @@ describe("agent harness runtime SDK facade", () => {
       "host" | "harness"
     >();
     expectTypeOf<Awaited<ReturnType<IsolatedCompletionV2>>["assistant"]>().not.toBeNever();
+  });
+});
+
+describe("agent harness active-run SDK controls", () => {
+  afterEach(() => embeddedRunsTesting.resetActiveEmbeddedRuns());
+
+  it("steers and interrupts a session turn through the controller, keeping waiting input", async () => {
+    const queueMessage = vi.fn(async () => {});
+    const operation = registerTestEmbeddedRun(
+      "sdk-turn",
+      createEmbeddedRunHandle({ queueMessage }),
+      "agent:main:sdk-turn",
+    );
+
+    expect(queueAgentHarnessMessage("sdk-turn", "steer")).toBe(true);
+    await vi.waitFor(() => expect(queueMessage).toHaveBeenCalledOnce());
+
+    const waiting = reserveSessionControllerSource("agent:main:sdk-turn", {
+      policy: { mode: "followup" },
+    });
+    try {
+      expect(abortAgentHarnessRun("sdk-turn")).toBe(true);
+      expect(operation.result).toMatchObject({ kind: "aborted", code: "aborted_by_user" });
+      expect(waiting.retirementRequested).toBeUndefined();
+    } finally {
+      retireSessionControllerInput(waiting);
+    }
+  });
+
+  it("keeps a detached attempt out of steering but on its native abort", () => {
+    const queueMessage = vi.fn(async () => {});
+    const abort = vi.fn();
+    setActiveEmbeddedRun("sdk-detached", createEmbeddedRunHandle({ queueMessage, abort }));
+
+    expect(queueAgentHarnessMessage("sdk-detached", "steer")).toBe(false);
+    expect(abortAgentHarnessRun("sdk-detached")).toBe(true);
+    expect(queueMessage).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledOnce();
   });
 });
 

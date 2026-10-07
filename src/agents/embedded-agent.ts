@@ -12,7 +12,6 @@ export {
   preemptAndDrainEmbeddedHeartbeatRun,
   compactEmbeddedAgentSession,
   isEmbeddedAgentRunHandleActive,
-  queueEmbeddedAgentMessageWithOutcome,
   resolveActiveEmbeddedRunSessionIdBySessionFile,
   runEmbeddedAgent,
 } from "./embedded-agent-runner.js";

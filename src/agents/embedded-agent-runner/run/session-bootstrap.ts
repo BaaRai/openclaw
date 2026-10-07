@@ -27,6 +27,7 @@ import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
+import { supersedeReplyRunByRunId } from "../../../sessions/session-controller.stop-runtime.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../../sessions/session-id-resolution.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
@@ -41,7 +42,6 @@ import {
 } from "../../run-termination.js";
 import { redactRunIdentifier } from "../../workspace-run.js";
 import { log } from "../logger.js";
-import { supersedeEmbeddedAgentRunByRunId } from "../runs.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { resolveAgentHarnessRunAdmissionError } from "./setup.js";
 
@@ -483,7 +483,7 @@ async function claimPersistedAgentSessionWriter(
   if (previousWriterRunId && previousWriterRunId !== params.runId) {
     // The replacement must own the durable row before the incumbent is made
     // terminal. A failed claim leaves the still-authoritative run untouched.
-    const superseded = supersedeEmbeddedAgentRunByRunId(previousWriterRunId, () => {
+    const superseded = supersedeReplyRunByRunId(previousWriterRunId, () => {
       const previousLifecycleGeneration =
         getAgentRunContext(previousWriterRunId)?.lifecycleGeneration;
       const recorded = emitAgentEventIfCurrent({
