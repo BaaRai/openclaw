@@ -2426,7 +2426,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
-  it("retires an aborted agent.wait run as a confirmed kill without announcing", async () => {
+  it("announces an aborted agent.wait run once as a confirmed kill, then retires it", async () => {
     mockGatewayMethods(mocks.callGateway, {
       "agent.wait": {
         status: "ok",
@@ -2442,7 +2442,25 @@ describe("subagent registry seam flow", () => {
       expectsCompletionMessage: true,
     });
 
-    // No controller operation runs this fixture, so its kill is confirmed at once.
+    // No controller operation runs this fixture, so its kill is confirmed at once and the
+    // requester, which did not stop it, hears of it once.
+    await waitForFast(() => expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1));
+    const announceParams = expectRecordFields(
+      getMockCallArg(mocks.runSubagentAnnounceFlow, 0, 0, "aborted wait announce"),
+      { childRunId: "run-aborted-wait" },
+      "aborted wait announce params",
+    );
+    expectRecordFields(
+      announceParams.outcome,
+      {
+        status: "error",
+        error: "subagent run terminated",
+        startedAt: 100,
+        endedAt: 250,
+        elapsedMs: 150,
+      },
+      "aborted wait announce outcome",
+    );
     await waitForFast(() => {
       expect(
         mod
@@ -2450,7 +2468,7 @@ describe("subagent registry seam flow", () => {
           .some((entry) => entry.runId === "run-aborted-wait"),
       ).toBe(false);
     });
-    expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
   it("retires stable operator cancellation despite a late persisted completion", async () => {
@@ -2496,27 +2514,30 @@ describe("subagent registry seam flow", () => {
 
         await mod.testing.sweepOnceForTests();
 
+        // The operator's cancellation stands over the late completion. The requester did not
+        // stop this child, so it hears the cancellation once; that delete-cleanup announcement
+        // owns removing the child session.
         await waitForFast(() => {
           expect(
             mod
               .listSubagentRunsForRequester("agent:main:main")
               .some((entry) => entry.runId === runId),
           ).toBe(false);
-          expect(mocks.callGateway).toHaveBeenCalledWith({
-            method: "sessions.delete",
-            params: {
-              key: childSessionKey,
-              deleteTranscript: true,
-              emitLifecycleHooks: false,
-              expectedLifecycleRevision: "revision-stable-cancellation",
-              expectedSessionId: "sess-stable-cancellation",
-            },
-            timeoutMs: 10_000,
-            assertDispatchCurrent: expect.any(Function),
-            prepareDispatchCurrent: expect.any(Function),
-          });
+          expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
         });
-        expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+        const announceParams = expectRecordFields(
+          getMockCallArg(mocks.runSubagentAnnounceFlow, 0, 0, "stable cancellation announce"),
+          { childRunId: runId, childSessionKey, cleanup: "delete" },
+          "stable cancellation announce params",
+        );
+        expectRecordFields(
+          announceParams.outcome,
+          { status: "error" },
+          "stable cancellation announce outcome",
+        );
+        expect(mocks.callGateway).not.toHaveBeenCalledWith(
+          expect.objectContaining({ method: "sessions.delete" }),
+        );
       },
     );
   });
@@ -3190,7 +3211,7 @@ describe("subagent registry seam flow", () => {
 
   it.each([
     {
-      name: "publishes aborted lifecycle end events only after killed reconciliation",
+      name: "announces an aborted lifecycle end once after its kill is confirmed",
       runId: "run-aborted-end",
       task: "aborted task",
       phase: "end" as const,
@@ -3242,13 +3263,32 @@ describe("subagent registry seam flow", () => {
       expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
       return;
     }
-    // A confirmed kill retires the run's completion obligation and the row.
+    // The confirmed kill reports its outcome to the requester once, then retires the row.
+    await waitForFast(() => expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1));
+    if (verifiesAnnouncement) {
+      const announceParams = expectRecordFields(
+        getMockCallArg(mocks.runSubagentAnnounceFlow, 0, 0, "aborted announce"),
+        { childRunId: runId },
+        "aborted announce params",
+      );
+      expectRecordFields(
+        announceParams.outcome,
+        {
+          status: "error",
+          error: "subagent run terminated",
+          startedAt: 10,
+          endedAt: 20,
+          elapsedMs: 10,
+        },
+        "aborted announce outcome",
+      );
+    }
     await waitForFast(() =>
       expect(
         mod.listSubagentRunsForRequester("agent:main:main").some((entry) => entry.runId === runId),
       ).toBe(false),
     );
-    expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 
   it("finishes canonical killed cleanup when its best-effort hook fails", async () => {
