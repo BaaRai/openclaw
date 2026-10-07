@@ -4,14 +4,15 @@
  * The shared module owns classification and message contracts; this adapter
  * binds those contracts to embedded-run abort, status, and steering primitives.
  */
-import type {
-  ActiveEmbeddedRunOwner,
-  EmbeddedAgentQueueMessageOutcome,
-} from "../agents/embedded-agent-runner/runs.js";
+import type { ActiveEmbeddedRunOwner } from "../agents/embedded-agent-runner/runs.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
-import type { ReplyToolAuthorityOverlay } from "../sessions/session-controller.contracts.js";
+import type {
+  ReplyMessageInjectionOptions,
+  ReplyToolAuthorityOverlay,
+} from "../sessions/session-controller.contracts.js";
+import type { SessionControllerSteerResult } from "../sessions/session-controller.steer.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
 import { captureRealtimeVoiceRunOwner } from "./agent-run-control-owner.js";
 import {
@@ -51,23 +52,16 @@ export function buildRealtimeVoiceAgentErrorProviderResult(
 }
 
 type RealtimeVoiceAgentControlDeps = {
-  queueGuardedEmbeddedAgentMessageWithOutcomeAsync?: typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
   stopRealtimeVoiceSessionRun: (params: {
     sessionKey: string;
     sessionId: string;
   }) => Promise<boolean>;
-  queueEmbeddedAgentMessageWithOutcomeAsync: (
+  /** Steers one controller-owned turn; a refusal leaves no queued input behind. */
+  steerActiveRun: (
     sessionId: string,
     text: string,
-    options?: {
-      steeringMode?: "all";
-      debounceMs?: number;
-      isInboundUserMessage?: boolean;
-      taskSuggestionDeliveryMode?: undefined;
-      toolAuthorityOverlay?: ReplyToolAuthorityOverlay;
-      userTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
-    },
-  ) => Promise<EmbeddedAgentQueueMessageOutcome>;
+    options: ReplyMessageInjectionOptions,
+  ) => Promise<SessionControllerSteerResult>;
   getDiagnosticSessionActivitySnapshot: (params: {
     sessionId?: string;
     sessionKey?: string;
@@ -240,45 +234,56 @@ export async function controlRealtimeVoiceAgentRun(
     // a capable TUI run's model-facing task tools.
     taskSuggestionDeliveryMode: undefined,
   };
-  const outcome: EmbeddedAgentQueueMessageOutcome =
+  // Exact and pinned legacy owners bind the steer to their source authority.
+  const sourceCurrent =
     target || legacyOwner
-      ? commands.queueGuardedEmbeddedAgentMessageWithOutcomeAsync
-        ? await commands.queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
-            sessionId,
-            steerText,
-            options,
-            () => {
-              if (target) {
-                return !target.signal.aborted && target.isCurrent(sessionId);
-              }
-              const currentOverlay = params.getToolAuthorityOverlay?.();
-              return Boolean(
-                legacyOwner?.isCurrent() &&
-                (!currentOverlay || legacyOwner.matchesCaller(currentOverlay)),
-              );
-            },
-          )
-        : {
-            queued: false,
-            sessionId,
-            gatewayHealth: "live",
-            reason: "guarded_injection_unsupported",
+      ? () => {
+          if (target) {
+            return !target.signal.aborted && target.isCurrent(sessionId);
           }
-      : await commands.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, options);
-  if (!outcome.queued) {
+          const currentOverlay = params.getToolAuthorityOverlay?.();
+          return Boolean(
+            legacyOwner?.isCurrent() &&
+            (!currentOverlay || legacyOwner.matchesCaller(currentOverlay)),
+          );
+        }
+      : undefined;
+  let steer: SessionControllerSteerResult;
+  try {
+    steer = await commands.steerActiveRun(sessionId, steerText, {
+      ...options,
+      ...(sourceCurrent
+        ? {
+            assertCurrent: () => {
+              if (!sourceCurrent()) {
+                throw new Error("Voice control target is no longer current");
+              }
+            },
+          }
+        : {}),
+    });
+  } catch (error) {
+    steer = {
+      status: "rejected",
+      reason: "runtime_rejected",
+      errorMessage: formatErrorMessage(error),
+    };
+  }
+  if (steer.status === "rejected") {
     return {
       ok: false,
       ...controlResultContext,
-      sessionId: outcome.sessionId,
+      sessionId,
       active: true,
       queued: false,
-      reason: outcome.reason,
-      message: formatRealtimeVoiceAgentQueueRejection(mode, outcome.reason),
+      reason: steer.reason,
+      message: formatRealtimeVoiceAgentQueueRejection(mode, steer.reason),
       ...controlResultPresentation,
     };
   }
 
-  const unconfirmed = outcome.transcriptCommit === "unconfirmed";
+  const unconfirmed =
+    steer.status === "indeterminate" || steer.result?.transcriptCommit === "unconfirmed";
   const message = unconfirmed
     ? "OpenClaw could not confirm that input. It was not sent again; check the conversation before retrying."
     : mode === "followup"
@@ -287,14 +292,11 @@ export async function controlRealtimeVoiceAgentRun(
   return {
     ok: !unconfirmed,
     ...controlResultContext,
-    sessionId: outcome.sessionId,
+    sessionId,
     active: true,
     queued: true,
-    target: outcome.target,
     ...(unconfirmed ? { reason: "delivery_unconfirmed" } : {}),
     message,
     ...controlResultPresentation,
-    ...(outcome.enqueuedAtMs !== undefined ? { enqueuedAtMs: outcome.enqueuedAtMs } : {}),
-    ...(outcome.deliveredAtMs !== undefined ? { deliveredAtMs: outcome.deliveredAtMs } : {}),
   };
 }

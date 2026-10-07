@@ -1,5 +1,7 @@
 // Agent run control tests cover talk-driven agent pause and resume behavior.
 import { describe, expect, it, vi } from "vitest";
+import type { ReplyMessageInjectionOptions } from "../sessions/session-controller.contracts.js";
+import type { SessionControllerSteerResult } from "../sessions/session-controller.steer.js";
 import type { RealtimeVoiceAgentRunActivity } from "./agent-run-control-shared.js";
 import {
   classifyRealtimeVoiceAgentControlText,
@@ -19,38 +21,20 @@ function createDeps(options: {
   queued?: boolean;
   unconfirmed?: boolean;
   activity?: RealtimeVoiceAgentRunActivity;
-  reason?: "no_active_run" | "not_streaming" | "compacting" | "runtime_rejected";
 }) {
   return {
     stopRealtimeVoiceSessionRun: vi.fn(async () => true),
-    // Preserve the dependency callback contract exported in v2026.8.1.
-    queueEmbeddedAgentMessageWithOutcomeAsync: vi.fn(
+    steerActiveRun: vi.fn(
       async (
-        sessionId: string,
+        _sessionId: string,
         _text: string,
-        _options?: {
-          steeringMode?: "all";
-          isInboundUserMessage?: boolean;
-          taskSuggestionDeliveryMode?: undefined;
-        },
-      ) =>
+        _options: ReplyMessageInjectionOptions,
+      ): Promise<SessionControllerSteerResult> =>
         options.queued === false
-          ? {
-              queued: false as const,
-              sessionId,
-              reason: options.reason ?? "not_streaming",
-              gatewayHealth: "live" as const,
-            }
-          : {
-              queued: true as const,
-              sessionId,
-              target: "embedded_run" as const,
-              gatewayHealth: "live" as const,
-              enqueuedAtMs: 123,
-              ...(options.unconfirmed
-                ? { transcriptCommit: "unconfirmed" as const, errorMessage: "receipt unavailable" }
-                : {}),
-            },
+          ? { status: "rejected", reason: "injection_unavailable" }
+          : options.unconfirmed
+            ? { status: "indeterminate", errorMessage: "receipt unavailable" }
+            : { status: "accepted" },
     ),
     getDiagnosticSessionActivitySnapshot: vi.fn(() => options.activity ?? {}),
     resolveActiveSessionRunId: vi.fn(() => options.activeSessionId),
@@ -154,7 +138,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       expect(deps.resolveActiveSessionRunId).not.toHaveBeenCalled();
       expect(deps.getDiagnosticSessionActivitySnapshot).not.toHaveBeenCalled();
       expect(deps.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
-      expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+      expect(deps.steerActiveRun).not.toHaveBeenCalled();
     },
   );
 
@@ -238,16 +222,12 @@ describe("controlRealtimeVoiceAgentRun", () => {
       speak: true,
       suppress: false,
     });
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledWith(
-      "session-active",
-      "use the safer path",
-      {
-        steeringMode: "all",
-        debounceMs: 0,
-        isInboundUserMessage: true,
-        taskSuggestionDeliveryMode: undefined,
-      },
-    );
+    expect(deps.steerActiveRun).toHaveBeenCalledWith("session-active", "use the safer path", {
+      steeringMode: "all",
+      debounceMs: 0,
+      isInboundUserMessage: true,
+      taskSuggestionDeliveryMode: undefined,
+    });
   });
 
   it.each(["steer", "followup"] as const)(
@@ -268,20 +248,21 @@ describe("controlRealtimeVoiceAgentRun", () => {
       });
       expect(result.message).toContain("could not confirm");
       expect(result.message).toContain("not sent again");
-      expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledOnce();
+      expect(deps.steerActiveRun).toHaveBeenCalledOnce();
       expect(deps.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
     },
   );
 
-  it("refuses a source-bound control with only the shipped narrow V1 callback", async () => {
+  it("binds an exact-owner steer to that owner's live authority", async () => {
     const deps = createDeps({ activeSessionId: "owned-session" });
-    const result = await controlRealtimeVoiceAgentRun(
+    let current = true;
+    await controlRealtimeVoiceAgentRun(
       {
         sessionKey: "global",
         runTarget: {
           runId: "owned-run",
           signal: new AbortController().signal,
-          isCurrent: () => true,
+          isCurrent: () => current,
         },
         mode: "steer",
         text: "source-bound",
@@ -296,13 +277,11 @@ describe("controlRealtimeVoiceAgentRun", () => {
         }),
       },
     );
-    expect(result).toMatchObject({
-      ok: false,
-      queued: false,
-      reason: "guarded_injection_unsupported",
-    });
-    expect(result.message).toContain("cannot safely accept scoped voice steering");
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+    const assertCurrent = deps.steerActiveRun.mock.calls[0]?.[2].assertCurrent;
+    expect(assertCurrent).toBeTypeOf("function");
+    expect(() => assertCurrent?.()).not.toThrow();
+    current = false;
+    expect(() => assertCurrent?.()).toThrow("no longer current");
   });
 
   it("wraps follow-up steering so the active run treats it as deferred context", async () => {
@@ -318,7 +297,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     );
 
     expect(result).toMatchObject({ ok: true, mode: "followup", speak: true });
-    const queuedText = deps.queueEmbeddedAgentMessageWithOutcomeAsync.mock.calls[0]?.[1] ?? "";
+    const queuedText = deps.steerActiveRun.mock.calls[0]?.[1] ?? "";
     expect(queuedText).toContain("Spoken follow-up for the current voice call.");
     expect(queuedText).toContain("also check the migration");
   });
@@ -347,7 +326,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       active: true,
       message: "OpenClaw is running exec_command.",
     });
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+    expect(deps.steerActiveRun).not.toHaveBeenCalled();
   });
 
   it("does not report stale control tool progress after the active run ends", async () => {
@@ -382,7 +361,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       active: false,
       message: "I'm not working on an active request right now.",
     });
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+    expect(deps.steerActiveRun).not.toHaveBeenCalled();
   });
 
   it("skips control tool progress when reporting active run status", async () => {
@@ -428,7 +407,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       active: true,
       message: "OpenClaw is working in exec_command (running).",
     });
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+    expect(deps.steerActiveRun).not.toHaveBeenCalled();
   });
 
   it.each(["injected", "runtime"] as const)(
@@ -453,7 +432,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
         reason: "no_active_run",
       });
       if (deps) {
-        expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
+        expect(deps.steerActiveRun).not.toHaveBeenCalled();
       }
     },
   );
