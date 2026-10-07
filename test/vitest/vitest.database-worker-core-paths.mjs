@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/gateway/agent-turn/agent-request-routing.session-id.test.ts",
   "src/gateway/conversation-route-ownership.worker.test.ts",
   "src/gateway/conversation-list.admission.test.ts",
   "src/gateway/conversation-list.account-removal.test.ts",
@@ -99,6 +100,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run-entry.cleanup.test.ts",
   "src/agents/embedded-agent-runner/run-entry.cyber-failover.runner.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.rooted-proof.test.ts",
+  "src/agents/embedded-agent-runner/run-orchestrator.required-profile.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.suspension.test.ts",
   "src/agents/embedded-agent-runner/run.cli-dispatch-lane.test.ts",
   "src/agents/embedded-agent-runner.run-embedded-agent.finalization-scope.test.ts",
