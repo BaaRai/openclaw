@@ -130,7 +130,7 @@ export async function withSessionSharingTarget<T>(
     members: readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[];
     assertCurrent: () => void;
   }) => T,
-  selection?: GatewaySessionStoreSelection,
+  retainedSelection?: GatewaySessionStoreSelection,
 ): Promise<T> {
   const read: Parameters<typeof withGatewaySessionStoreTarget<T>>[1] = (
     selected,
@@ -152,16 +152,16 @@ export async function withSessionSharingTarget<T>(
       assertCurrent,
     });
   };
-  if (selection) {
+  if (retainedSelection) {
     return withQualifiedGatewaySessionStoreTarget({
-      target: selection.target,
-      logicalStorePath: selection.logicalStorePath,
-      env: selection.env,
-      preparedSource: selection.source,
+      target: retainedSelection.target,
+      logicalStorePath: retainedSelection.logicalStorePath,
+      env: retainedSelection.env,
+      preparedSource: retainedSelection.source,
       includeMembership: true,
       readOptions: { snapshotFields: [], lifecycleSessionKey: undefined },
       consume: (target, membership, assertCurrent) =>
-        read(target, membership, assertCurrent, [], selection),
+        read(target, membership, assertCurrent, [], retainedSelection),
     });
   }
   return withGatewaySessionStoreTarget(

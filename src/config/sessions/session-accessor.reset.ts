@@ -202,7 +202,7 @@ export async function loadReplySessionInitializationSnapshot(
       },
       assertCurrent,
       (read) => ({
-        store: Object.fromEntries(read.entries.map(({ sessionKey, entry }) => [sessionKey, entry])),
+        store: Object.fromEntries(read.entries.map(({ sessionKey: key, entry }) => [key, entry])),
         lifecycleTimestamps: includeLifecycle ? read.lifecycleTimestamps : undefined,
       }),
     );

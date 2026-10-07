@@ -58,7 +58,8 @@ export function bindReplyOperationDatabaseAdmission(
       };
       assertInitializing();
       const current = operationAdmission.databaseClaim;
-      const prepare = current && "kind" in current ? current.afterInitialization : undefined;
+      const prepare =
+        current && "kind" in current ? current.afterInitialization?.bind(current) : undefined;
       if (!current || !prepare) {
         return;
       }

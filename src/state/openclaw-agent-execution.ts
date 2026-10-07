@@ -168,8 +168,12 @@ function createAgentDatabaseExecution(
   let revoked = false;
   let retainIdle = true;
   let borrowers = 0;
-  const { pending, cancelReadAdmissions, closeAccepted, settleBorrower } =
-    createAgentDatabaseAcceptedWork();
+  const {
+    pending: acceptedWork,
+    cancelReadAdmissions,
+    closeAccepted,
+    settleBorrower,
+  } = createAgentDatabaseAcceptedWork();
   let creationIdentity = expectedCreationIdentity;
   let creationBorrowers = 0;
   let generation: AgentDatabaseNativeGeneration | undefined;
@@ -447,7 +451,7 @@ function createAgentDatabaseExecution(
       };
       let released = false;
       let release: Promise<void> | undefined;
-      const borrower = Symbol();
+      const borrower = Symbol("agent database borrower");
 
       const assertBorrowed = () => {
         if (released) {
@@ -496,14 +500,14 @@ function createAgentDatabaseExecution(
             signal,
             preparationOptions?.readmitSchema,
           );
-          pending.set(result, { borrower });
-          void result.finally(() => pending.delete(result)).catch(() => undefined);
+          acceptedWork.set(result, { borrower });
+          void result.finally(() => acceptedWork.delete(result)).catch(() => undefined);
           await result;
         },
         async runExisting(source, operation, runOptions) {
           const capturedGeneration = released ? undefined : generation;
           const completion = createDeferredCore();
-          pending.set(completion.promise, { borrower });
+          acceptedWork.set(completion.promise, { borrower });
           try {
             assertBorrowed();
             assertCreationReference(false);
@@ -520,7 +524,7 @@ function createAgentDatabaseExecution(
               );
             if (runOptions?.withAdmission) {
               const queuedReadAbort = new AbortController();
-              pending.set(completion.promise, { borrower, queuedReadAbort });
+              acceptedWork.set(completion.promise, { borrower, queuedReadAbort });
               return await runOptions.withAdmission(execute, queuedReadAbort.signal);
             }
             return await execute();
@@ -541,7 +545,7 @@ function createAgentDatabaseExecution(
             }
             throw error;
           } finally {
-            pending.delete(completion.promise);
+            acceptedWork.delete(completion.promise);
             completion.resolve();
           }
         },

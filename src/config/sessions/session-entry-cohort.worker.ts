@@ -27,10 +27,10 @@ import { MAX_SESSION_ROW_FACTS_KEYS } from "./session-transcript-worker.types.js
 /** Captured cohorts retain their native handle and snapshot; standalone reads keep admission. */
 export function createSessionEntryReadScope(capturedDatabase?: OpenClawAgentReadOnlyDatabase) {
   return {
-    assertCanonicalRead(
+    assertCanonicalRead: (
       database: OpenClawAgentReadOnlyDatabase,
       expectedIdentity: SessionExactEntriesWorkerInput["expectedIdentity"],
-    ) {
+    ) => {
       if (expectedIdentity) {
         assertOpenClawAgentDatabaseIdentity(database, expectedIdentity);
       }

@@ -141,7 +141,7 @@ export function registerSessionInitializationAdmissionTests({
         await waitForReplyRunSuccessorAdmission(sessionKey, null);
         throw new Error("Fixture requires the worker initialization handoff");
       }
-      const prepare = previous.afterInitialization;
+      const prepare = previous.afterInitialization.bind(previous);
       const prepared = createDeferred<Awaited<ReturnType<typeof prepare>>>();
       const retired = createDeferred();
       const continueHandoff = createDeferred();
@@ -155,7 +155,7 @@ export function registerSessionInitializationAdmissionTests({
           }
           return next;
         });
-      const release = previous.release;
+      const release = previous.release.bind(previous);
       const releaseSpy =
         stage === "retiring"
           ? vi.spyOn(previous, "release").mockImplementation(async () => {

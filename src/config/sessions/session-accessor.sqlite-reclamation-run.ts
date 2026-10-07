@@ -263,19 +263,19 @@ export async function runSqliteSessionReclamation(params: {
                 if (params.diagnostics) {
                   params.diagnostics.workerThreadId = reply.workerThreadId;
                 }
-                let result = reply.result;
+                let readResult = reply.result;
                 try {
                   assertNativeCurrent();
                 } catch (error) {
                   if (!(error instanceof SessionEntryChangedDuringReadError)) {
                     throw error;
                   }
-                  result = { kind: "maintenance-plan-stale" };
+                  readResult = { kind: "maintenance-plan-stale" };
                 }
-                if (result.kind !== "maintenance-write-required") {
-                  params.onWorkerResult?.(result, identity.key.slice(5));
+                if (readResult.kind !== "maintenance-write-required") {
+                  params.onWorkerResult?.(readResult, identity.key.slice(5));
                 }
-                return result;
+                return readResult;
               };
               if (execution && preparedClaim) {
                 return withSessionEntryWorker(

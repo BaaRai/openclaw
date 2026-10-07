@@ -8,12 +8,11 @@ export function createAgentDatabaseAcceptedWork() {
   >();
   return {
     pending,
-    settleBorrower(borrower: symbol) {
-      return Promise.allSettled(
+    settleBorrower: (borrower: symbol) =>
+      Promise.allSettled(
         [...pending].flatMap(([work, owner]) => (owner.borrower === borrower ? [work] : [])),
-      );
-    },
-    cancelReadAdmissions(borrower?: symbol) {
+      ),
+    cancelReadAdmissions: (borrower?: symbol) => {
       for (const work of pending.values()) {
         if (borrower === undefined || work.borrower === borrower) {
           work.queuedReadAbort?.abort(
@@ -24,7 +23,7 @@ export function createAgentDatabaseAcceptedWork() {
         }
       }
     },
-    async closeAccepted(close: () => Promise<void>) {
+    closeAccepted: async (close: () => Promise<void>) => {
       const reads = [...pending].flatMap(([work, owner]) => (owner.queuedReadAbort ? [work] : []));
       // A default prepare may await this close during backoff; native close owns its settlement.
       const nativeClose = close();

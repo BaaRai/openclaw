@@ -28,10 +28,7 @@ import {
 import * as archiveWorker from "./session-accessor.sqlite-archive.js";
 import type { SqliteSessionReclamationDiagnostics } from "./session-accessor.sqlite-contract.js";
 import { patchSessionEntryCore } from "./session-accessor.sqlite-entry.js";
-import type {
-  SessionEntryMaintenanceResult,
-  SqliteSessionReclamationPlan,
-} from "./session-accessor.sqlite-lifecycle-types.js";
+import type { SessionEntryMaintenanceResult } from "./session-accessor.sqlite-lifecycle-types.js";
 import * as maintenanceKick from "./session-accessor.sqlite-maintenance-kick.js";
 import { registerSessionMaintenancePreparationTests } from "./session-accessor.sqlite-maintenance-preparation.test-support.js";
 import { registerSessionMaintenanceProtectionTests } from "./session-accessor.sqlite-maintenance-protection.test-support.js";

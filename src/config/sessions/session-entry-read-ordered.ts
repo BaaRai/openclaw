@@ -113,8 +113,8 @@ export function createAdmittedSessionEntryCohortReader(params: {
         createAdmission(binding) {
           return () => ({
             nativeLocations: binding.nativeLocations,
-            admission: createSqliteWorkerOperationAdmission((request, grant) => {
-              binding.authorize(request);
+            admission: createSqliteWorkerOperationAdmission((admissionRequest, grant) => {
+              binding.authorize(admissionRequest);
               assertCurrent();
               if (!grant()) {
                 throw new Error("Session cohort authority expired");
