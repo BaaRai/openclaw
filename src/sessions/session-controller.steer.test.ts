@@ -12,7 +12,10 @@ import {
 import { captureCurrentReplyMessageInjectionTarget } from "./session-controller.message-injection.js";
 import { createReplyOperation } from "./session-controller.operation.js";
 import { findSessionControllerOperationByRunId } from "./session-controller.queries.js";
-import { submitSessionControllerSteer } from "./session-controller.steer.js";
+import {
+  steerSessionControllerOperation,
+  submitSessionControllerSteer,
+} from "./session-controller.steer.js";
 
 const key = "agent:main:controller-steer";
 const cleanups: Array<() => void> = [];
@@ -29,6 +32,7 @@ function startTurn(params: {
   queueMessage: QueueMessage;
   injection?: "v2" | "legacy";
   compacting?: boolean;
+  supportsTranscriptCommitWait?: false;
 }) {
   const operation = createReplyOperation({
     sessionKey: key,
@@ -43,6 +47,7 @@ function startTurn(params: {
     runId: "steer-run",
     cancel: () => {},
     isCompacting: () => params.compacting === true,
+    supportsTranscriptCommitWait: params.supportsTranscriptCommitWait ?? true,
     ...(params.injection === "legacy"
       ? { messageInjection: { isAvailable: () => true, queueMessage } }
       : { messageInjectionV2: { version: 2, isAvailable: () => true, queueMessage } }),
@@ -130,6 +135,26 @@ describe("submitSessionControllerSteer", () => {
     }
   });
 
+  it("leaves a transcript-wait steer queued when the backend cannot confirm commits", async () => {
+    let injected = false;
+    const { input } = startTurn({
+      supportsTranscriptCommitWait: false,
+      queueMessage: async () => {
+        injected = true;
+      },
+    });
+
+    await expect(
+      submitSessionControllerSteer({
+        input,
+        text: "steer",
+        options: { waitForTranscriptCommit: true },
+      }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "transcript_commit_wait_unsupported" });
+    expect(injected).toBe(false);
+    expectQueued(input);
+  });
+
   it("refuses injection into a captured turn after it yields and records the result once", async () => {
     let injected = false;
     const { operation, input } = startTurn({
@@ -149,6 +174,43 @@ describe("submitSessionControllerSteer", () => {
     expectQueued(input);
     operation.complete();
     expect(operation.result).toEqual({ kind: "yielded" });
+  });
+});
+
+describe("steerSessionControllerOperation", () => {
+  it.each([
+    [
+      "accepted",
+      async ({ onQueueAccepted }: Parameters<QueueMessage>[0]) => onQueueAccepted?.(true),
+    ],
+    [
+      "rejected",
+      async () => {
+        throw new Error("backend rejected");
+      },
+    ],
+  ] as const)(
+    "leaves no input behind when the exact turn's steer is %s",
+    async (status, queueMessage) => {
+      const { operation, input } = startTurn({ queueMessage });
+      retireSessionControllerInput(input);
+
+      await expect(
+        steerSessionControllerOperation({ operation, text: "steer", options: {} }),
+      ).resolves.toMatchObject({ status });
+      expect(input.mailbox.entries.filter((entry) => entry.phase !== "consumed")).toEqual([]);
+    },
+  );
+
+  it("refuses a turn that already settled without reserving input", async () => {
+    const { operation, input } = startTurn({ queueMessage: async () => {} });
+    retireSessionControllerInput(input);
+    operation.complete();
+
+    await expect(
+      steerSessionControllerOperation({ operation, text: "late", options: {} }),
+    ).resolves.toEqual({ status: "rejected", reason: "no_active_run" });
+    expect(input.mailbox.entries.filter((entry) => entry.phase !== "consumed")).toEqual([]);
   });
 });
 

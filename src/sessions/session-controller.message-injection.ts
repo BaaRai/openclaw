@@ -92,6 +92,7 @@ export function resolveReplyBackendQueueMessageMismatch(
     | "sourceReplyDeliveryMode"
     | "terminalReplyExpectation"
     | "supportsQueueMessageImages"
+    | "supportsTranscriptCommitWait"
     | "taskSuggestionDeliveryMode"
     | "toolAuthorityFingerprint"
     | "runId"
@@ -99,6 +100,9 @@ export function resolveReplyBackendQueueMessageMismatch(
   options?: ReplyBackendQueueMessageOptions,
   authority?: { toolAuthorityFingerprint?: string },
 ): ReplyBackendQueueMessageMismatch | undefined {
+  if (options?.waitForTranscriptCommit === true && backend.supportsTranscriptCommitWait !== true) {
+    return "transcript_commit_wait_unsupported";
+  }
   if (options?.isInboundUserMessage === true) {
     const runContext = backend.runId ? getAgentRunContext(backend.runId) : undefined;
     // A new human turn must keep its own visible answer. Steering shares the

@@ -5,14 +5,23 @@ import type {
   ReplyMessageInjectionOptions,
   ReplyMessageInjectionOutcome,
   ReplyMessageInjectionTarget,
+  ReplyOperation,
 } from "./session-controller.contracts.js";
-import { beginSessionControllerSourceInjection } from "./session-controller.mailbox-source.js";
+import {
+  beginSessionControllerSourceInjection,
+  retireSessionControllerInput,
+} from "./session-controller.mailbox-source.js";
+import { reserveSessionControllerSource } from "./session-controller.mailbox.js";
 import type { SessionControllerInput } from "./session-controller.mailbox.types.js";
 import {
   beginReplyMessageInjectionTarget,
   captureReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
 } from "./session-controller.message-injection.js";
+import {
+  getSessionControllerEntryForOperation,
+  isCurrentSessionControllerOperation,
+} from "./session-controller.state.js";
 
 type SessionControllerSteerParams = {
   input: SessionControllerInput;
@@ -119,4 +128,34 @@ export async function submitSessionControllerSteer(
     };
   }
   return { status: "accepted", targetRunId, result: finalization.outcome.result };
+}
+
+/**
+ * Steers in-process input into one exact operation through a steer input reserved on
+ * that operation's own mailbox. Target capture and reservation happen synchronously,
+ * before the first await. The reservation never outlives the call: a refused steer is
+ * retired, never queued as a later turn.
+ */
+export async function steerSessionControllerOperation(params: {
+  operation: ReplyOperation | undefined;
+  text: string;
+  options: ReplyMessageInjectionOptions;
+  abortOnUnconfirmedTranscript?: false;
+}): Promise<SessionControllerSteerResult> {
+  const { operation, ...steer } = params;
+  const target = captureReplyMessageInjectionTarget(operation);
+  if (!operation || !target) {
+    const live = operation && isCurrentSessionControllerOperation(operation) && !operation.result;
+    return { status: "rejected", reason: live ? "injection_unavailable" : "no_active_run" };
+  }
+  const owner = getSessionControllerEntryForOperation(operation);
+  const input = reserveSessionControllerSource(owner.key, {
+    policy: { mode: "steer" },
+    target: owner.target,
+  });
+  try {
+    return await submitSessionControllerSteer({ ...steer, input, target });
+  } finally {
+    retireSessionControllerInput(input);
+  }
 }

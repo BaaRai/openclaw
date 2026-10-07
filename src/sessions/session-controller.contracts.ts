@@ -198,6 +198,8 @@ export type ReplyBackendHandle = {
   readonly taskSuggestionDeliveryMode?: TaskSuggestionDeliveryMode;
   /** True only when queueMessage preserves images supplied in its options. */
   readonly supportsQueueMessageImages?: boolean;
+  /** True only when queueMessage can hold its receipt until the transcript commit. */
+  readonly supportsTranscriptCommitWait?: boolean;
   /** False keeps inbound steering with the turn owner's profile; omission permits other profiles. */
   readonly supportsCrossProfileSteering?: boolean;
   claimPendingUserInputAnswer?: (
@@ -212,6 +214,8 @@ export type ReplyBackendHandle = {
   /** @deprecated Compatibility for shipped embedded handles. Use messageInjection. */
   isStreaming?: () => boolean;
   isStopped?: () => boolean;
+  /** True after this backend accepted an abort, even while its cleanup is retained. */
+  isAborted?: () => boolean;
   isAbortable?: () => boolean;
   /** @deprecated Compatibility for shipped embedded handles. Use messageInjection. */
   queueMessage?: ReplyBackendMessageInjection["queueMessage"];
@@ -292,6 +296,7 @@ export type ReplyMessageInjectionAttempt = {
 };
 
 export type ReplyBackendQueueMessageMismatch =
+  | "transcript_commit_wait_unsupported"
   | "input_visibility_mismatch"
   | "tool_authority_mismatch"
   | "image_input_unsupported"
