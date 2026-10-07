@@ -7,6 +7,23 @@ export type SessionMaintenancePreservationSnapshot = {
   lifecycleIdentities: string[];
 };
 
+/**
+ * True when `current` protects nothing beyond `prepared`. Resolved protection only
+ * grows with these sets, so a plan prepared under wider protection stays safe.
+ */
+export function isSessionMaintenancePreservationCovered(
+  prepared: SessionMaintenancePreservationSnapshot | null,
+  current: SessionMaintenancePreservationSnapshot | null,
+): boolean {
+  if (!prepared || !current) {
+    return prepared === current;
+  }
+  return (["providerKeys", "workIdentities", "lifecycleIdentities"] as const).every((field) => {
+    const allowed = new Set(prepared[field]);
+    return current[field].every((value) => allowed.has(value));
+  });
+}
+
 export function addSessionMaintenancePreserveKeys(
   keys: Set<string>,
   values: Iterable<string | undefined> | undefined,

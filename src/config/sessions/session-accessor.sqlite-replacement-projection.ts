@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { isMainThread } from "node:worker_threads";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -47,6 +46,7 @@ import type {
   SessionEntryReplacement,
 } from "./session-accessor.types.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
+import { isSessionMaintenancePreservationCovered } from "./store-maintenance-preserve-snapshot.js";
 import { captureSessionMaintenancePreservation } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 
@@ -259,7 +259,7 @@ async function applySqliteSessionEntryReplacementProjection<T, TReplacement>(
             params.assertCommitAllowed?.();
             if (
               maintenance &&
-              !isDeepStrictEqual(
+              !isSessionMaintenancePreservationCovered(
                 maintenance.preservation,
                 captureSessionMaintenancePreservation(params.storePath),
               )

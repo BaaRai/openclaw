@@ -234,6 +234,40 @@ it.each([
   },
 );
 
+it("commits when maintenance protection only shrinks before the commit grant", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    // Unrelated work ending mid-commit leaves the prepared plan more conservative, never unsafe.
+    let protectedKeys = [f.scope.sessionKey, "agent:main:finished-elsewhere"];
+    const create = admission.createSqliteWorkerOperationAdmission;
+    vi.spyOn(admission, "createSqliteWorkerOperationAdmission").mockImplementation(
+      (callback, attachment) =>
+        create((request, grant) => {
+          if (
+            delivery.currentCommand === "session.lifecycle.project" &&
+            request.stage === "commit"
+          ) {
+            protectedKeys = [f.scope.sessionKey];
+          }
+          callback(request, grant);
+        }, attachment),
+    );
+    const stopPreserving = registerSessionMaintenancePreserveKeysProvider(() => protectedKeys);
+    try {
+      await applySessionEntryLifecycleMutation({
+        ...f.scope,
+        activeSessionKey: f.scope.sessionKey,
+        maintenanceOverride: { mode: "enforce" },
+        upserts: [{ sessionKey: f.scope.sessionKey, entry: { sessionId: "kept", updatedAt: 2 } }],
+      });
+      expect(protectedKeys).toEqual([f.scope.sessionKey]);
+      expect(f.read()).toMatchObject({ sessionId: "kept" });
+    } finally {
+      stopPreserving();
+    }
+  });
+});
+
 it("publishes the acknowledged lifecycle once after losing its worker reply", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = fixture();

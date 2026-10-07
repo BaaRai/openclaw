@@ -1,5 +1,4 @@
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { isMainThread } from "node:worker_threads";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { resolveStoredSessionOwnerAgentId } from "../../gateway/session-store-key.js";
@@ -74,6 +73,7 @@ import {
   withSqliteSessionDatabase,
 } from "./session-accessor.sqlite-scope.js";
 import { commitSessionLifecycleProjectionInWorker } from "./session-lifecycle-projection.js";
+import { isSessionMaintenancePreservationCovered } from "./store-maintenance-preserve-snapshot.js";
 import { prepareSessionMaintenancePreservation } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import { normalizeResolvedMaintenanceConfigInput } from "./store-maintenance.js";
@@ -223,7 +223,10 @@ export async function applySessionEntryLifecycleMutation(
                   if (
                     maintenance &&
                     preparedPreservation &&
-                    !isDeepStrictEqual(maintenance.preservation, preparedPreservation.capture())
+                    !isSessionMaintenancePreservationCovered(
+                      maintenance.preservation,
+                      preparedPreservation.capture(),
+                    )
                   ) {
                     throw new Error(
                       "Session maintenance protection changed before lifecycle removal",

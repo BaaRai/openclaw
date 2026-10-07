@@ -43,6 +43,7 @@ import {
   toDatabaseOptions,
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
+import { isSessionMaintenancePreservationCovered } from "./store-maintenance-preserve-snapshot.js";
 import { prepareSessionMaintenancePreservation } from "./store-maintenance-preserve.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import {
@@ -419,7 +420,10 @@ async function runPendingMaintenance(
         ) ||
         (admitted &&
           operation.input.preservation !== null &&
-          !isDeepStrictEqual(operation.input.preservation, capturePreservation()))
+          !isSessionMaintenancePreservationCovered(
+            operation.input.preservation,
+            capturePreservation(),
+          ))
       ) {
         planningChanged = true;
         throw new SqliteReclamationInputsChangedError(
