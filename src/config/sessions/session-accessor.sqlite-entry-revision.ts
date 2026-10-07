@@ -8,7 +8,9 @@ import { runSqlitePinnedReadSnapshotSync } from "../../infra/sqlite-pinned-read-
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import {
   getAdmittedSqliteSchemaFacts,
+  getSqliteReadScopeRevision,
   readSqliteCacheDataVersion,
+  type SqliteReadScopeRevision,
 } from "../../infra/sqlite-schema-facts.js";
 
 /** Connection revision shared by entry snapshots and maintenance age facts. */
@@ -18,6 +20,10 @@ export type SqliteSessionEntryRevision = {
 };
 
 const sessionNodesGenerationTrackerSchemaVersions = new WeakMap<DatabaseSync, number>();
+const sessionNodesGenerationFacts = new WeakMap<
+  DatabaseSync,
+  { revision: SqliteReadScopeRevision; generation: number }
+>();
 
 type SessionEntryRevisionDatabase = {
   openclaw_session_nodes_cache_generation: { id: number; generation: unknown };
@@ -82,9 +88,19 @@ function ensureSessionNodesGenerationTracker(database: DatabaseSync): void {
 
 export function readSessionNodesGeneration(database: DatabaseSync): number {
   ensureSessionNodesGenerationTracker(database);
+  const revision = getSqliteReadScopeRevision(database);
+  const retained = sessionNodesGenerationFacts.get(database);
+  if (revision && retained?.revision === revision) {
+    return retained.generation;
+  }
   const row = generationQuery(database)();
   if (typeof row?.generation !== "number") {
     throw new Error("SQLite session_nodes cache generation is unavailable");
+  }
+  if (revision && getSqliteReadScopeRevision(database) === revision) {
+    sessionNodesGenerationFacts.set(database, { revision, generation: row.generation });
+  } else {
+    sessionNodesGenerationFacts.delete(database);
   }
   return row.generation;
 }
