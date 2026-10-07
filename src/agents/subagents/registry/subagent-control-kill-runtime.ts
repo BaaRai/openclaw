@@ -75,9 +75,8 @@ export async function mutateSubagentRunForKill(
     session: SubagentKillSession;
     stateContext: OpenClawStateWorkerContext;
     cancellationControl: SubagentCancellationControl;
+    /** A requester-wide Stop or reset, or a cascade below a cancelled root: nothing is owed. */
     suppressTaskDelivery?: boolean;
-    /** A requester-wide Stop or reset: the requester already gave up this child. */
-    requesterNotified?: boolean;
     beforeSessionKill?: () => boolean;
     requiredSessionId?: string;
     isCurrent: (entry: SubagentRunRecord, requirePreparedSession?: boolean) => boolean;
@@ -149,7 +148,7 @@ export async function mutateSubagentRunForKill(
             throw new Error("Subagent ownership changed during cancellation; retry.");
           }
         },
-        { requesterNotified: params.requesterNotified },
+        { requesterNotified: params.suppressTaskDelivery },
       );
     }
     if (
@@ -301,7 +300,6 @@ export async function mutateSubagentRunForKill(
     cancellationControl: params.cancellationControl,
     stopAcceptance,
     suppressTaskDelivery: params.suppressTaskDelivery,
-    requesterNotified: params.requesterNotified,
     withdrawQueuedReservation: params.withdrawQueuedReservation,
   });
   return await runSessionMutation({

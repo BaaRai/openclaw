@@ -120,7 +120,6 @@ async function killLatestSubagentRun(params: {
   tree: KillTree;
   scope: KillScope;
   suppressTaskDelivery?: boolean;
-  requesterNotified?: boolean;
   beforeSessionKill?: () => boolean;
   requiredSessionId?: string;
   expectedRunId?: string;
@@ -232,9 +231,8 @@ function collectKillErrors(trees: KillTree[], unlabeledRoot?: KillTree) {
 type KillTraversal = {
   cfg: OpenClawConfig;
   scope: KillScope;
-  suppressTaskDelivery?: boolean;
   /** A requester-wide Stop or reset cancels the tree; that requester needs no report. */
-  requesterNotified?: boolean;
+  suppressTaskDelivery?: boolean;
 };
 
 async function visitAll(work: Promise<void>[]): Promise<void> {
@@ -344,8 +342,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
       // Descendants of a cancelled root lose their requester; nothing is reported to it.
       cascade = await killSubagentRunTree({
         cfg: params.cfg,
-        suppressTaskDelivery: params.suppressTaskDelivery,
-        requesterNotified: true,
+        suppressTaskDelivery: true,
         suppressCompletedWakes: !stopped.result.error && !stopped.result.completedCleanupError,
         scope: params.scope,
         trees: params.tree.children,
@@ -425,7 +422,6 @@ async function killSelectedSubagentRuns(
     const stopped = await killSubagentRunTree({
       cfg: params.cfg,
       suppressTaskDelivery: params.suppressTaskDelivery,
-      requesterNotified: params.suppressTaskDelivery,
       trees: acceptedTrees,
       scope,
     });
@@ -500,7 +496,6 @@ export async function killSubagentRunAdmin(
         cfg: params.cfg,
         tree,
         scope,
-        suppressTaskDelivery: params.suppressTaskDelivery,
         beforeSessionKill: control?.beforeSessionKill,
         requiredSessionId: control?.requiredSessionId,
         // Resolve stable task identity once; a later replacement must not inherit this Stop.
@@ -570,17 +565,17 @@ export async function killSubagentRunAdmin(
 }
 
 /**
- * Deleting a child session ends the completion it still owes its requester; a yielded
- * requester learns of it through its cohort. Rows that owe nothing, such as a collector
- * its own spawn is cleaning up, stay with their owner.
+ * Deleting a child session stops the work it still owes its requester, which hears of it
+ * once like any other kill. Rows that owe nothing, such as a collector its own spawn is
+ * cleaning up, stay with their owner.
  */
 export async function retireDeletedSubagentSession(
-  params: Omit<SubagentAdminKillParams, "suppressTaskDelivery">,
+  params: SubagentAdminKillParams,
   control: Parameters<typeof killSubagentRunAdmin>[1],
 ): Promise<SubagentAdminKillResult> {
   const entry = getLatestOwnedSubagentRun(params.sessionKey.trim(), params.agentId, params.cfg);
   if (!entry || !owesRequesterCompletion(entry)) {
     return { found: false, killed: false };
   }
-  return await killSubagentRunAdmin({ ...params, suppressTaskDelivery: true }, control);
+  return await killSubagentRunAdmin(params, control);
 }

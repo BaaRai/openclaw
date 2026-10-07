@@ -494,6 +494,61 @@ function startYieldedOnlyChildModel(child: "hold" | "pause") {
   };
 }
 
+const awaitedChildTask = "Hold the awaited child of a finished parent turn until it is stopped.";
+
+/** A parent spawns one awaited child and ends its turn without yielding; the child holds. */
+function startAwaitedChildModel() {
+  const spawnedChild = createDeferred<{ runId: string; sessionKey: string }>();
+  const childStarted = createDeferred();
+  const notified = createDeferred();
+  const notices: string[] = [];
+  let parentRequestCount = 0;
+  return {
+    child: spawnedChild.promise,
+    childStarted: childStarted.promise,
+    notified: notified.promise,
+    notices: () => [...notices],
+    handle: async (
+      body: string,
+      request: IncomingMessage,
+      response: ServerResponse,
+      sequence: number,
+    ) => {
+      if (!body.includes(parentPrompt)) {
+        if (!body.includes(awaitedChildTask)) {
+          return false;
+        }
+        await holdUntilStopped(request, response, () => childStarted.resolve());
+        return true;
+      }
+      if (body.includes(stoppedResult)) {
+        throw new Error("A stopped child result reached its requester");
+      }
+      parentRequestCount += 1;
+      if (parentRequestCount === 1) {
+        return writeToolCall(
+          response,
+          "sessions_spawn",
+          { task: awaitedChildTask, context: "isolated", cleanup: "keep" },
+          sequence,
+        );
+      }
+      if (parentRequestCount === 2) {
+        const [spawned] = spawnReceipts(body);
+        if (!spawned) {
+          throw new Error("Parent did not retain the awaited-child spawn receipt");
+        }
+        spawnedChild.resolve(spawned);
+        return writeVisibleReply(response, "PARENT_AWAITS_CHILD", sequence);
+      }
+      // Every later parent request is a turn the stopped child's outcome started.
+      notices.push(body);
+      notified.resolve();
+      return writeVisibleReply(response, "PARENT_RECEIVED_STOPPED_CHILD", sequence);
+    },
+  };
+}
+
 async function startProofGateway(modelUrl: string, label: string) {
   const state = await createOpenClawTestState({ label });
   setUserProfileRole(ensureProfileForEmail(proxyUser).id, "administrator");
@@ -739,3 +794,48 @@ it.each([
     }
   },
 );
+
+it("tells a parent once when the user stops the awaited child of its finished turn", async () => {
+  const script = startAwaitedChildModel();
+  const model = await startScriptedModel(script.handle);
+  const gateway = await startProofGateway(model.url, "subagent-awaited-child-stop");
+  const parentRunId = "subagent-awaited-child-stop-parent";
+  try {
+    await expect(
+      gateway.client.request("chat.send", {
+        sessionKey: `agent:main:${parentRunId}`,
+        message: parentPrompt,
+        idempotencyKey: parentRunId,
+        deliver: false,
+      }),
+    ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
+    const child = await script.child;
+    await script.childStarted;
+    await expect(
+      gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
+    ).resolves.toMatchObject({ status: "ok" });
+    expect(getSubagentRunByRunId(child.runId)?.requesterSettleWake?.requesterYieldBatch).not.toBe(
+      true,
+    );
+    await expect(
+      gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
+    ).resolves.toMatchObject({ ok: true, status: "aborted" });
+    await script.notified;
+    await waitForRunOrRemoval(
+      child.runId,
+      (row) =>
+        row.execution.status === "terminal" &&
+        typeof row.cleanupCompletedAt === "number" &&
+        row.requesterSettleWake === undefined,
+    );
+    const notices = script.notices();
+    expect(notices).toHaveLength(1);
+    // The notice reports the stopped outcome; the task text alone is already in the history.
+    expect(notices[0]).toContain("failed: subagent run terminated");
+    expect(notices[0]).toContain("(no output)");
+    expect(owedControllerInputs(child.runId), "the stopped child owes nothing").toEqual([]);
+  } finally {
+    await gateway.close();
+    await model.close();
+  }
+});

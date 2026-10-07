@@ -74,10 +74,10 @@ function releaseRequesterSettleWakeBatch(
 }
 
 /**
- * Kill, suppression, and deletion retire a child's owed inputs. A yielded cohort keeps the
- * retired member, so the cohort still resolves into one continuation that reports it; the
- * member leaves the cohort only when its requester already knows: the requester's own live
- * turn retired it, or a requester-wide Stop or reset did.
+ * Kill, suppression, and deletion retire a child's owed inputs. Unless its requester already
+ * knows (the requester's own live turn retired it, or a requester-wide Stop or reset did), the
+ * requester hears once: a yielded cohort keeps the retired member and its one continuation
+ * reports it; any other row leaves its wave and its own completion reports it.
  */
 export async function retireSubagentObligations(
   context: SubagentLifecycleWakeContext,
@@ -108,11 +108,13 @@ export async function retireSubagentObligations(
         return { value: undefined };
       }
       const next = structuredClone(current);
-      next.suppressCompletionDelivery = true;
       const keepsCohort =
         !requesterNotified &&
         wake.requesterYieldBatch === true &&
         Boolean(wake.batchRunIds?.length);
+      if (requesterNotified || keepsCohort) {
+        next.suppressCompletionDelivery = true;
+      }
       if (keepsCohort) {
         const { pauseNotice: _retiredNotice, ...cohortWake } = wake;
         next.requesterSettleWake = cohortWake;

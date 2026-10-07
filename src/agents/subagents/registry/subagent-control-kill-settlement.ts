@@ -34,7 +34,6 @@ type SubagentKillSettlementOwnerParams = {
   cancellationControl: Pick<SubagentCancellationControl, "assertCurrent">;
   stopAcceptance: { accepted: boolean };
   suppressTaskDelivery?: boolean;
-  requesterNotified?: boolean;
   withdrawQueuedReservation: () => void;
 };
 
@@ -136,7 +135,7 @@ export function createSubagentKillSettlementOwner(params: SubagentKillSettlement
             throw new Error("Killed subagent row changed before obligation retirement.");
           }
         },
-        { requesterNotified: params.requesterNotified },
+        { requesterNotified: params.suppressTaskDelivery },
       );
       return result;
     } catch (error) {

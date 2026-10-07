@@ -56,6 +56,5 @@ export type SubagentAdminKillParams = {
   expectedTaskRunId?: string;
   expectedGeneration?: number;
   expectedOwnerKey?: string;
-  suppressTaskDelivery?: boolean;
   onResult?: (result: SubagentAdminKillResult) => undefined;
 };

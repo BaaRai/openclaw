@@ -415,8 +415,15 @@ export async function reconcileProvisionalSubagentKill(params: {
       }
       const next: SubagentRunRecord = {
         ...current,
-        // A confirmed kill retires the row's completion obligation.
-        suppressCompletionDelivery: true,
+        // The requester hears of a confirmed kill once, through its cohort or this row's own
+        // completion, unless it already knows: it stopped or reset itself, or its own turn still
+        // held the row when the kill landed (a transferred row no longer names that turn).
+        suppressCompletionDelivery:
+          current.suppressCompletionDelivery === true ||
+          current.killReconciliation?.suppressTaskDelivery === true ||
+          current.requesterTurnRunId !== undefined
+            ? true
+            : undefined,
         suppressAnnounceReason: undefined,
         killReconciliation: undefined,
         cleanupHandled: false,
