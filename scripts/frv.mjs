@@ -25,6 +25,7 @@ import {
 import {
   classifyReleaseGhTransportError,
   composeReleaseChildAttemptEvidence,
+  filterReleaseAttemptEvidenceJobs,
   isReleaseGhArtifactMissingError,
   MAX_RELEASE_ARTIFACT_BYTES,
   planReleaseChildRerun,
@@ -1403,10 +1404,8 @@ function reportChildRerun(child, rerun, log) {
 function duplicateJobNames(jobs) {
   const seen = new Set();
   const duplicates = new Set();
-  for (const job of jobs) {
-    if (!(job.status === "completed" && job.conclusion === "skipped")) {
-      (seen.has(job.name) ? duplicates : seen).add(job.name);
-    }
+  for (const job of filterReleaseAttemptEvidenceJobs(jobs)) {
+    (seen.has(job.name) ? duplicates : seen).add(job.name);
   }
   return [...duplicates].toSorted((left, right) => left.localeCompare(right));
 }
@@ -2520,7 +2519,7 @@ async function pollRelease(state, client, pending, readOptions) {
         const final =
           (attempt < current || done) &&
           jobs.length > 0 &&
-          jobs.every((job) => job.status === "completed");
+          filterReleaseAttemptEvidenceJobs(jobs).every((job) => job.status === "completed");
         scansComplete &&= final;
         for (const job of jobs) {
           const failure = failedJobEvent(child.key, job, attempt);
