@@ -33,7 +33,6 @@ import {
   waitForChatAbortTerminalPersistence,
 } from "../chat-abort-lifecycle-internal.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
-import { abortChatRunById, captureChatRunAbortPresentation } from "../chat-abort.js";
 import { formatStopRequest } from "../control-plane-audit.js";
 import {
   resolveRequestedSessionAgentId,
@@ -45,6 +44,7 @@ import {
   resolveChatAbortTargetRejection,
   resolveChatAbortRequester,
 } from "./chat-abort-authorization.js";
+import { stopExactClientRun } from "./chat-abort-exact-run.js";
 import {
   abortChatRunsForSessionKeyWithPartials,
   abortControlledSubagents,
@@ -473,9 +473,6 @@ export async function handleChatAbortRequestWithLifecycle(
   ) {
     return;
   }
-  let aborted = false;
-  const stopCapture = captureSessionControllerStop({ inputs: [active.input] });
-  const presentation = captureChatRunAbortPresentation(ops, runId);
   const { sessionKey, sessionId, agentId } = getRpcSourceIdentity(active);
   const { controlUiVisible } = active.adapter;
   assertCurrent();
@@ -495,54 +492,17 @@ export async function handleChatAbortRequestWithLifecycle(
             : {}),
         })
       : undefined;
-  let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
-  let failure: { error: unknown } | undefined;
+  const { aborted, descendants, failure } = await stopExactClientRun({
+    ops,
+    cfg: abortCfg,
+    runId,
+    active,
+    assertCurrent,
+    hookContext: stopHookContext,
+    afterParent: cancelWorker,
+    onAbortPrepared: () => deferAbortedPartialPersistence(snapshot, context),
+  });
   let warning: string | undefined;
-  try {
-    const stopped = stopSession({
-      source: "client-run",
-      capture: stopCapture,
-      assertCurrent,
-      reason: "rpc",
-      hookContext: { ...stopHookContext, sessionKey, sessionId },
-      afterParent: cancelWorker,
-      onCancelled: (target) => {
-        if (target === active.input) {
-          aborted = true;
-        }
-      },
-      cancelInput: (_input, cancel) =>
-        abortChatRunById(ops, {
-          runId,
-          sessionKey,
-          expectedEntry: active,
-          presentation,
-          cancel,
-          assertCurrent,
-          stopReason: "rpc",
-          onAbortPrepared: () => deferAbortedPartialPersistence(snapshot, context),
-          onAbortCommitted: () => {
-            aborted = true;
-          },
-        }).aborted,
-      stopChildren: async (applyParentStop) => {
-        descendants = await abortControlledSubagents({
-          cfg: abortCfg,
-          sessionKey,
-          agentId,
-          requesterTurnRunId: runId,
-          beforeKill: applyParentStop,
-        });
-        return {
-          stopped: descendants?.killed ?? 0,
-          failed: descendants?.status === "error" ? descendants.failed : 0,
-        };
-      },
-    });
-    await stopped.completed;
-  } catch (error) {
-    failure = { error };
-  }
   // A later child fence can reject after the parent consumed its buffer. The
   // transcript owner must still settle that already-committed cancellation.
   if (aborted) {

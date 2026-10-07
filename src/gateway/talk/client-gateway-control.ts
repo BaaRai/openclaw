@@ -39,6 +39,8 @@ import type {
 import {
   createRealtimeControlQueue,
   createTalkRealtimeRunControlOwner,
+  createTalkRunCancel,
+  type TalkRunCancelContext,
 } from "./realtime-run-control.js";
 import { resolveOwnedActiveTalkRunTarget } from "./run-ownership.js";
 import { registerTalkConnectionCleanup } from "./session-registry.js";
@@ -83,7 +85,7 @@ export function createTalkClientGatewayControlOwner(params: {
   controlSource?: "delegation" | "transcript";
   sessionTarget: PreparedTalkSessionTarget;
   connId: string;
-  context: Pick<GatewayRequestContext, "broadcastToConnIds" | "logGateway">;
+  context: Pick<GatewayRequestContext, "broadcastToConnIds" | "logGateway"> & TalkRunCancelContext;
   assertConnectionOpen?: () => void;
   runToolAgentConsult: ReusableTalkAgentConsult;
   runAgentConsult: LifecycleBoundTalkAgentConsult;
@@ -201,6 +203,11 @@ export function createTalkClientGatewayControlOwner(params: {
       assertCurrent: assertActive,
     });
 
+  const cancelRun = createTalkRunCancel({
+    context: params.context,
+    connId: params.connId,
+    assertCurrent: assertActive,
+  });
   const prepareControl = (args: unknown) => {
     assertActive();
     const parsed = parseRealtimeVoiceAgentControlToolArgs(args);
@@ -217,6 +224,7 @@ export function createTalkClientGatewayControlOwner(params: {
           : undefined,
         text: parsed.text,
         mode: parsed.mode,
+        cancelRun,
       });
       assertActive();
       if (result.mode === "cancel" && result.ok) {

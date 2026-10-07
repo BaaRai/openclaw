@@ -18,12 +18,11 @@ function createDeps(options: {
   activeSessionId?: string;
   queued?: boolean;
   unconfirmed?: boolean;
-  abortResult?: boolean;
   activity?: RealtimeVoiceAgentRunActivity;
   reason?: "no_active_run" | "not_streaming" | "compacting" | "runtime_rejected";
 }) {
   return {
-    abortEmbeddedAgentRun: vi.fn(() => options.abortResult ?? true),
+    stopRealtimeVoiceSessionRun: vi.fn(async () => true),
     // Preserve the dependency callback contract exported in v2026.8.1.
     queueEmbeddedAgentMessageWithOutcomeAsync: vi.fn(
       async (
@@ -154,19 +153,18 @@ describe("controlRealtimeVoiceAgentRun", () => {
       }
       expect(deps.resolveActiveSessionRunId).not.toHaveBeenCalled();
       expect(deps.getDiagnosticSessionActivitySnapshot).not.toHaveBeenCalled();
-      expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(deps.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
       expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
     },
   );
 
   it("controls the exact live owner and queries only its session diagnostics", async () => {
     const deps = createDeps({ activeSessionId: "another-agent-session" });
-    const abort = vi.fn(() => true);
+    const cancelRun = vi.fn(async () => true);
     const resolveActiveEmbeddedRunOwnerByRunId = vi.fn(() => ({
       runId: "owned-run",
       sessionId: "owned-session",
       sessionKey: "global",
-      abort,
     }));
     const result = await controlRealtimeVoiceAgentRun(
       {
@@ -178,6 +176,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
         },
         text: "cancel",
         mode: "cancel",
+        cancelRun,
       },
       { ...deps, resolveActiveEmbeddedRunOwnerByRunId },
     );
@@ -185,12 +184,12 @@ describe("controlRealtimeVoiceAgentRun", () => {
     expect([...new Set(resolveActiveEmbeddedRunOwnerByRunId.mock.calls.flat())]).toEqual([
       "owned-run",
     ]);
-    expect(abort).toHaveBeenCalledOnce();
+    expect(cancelRun).toHaveBeenCalledExactlyOnceWith("owned-run");
     expect(deps.getDiagnosticSessionActivitySnapshot).toHaveBeenCalledExactlyOnceWith({
       sessionId: "owned-session",
     });
     expect(deps.resolveActiveSessionRunId).not.toHaveBeenCalled();
-    expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
+    expect(deps.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
   });
 
   it.each([undefined, null])(
@@ -270,7 +269,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
       expect(result.message).toContain("could not confirm");
       expect(result.message).toContain("not sent again");
       expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).toHaveBeenCalledOnce();
-      expect(deps.abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(deps.stopRealtimeVoiceSessionRun).not.toHaveBeenCalled();
     },
   );
 
@@ -322,32 +321,6 @@ describe("controlRealtimeVoiceAgentRun", () => {
     const queuedText = deps.queueEmbeddedAgentMessageWithOutcomeAsync.mock.calls[0]?.[1] ?? "";
     expect(queuedText).toContain("Spoken follow-up for the current voice call.");
     expect(queuedText).toContain("also check the migration");
-  });
-
-  it("cancels the active run without queueing a steering message", async () => {
-    const deps = createDeps({ activeSessionId: "session-active", abortResult: true });
-
-    const result = await controlRealtimeVoiceAgentRun(
-      {
-        sessionKey: "agent:main:main",
-        text: "stop",
-        mode: "cancel",
-      },
-      deps,
-    );
-
-    expect(result).toMatchObject({
-      ok: true,
-      mode: "cancel",
-      sessionId: "session-active",
-      aborted: true,
-      providerResult: {
-        status: "cancelled",
-        message: "Cancelled the active OpenClaw run.",
-      },
-    });
-    expect(deps.abortEmbeddedAgentRun).toHaveBeenCalledWith("session-active");
-    expect(deps.queueEmbeddedAgentMessageWithOutcomeAsync).not.toHaveBeenCalled();
   });
 
   it("answers status from diagnostic run activity when Talk events are absent", async () => {

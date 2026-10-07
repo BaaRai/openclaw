@@ -52,7 +52,10 @@ export function buildRealtimeVoiceAgentErrorProviderResult(
 
 type RealtimeVoiceAgentControlDeps = {
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync?: typeof import("../agents/embedded-agent-runner/runs.js").queueGuardedEmbeddedAgentMessageWithOutcomeAsync;
-  abortEmbeddedAgentRun: (sessionId: string) => boolean;
+  stopRealtimeVoiceSessionRun: (params: {
+    sessionKey: string;
+    sessionId: string;
+  }) => Promise<boolean>;
   queueEmbeddedAgentMessageWithOutcomeAsync: (
     sessionId: string,
     text: string,
@@ -72,10 +75,10 @@ type RealtimeVoiceAgentControlDeps = {
   resolveActiveSessionRunId: (sessionKey: string) => string | undefined;
   resolveActiveEmbeddedRunOwnerByRunId?: (
     runId: string,
-  ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey" | "abort"> | undefined;
+  ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey"> | undefined;
   resolveActiveReplyRunOwnerForSignal?: (
     signal: AbortSignal,
-  ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey" | "abort"> | undefined;
+  ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey"> | undefined;
 };
 
 /** Apply a spoken status, cancel, steer, or follow-up request to an active run. */
@@ -95,6 +98,8 @@ export async function controlRealtimeVoiceAgentRun(
     createUserTurnTranscriptRecorder?: (text: string) => UserTurnTranscriptRecorder;
     mode?: unknown;
     recentEvents?: readonly TalkEvent[];
+    /** Gateway Stop for an exact registered run; required to cancel a `runTarget`. */
+    cancelRun?: (runId: string) => Promise<boolean>;
   },
   providedDeps?: RealtimeVoiceAgentControlDeps,
 ): Promise<RealtimeVoiceAgentControlResult> {
@@ -187,7 +192,7 @@ export async function controlRealtimeVoiceAgentRun(
     // in the continuation that performs the action.
     current = resolveCurrentRun();
   }
-  const { sessionId, exactOwner } = current;
+  const { sessionId } = current;
   if (!sessionId || (target === undefined && !isLegacyCurrent())) {
     return noActiveRun();
   }
@@ -202,8 +207,8 @@ export async function controlRealtimeVoiceAgentRun(
   if (mode === "cancel") {
     const aborted =
       target === undefined
-        ? commands.abortEmbeddedAgentRun(sessionId)
-        : exactOwner?.abort() === true;
+        ? await commands.stopRealtimeVoiceSessionRun({ sessionKey, sessionId })
+        : target !== null && (await params.cancelRun?.(target.runId)) === true;
     const message = aborted
       ? "Cancelled the active OpenClaw run."
       : "OpenClaw could not cancel the active run.";
