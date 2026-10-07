@@ -9,6 +9,7 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { callGateway } from "../../gateway/call.js";
+import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 import {
@@ -22,7 +23,10 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { createRecoveryRuntimeFixture } from "./main-session-recovery-runtime.test-support.js";
 import { mainSessionRecoveryLog } from "./main-session-restart-recovery-shared.js";
-import { scheduleRestartAbortedMainSessionRecovery } from "./main-session-restart-recovery.js";
+import {
+  retryRestartAbortedMainSessionRecovery,
+  scheduleRestartAbortedMainSessionRecovery,
+} from "./main-session-restart-recovery.js";
 
 vi.mock("../../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({ runId: "run-resumed" })),
@@ -181,6 +185,57 @@ describe("startup recovery admission", () => {
       suspensionRef.current?.release();
       await recovery.stop();
       admissionSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a queued resend waiting past the start observation without another attempt", async () => {
+    const { storePath, sessionKey } = await makeMainSessionFixture({
+      pendingFinalDelivery: makePendingFinalDelivery(),
+    });
+    const accepted = createDeferred();
+    let executionStarted = false;
+    let markStarted: (() => void) | undefined;
+    // The Gateway reports a queued input's start budget as null (no deadline).
+    const queuedRuntime: GatewayRecoveryRuntime = {
+      ...gatewayRuntime,
+      dispatchAgent: async <T>(
+        request: Parameters<GatewayRecoveryRuntime["dispatchAgent"]>[0],
+        _timeoutMs?: number,
+        options?: Parameters<GatewayRecoveryRuntime["dispatchAgent"]>[2],
+      ) => {
+        await callGateway({ method: "agent", params: request });
+        options?.onStartOwner?.({
+          observe: () =>
+            executionStarted ? { executionStarted } : { executionStarted, startDeadlineAtMs: null },
+          abort: () => false,
+        });
+        options?.onAccepted?.({ runId: request.idempotencyKey, status: "accepted" });
+        markStarted = options?.onExecutionStarted;
+        accepted.resolve();
+        await dispatchSettlement.promise;
+        return { runId: request.idempotencyKey, status: "ok" } as T;
+      },
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const recovery = retryRestartAbortedMainSessionRecovery({
+        expectedSessionId: "main-session",
+        gatewayRuntime: queuedRuntime,
+        sessionKey,
+        storePath,
+      });
+      await accepted.promise;
+      await vi.advanceTimersByTimeAsync(60_000);
+      executionStarted = true;
+      markStarted?.();
+      await expect(recovery).resolves.toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
+      expect(callGateway).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery).toMatchObject({
+        chargedAttempts: 1,
+      });
+    } finally {
+      dispatchSettlement.resolve();
       vi.useRealTimers();
     }
   });
