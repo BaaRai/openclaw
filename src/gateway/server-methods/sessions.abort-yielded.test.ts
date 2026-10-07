@@ -247,9 +247,8 @@ it.each(["unchanged", "new turn", "reset incarnation", "partial cancellation"] a
         lastRunId: parentRunId,
       });
       await fixture.settle();
-      expect(getSubagentRunByChildSessionKey(childKey)?.killReconciliation).toMatchObject({
-        suppressTaskDelivery: true,
-      });
+      // The child's kill is confirmed once its operation settles; it owes nothing and retires.
+      expect(getSubagentRunByChildSessionKey(childKey)).toBeNull();
       expect(
         await markStartupOrphanedMainSessionsForRecovery({
           cfg: getRuntimeConfig(),
