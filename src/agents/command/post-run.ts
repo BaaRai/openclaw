@@ -29,9 +29,13 @@ import { OPENCLAW_AGENT_RUNTIME_ID } from "../agent-runtime-id.js";
 import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
+import { restoreUnstartedAdmittedRecovery } from "../main-session-recovery/main-session-recovery-store.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
-import { throwAgentRunRestartAbortReason } from "../run-termination.js";
+import {
+  resolveAgentRunAbortLifecycleFields,
+  throwAgentRunRestartAbortReason,
+} from "../run-termination.js";
 import type { SessionMaintenanceRequest } from "../session-maintenance/run.js";
 import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
 import { persistAgentSession } from "./attempt-execution.shared.js";
@@ -76,6 +80,19 @@ export async function clearCommandRecoveryClaim(params: {
   try {
     const entry = sessionStore[sessionKey] ?? params.sessionEntry;
     if (entry?.restartRecoveryDeliveryRunId === runId) {
+      // A resend whose start timed out before its turn began stays owed as a charged failed start.
+      if (
+        params.prepared.opts.mainRestartRecoveryAdmitted === true &&
+        resolveAgentRunAbortLifecycleFields(params.prepared.opts.abortSignal).stopReason ===
+          "timeout" &&
+        (await restoreUnstartedAdmittedRecovery({
+          entry,
+          runId,
+          target: { agentId: params.prepared.sessionAgentId, sessionKey, storePath },
+        }))
+      ) {
+        return;
+      }
       await persistAgentSession({
         agentId: params.prepared.sessionAgentId,
         sessionStore,

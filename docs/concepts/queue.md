@@ -47,12 +47,13 @@ Same-turn steering is the default. A prompt that arrives mid-run is injected int
 For runtime-specific timing and dependency behavior, see [Steering queue](/concepts/queue-steering). For the explicit `/steer <message>` command, see [Steer](/tools/steer).
 
 A restart-recovery resend is an ordinary input in the same session mailbox. When
-an interrupted turn is still owed, its resend runs before a message that arrives
-on that session during startup; later messages queue behind it in arrival order.
-While the recovered turn runs, `interrupt` ends it like any active run, and a
-steered message waits and runs as its own turn instead of joining the recovered
-turn. Stopping or interrupting a resend before it starts ends that recovery
-without sending it again. See
+an interrupted turn is still owed, its resend runs before an ordinary message that
+arrives on that session during startup; later messages queue behind it in arrival
+order. An `interrupt` message wins instead: it cancels a resend that has not
+started and runs, and it ends a running recovered turn like any active run.
+Steering a recovered turn follows the normal tool-permission check, so a steer it
+cannot accept waits and runs as its own turn. Stopping or interrupting a resend
+before it starts ends that recovery without sending it again. See
 [Restart recovery](/gateway/restart-recovery#automatic-resume).
 
 Gateway input retains its authenticated operator and original scope ceiling while

@@ -310,12 +310,71 @@ async function stopCancelsWaitingResend(fixture: Fixture) {
   ).resolves.toMatchObject({ abortedRunId: runId, status: "aborted" });
   expect(source.input.abortSignal.aborted).toBe(true);
   await releaseLane();
-  await expect(recovery).resolves.toMatchObject({ started: 0 });
+  await expect(recovery).resolves.toMatchObject({ started: 0, settled: 1, failed: 0 });
   // The cancelled resend is recorded as a stopped run: not owed again and not charged.
   const stopped = readEntry(fixture, sessionKey);
   expect(stopped?.status).toBe("timeout");
   expect(stopped?.mainRestartRecovery).toBeUndefined();
   expect(stopped?.restartRecoveryTerminalRunIds).toContain(runId);
+  await expect(runStartupRecovery(fixture)).resolves.toMatchObject({ started: 0, failed: 0 });
+  expect(resendTurns(owed)).toHaveLength(0);
+}
+
+async function interruptWinsOverOwedResend(fixture: Fixture) {
+  const sessionKey = "agent:main:boundary-interrupt-owed";
+  const sessionId = "boundary-interrupt-owed-session";
+  const owed = "Owed-interrupt case: owed interrupted task.";
+  const user = "Owed-interrupt case: newest message.";
+  await seedInterruptedSession(fixture, { sessionKey, sessionId, message: owed });
+  const runId = "boundary-interrupt-owed-user";
+  await expect(
+    fixture.client.request("chat.send", {
+      sessionKey,
+      sessionId,
+      message: user,
+      deliver: false,
+      queueMode: "interrupt",
+      idempotencyKey: runId,
+    }),
+  ).resolves.toMatchObject({ runId, status: "started" });
+  // The interrupt wins: the user's message runs and the owed resend is dropped, not replayed.
+  await waitForChatTurn(runId, user);
+  await vi.waitFor(() => expect(readEntry(fixture, sessionKey)?.status).toBe("done"), {
+    timeout: 30_000,
+  });
+  expect(readEntry(fixture, sessionKey)).toMatchObject({ abortedLastRun: false });
+  expect(readEntry(fixture, sessionKey)?.mainRestartRecovery).toBeUndefined();
+  await expect(runStartupRecovery(fixture)).resolves.toMatchObject({ started: 0, failed: 0 });
+  expect(resendTurns(owed)).toHaveLength(0);
+}
+
+async function interruptCancelsWaitingResend(fixture: Fixture) {
+  const sessionKey = "agent:main:boundary-interrupt-waiting";
+  const sessionId = "boundary-interrupt-waiting-session";
+  const owed = "Waiting-interrupt case: owed interrupted task.";
+  const user = "Waiting-interrupt case: newest message.";
+  await seedInterruptedSession(fixture, { sessionKey, sessionId, message: owed });
+  const releaseLane = await holdGlobalLane(fixture, "interrupt-waiting");
+  const recovery = runStartupRecovery(fixture);
+  const { runId: resendRunId } = await waitForResendSource(fixture, sessionKey);
+  const runId = "boundary-interrupt-waiting-user";
+  await expect(
+    fixture.client.request("chat.send", {
+      sessionKey,
+      sessionId,
+      message: user,
+      deliver: false,
+      queueMode: "interrupt",
+      idempotencyKey: runId,
+    }),
+  ).resolves.toMatchObject({ runId, interruptedActiveRun: true });
+  await releaseLane();
+  // The dispatcher reports the stopped resend as settled, not as a failed attempt.
+  await expect(recovery).resolves.toMatchObject({ started: 0, settled: 1, failed: 0 });
+  await waitForChatTurn(runId, user);
+  const settled = readEntry(fixture, sessionKey);
+  expect(settled?.mainRestartRecovery).toBeUndefined();
+  expect(settled?.restartRecoveryTerminalRunIds).toContain(resendRunId);
   await expect(runStartupRecovery(fixture)).resolves.toMatchObject({ started: 0, failed: 0 });
   expect(resendTurns(owed)).toHaveLength(0);
 }
@@ -503,6 +562,8 @@ it("orders, joins, and cancels restart resends through the session mailbox", asy
     await owedResendRunsBeforeChatSendDuringItsAdmission(fixture);
     await sameIdRetryJoinsPreparedResend(fixture);
     await stopCancelsWaitingResend(fixture);
+    await interruptWinsOverOwedResend(fixture);
+    await interruptCancelsWaitingResend(fixture);
     await interruptEndsRunningResend(fixture);
     await steerQueuesBehindRestartSafeResend(fixture);
   } finally {

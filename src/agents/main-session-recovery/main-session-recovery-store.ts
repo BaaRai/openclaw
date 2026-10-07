@@ -348,3 +348,31 @@ export async function releaseMainSessionRecoveryOwner(
     throw error;
   }
 }
+
+/** Restores an admitted attempt whose runtime turn never started as owed again, keeping its charge. */
+export async function restoreUnstartedAdmittedRecovery(params: {
+  entry: SessionEntry;
+  runId: string;
+  target: MainSessionRecoveryStoreTarget;
+}): Promise<boolean> {
+  const state = params.entry.mainRestartRecovery;
+  const fence = params.entry.restartRecoveryRuns?.find((run) => run.runId === params.runId);
+  if (!state || !fence) {
+    return false;
+  }
+  const restored = await commitMainSessionRecovery({
+    command: {
+      kind: "mark_admitted_recovery_interrupted",
+      cycleId: state.cycleId,
+      attempt: state.chargedAttempts,
+      lifecycleGeneration: fence.lifecycleGeneration,
+      now: Date.now(),
+      runId: params.runId,
+      sessionId: params.entry.sessionId,
+      unstartedOnly: true,
+    },
+    requireWriteSuccess: true,
+    target: params.target,
+  });
+  return restored.transition.kind === "applied" || restored.transition.kind === "no_change";
+}

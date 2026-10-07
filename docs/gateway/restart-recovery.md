@@ -318,7 +318,9 @@ restart is recorded as restart cancellation rather than a provider failure.
 Explicit user cancellation and genuine execution timeouts
 remain terminal. Recovery startup uses the admitted run's existing deadline,
 including runtime preparation and waiting for session or global capacity. Waiting
-in a healthy queue does not consume separate failed-start attempts.
+in a healthy queue does not consume separate failed-start attempts. A resend whose
+start times out before its turn begins is a failed start: the charged attempt stays
+owed and is retried within the budget below.
 
 `sessions.abort` waits for the cancellation's session write before acknowledging
 success. Restarting immediately after that acknowledgment preserves the terminal
@@ -613,14 +615,16 @@ Each resend is one ordinary input in the session's queue, so Stop,
 `sessions.abort`, reset, and delete apply to it like any other waiting input.
 Startup resends run one at a time: the next interrupted session is resent only
 after the previous recovered turn settles, which keeps a cold start with many
-interrupted sessions responsive. An owed resend runs before a message that
-arrives on the same session during startup; later messages queue behind it in
+interrupted sessions responsive. An owed resend runs before an ordinary message
+that arrives on the same session during startup; later messages queue behind it in
 arrival order.
 
-While a recovered turn runs, an interrupt ends it like any active turn. A message
-sent in steer mode is not steered into the recovered turn: it waits and runs as its
-own turn afterward. Other messages follow the session's normal
-[queue mode](/concepts/queue#queue-modes).
+A message sent with `interrupt` always wins over a resend that has not started:
+the resend is cancelled and the message runs. While a recovered turn runs, an
+interrupt ends it like any active turn. Steering follows the session's normal
+[queue mode](/concepts/queue#queue-modes): a steer that the recovered turn's tool
+permissions cannot accept, including every steer into a replay-safe turn, waits and
+runs as its own turn afterward.
 
 Stopping or interrupting a resend before it starts ends that recovery. The resend
 is recorded as a stopped run, is not sent again (including after a later restart),

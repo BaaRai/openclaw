@@ -63,7 +63,11 @@ import {
   bindReplyAdmissionRelease,
   releaseReplyRecoveryOwner,
 } from "./reply-turn-admission-lifecycle.js";
-import { retryRestartRecoveryBeforeSelectedClaim } from "./reply-turn-recovery-predecessor.js";
+import {
+  resolveReservedRestartResendId,
+  retryRestartRecoveryBeforeSelectedClaim,
+  yieldToInterruptedRestartResend,
+} from "./reply-turn-recovery-predecessor.js";
 import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 
@@ -468,6 +472,19 @@ export async function admitReplyTurn(
           const recoveryRuntime = gatewayContext?.recoveryRuntime;
           if (
             shouldClaimRecoveryOwner &&
+            (await yieldToInterruptedRestartResend({
+              claim: params.mailboxClaim,
+              entry: admittedSessionEntry,
+              mailbox: controller.mailbox,
+              releaseAdmission: () => admission?.release(),
+              target: { agentId: params.agentId, sessionKey: params.sessionKey, storePath },
+              waitForRecovery,
+            }))
+          ) {
+            continue;
+          }
+          if (
+            shouldClaimRecoveryOwner &&
             admittedSessionEntry?.abortedLastRun === true &&
             !admittedSessionEntry.mainRestartRecovery?.tombstone &&
             gatewayContext &&
@@ -497,6 +514,7 @@ export async function admitReplyTurn(
               expectedRecoveryRunId: admittedSessionEntry.restartRecoveryDeliveryRunId,
               expectedRecoverySourceRunId: admittedSessionEntry.restartRecoveryDeliverySourceRunId,
               gatewayRuntime: recoveryRuntime,
+              reservationId: resolveReservedRestartResendId(admittedSessionEntry),
               sessionId,
               sessionKey: params.sessionKey,
               storePath,

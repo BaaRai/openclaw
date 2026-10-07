@@ -5,6 +5,7 @@ import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/sessio
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
+import { clearCommandRecoveryClaim } from "./command/post-run.js";
 import type { AgentCommandOpts } from "./command/types.js";
 import { claimMainSessionRecoveryOwner } from "./main-session-recovery/main-session-recovery-store.js";
 
@@ -596,5 +597,51 @@ describe("agent command restart recovery ownership", () => {
       }),
     ).rejects.toThrow("interrupted work pending restart recovery");
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "keeps an unstarted resend owed after its start timeout", startedAttempt: undefined },
+    { label: "settles a started resend that later timed out", startedAttempt: 1 },
+  ])("$label", async ({ startedAttempt }) => {
+    const target = createTarget();
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    const admitted: SessionEntry = {
+      sessionId: target.sessionId,
+      updatedAt: 200,
+      status: "running",
+      abortedLastRun: false,
+      lifecycleRunId: "recovery-run",
+      restartRecoveryDeliveryRunId: "recovery-run",
+      restartRecoveryDeliverySourceRunId: "source-run",
+      restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
+      mainRestartRecovery: { cycleId: "cycle-1", revision: 3, chargedAttempts: 1, startedAttempt },
+    };
+    await write(target, admitted);
+    const timeout = new Error("chat run timed out");
+    timeout.name = "TimeoutError";
+
+    await clearCommandRecoveryClaim({
+      prepared: {
+        ...target,
+        runId: "recovery-run",
+        sessionStore: { [sessionKey]: admitted },
+        opts: { mainRestartRecoveryAdmitted: true, abortSignal: AbortSignal.abort(timeout) },
+      } as unknown as Parameters<typeof clearCommandRecoveryClaim>[0]["prepared"],
+      runOwnedSessionId: target.sessionId,
+      sessionReboundDuringRun: false,
+      trackedRestartRecoveryDeliveryClaim: true,
+    });
+
+    const current = loadSessionEntry({ sessionKey, storePath: target.storePath }) as SessionEntry;
+    if (startedAttempt === undefined) {
+      // A failed start is charged and owed again, never silently dropped.
+      expect(current).toMatchObject({ status: "running", abortedLastRun: true });
+      expect(current.mainRestartRecovery).toMatchObject({ chargedAttempts: 1 });
+      expect(current.restartRecoveryTerminalRunIds).toBeUndefined();
+    } else {
+      expect(current.abortedLastRun).toBe(false);
+      expect(current.mainRestartRecovery).toBeUndefined();
+      expect(current.restartRecoveryTerminalRunIds).toContain("recovery-run");
+    }
   });
 });

@@ -7,7 +7,10 @@ import type {
   MainRestartRecoveryState,
   RestartRecoveryRun,
 } from "../../config/sessions.js";
-import { hasRestartRecoveryTerminalRun } from "../../config/sessions/restart-recovery-state.js";
+import {
+  buildRestartRecoveryClaimCleanupPatch,
+  hasRestartRecoveryTerminalRun,
+} from "../../config/sessions/restart-recovery-state.js";
 import {
   isAcpSessionKey,
   isCronSessionKey,
@@ -151,6 +154,15 @@ export function isMainRestartRecoveryCandidate(entry: SessionEntry, sessionKey: 
     !isCronSessionKey(sessionKey) &&
     !isAcpSessionKey(sessionKey)
   );
+}
+
+/** Mailbox identity of one resend attempt; its dispatcher and foreground admission both derive it. */
+export function resolveRestartResendReservationId(attempt: {
+  sessionId: string;
+  cycleId: string;
+  attempt: number;
+}): string {
+  return `main-session-recovery:${attempt.sessionId}:${attempt.cycleId}:${attempt.attempt}`;
 }
 
 export function isMainSessionRecoveryPending(entry: SessionEntry, sessionKey: string): boolean {
@@ -713,6 +725,29 @@ export function transitionMainSessionRecovery(
       entry.abortedLastRun = false;
       entry.updatedAt = command.now;
       return { kind: "doctor_repaired" };
+    }
+    case "interrupt_owed": {
+      const state = entry.mainRestartRecovery;
+      if (
+        entry.status !== "running" ||
+        entry.abortedLastRun !== true ||
+        state?.reservation ||
+        state?.foregroundClaims ||
+        state?.tombstone
+      ) {
+        return { kind: "no_change" };
+      }
+      // An explicit interrupt supersedes a resend not yet dispatched. Record it like a
+      // stopped run, so it is neither replayed nor charged.
+      Object.assign(
+        entry,
+        buildMainSessionRecoveryClearPatch(entry),
+        buildRestartRecoveryClaimCleanupPatch({ entry, recordTerminalSource: true }),
+      );
+      entry.status = "killed";
+      entry.endedAt = command.now;
+      entry.updatedAt = command.now;
+      return { kind: "applied" };
     }
     case "clear": {
       const patch = buildMainSessionRecoveryClearPatch(entry);

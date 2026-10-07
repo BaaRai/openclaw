@@ -4,7 +4,10 @@ import { GatewayClientRequestError } from "../../../packages/gateway-client/src/
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import { sanitizePendingFinalDeliveryText } from "../../auto-reply/reply/pending-final-delivery-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
-import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
+import {
+  hasRestartRecoveryTerminalRun,
+  resolveRestartRecoveryChannelAuthority,
+} from "../../config/sessions/restart-recovery-state.js";
 import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import { preparePhysicalSessionStorePath } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -37,6 +40,7 @@ import {
 import { scheduleMainSessionRecoveryPendingTarget } from "./main-session-recovery-owner-release.js";
 import {
   isMainSessionRecoveryPending,
+  resolveRestartResendReservationId,
   type MainSessionRecoveryObservation,
   type MainSessionRecoveryReservation,
 } from "./main-session-recovery-state.js";
@@ -326,7 +330,7 @@ export async function resumeMainSession(
       return "skipped";
     }
     reservation = reserved.transition.reservation;
-    const inputReservationId = `main-session-recovery:${reservation.sessionId}:${reservation.cycleId}:${reservation.attempt}`;
+    const inputReservationId = resolveRestartResendReservationId(reservation);
     if (params.shouldContinue?.() === false || !taskRemainsOwed()) {
       await rollbackReservation("cancel_reservation");
       return "skipped";
@@ -450,7 +454,7 @@ export async function resumeMainSession(
     // a joined input belongs to its creator and is never retired here.
     let controllerInput = params.controllerInput;
     if (!controllerInput) {
-      const reservation = reserveOrJoinSessionControllerSource(dispatchSessionKey, {
+      const source = reserveOrJoinSessionControllerSource(dispatchSessionKey, {
         reservationId: inputReservationId,
         protocolRunId: recoveryRunId,
         sourceSessionId: params.entry.sessionId,
@@ -463,8 +467,8 @@ export async function resumeMainSession(
           incarnation: params.entry.sessionId,
         }),
       });
-      controllerInput = reservation.input;
-      ownedInput = reservation.created ? reservation.input : undefined;
+      controllerInput = source.input;
+      ownedInput = source.created ? source.input : undefined;
     }
     dispatchStarted = true;
     let dispatchSettled = false;
@@ -624,10 +628,11 @@ export async function resumeMainSession(
         await repairAcceptedRecovery();
       }
     }
+    let rollback: Awaited<ReturnType<typeof rollbackReservation>>;
     if (reservation) {
       const rollbackKind =
         dispatchStarted && !explicitlyRejected ? "abandon_reservation" : "cancel_reservation";
-      await rollbackReservation(rollbackKind).catch((rollbackError: unknown) => {
+      rollback = await rollbackReservation(rollbackKind).catch((rollbackError: unknown) => {
         log.warn(
           `failed to roll back interrupted main session recovery attempt ${params.sessionKey}: ${String(rollbackError)}`,
         );
@@ -636,10 +641,19 @@ export async function resumeMainSession(
           kind: rollbackKind,
           reservation: reservation!,
         });
+        return undefined;
       });
     }
     if (params.shouldContinue?.() === false) {
       return "skipped";
+    }
+    if (
+      rollback?.entry?.sessionId === params.entry.sessionId &&
+      hasRestartRecoveryTerminalRun(rollback.entry, recoveryRunId)
+    ) {
+      // Stop or an interrupt cancelled the resend before it ran; the run recorded that outcome.
+      log.info(`stopped interrupted main session resend before execution: ${params.sessionKey}`);
+      return "settled";
     }
     log.warn(
       `failed to resume interrupted main session ${params.sessionKey}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,

@@ -16,6 +16,7 @@ export function interruptAdmittedMainSessionRecovery(
     !state ||
     state.cycleId !== command.cycleId ||
     state.chargedAttempts !== command.attempt ||
+    (command.unstartedOnly && state.startedAttempt === command.attempt) ||
     state.reservation ||
     state.foregroundClaims ||
     !entry.restartRecoveryRuns?.some(
