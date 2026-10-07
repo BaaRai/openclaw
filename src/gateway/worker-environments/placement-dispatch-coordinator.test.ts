@@ -23,6 +23,47 @@ import type { WorkerPlacementDispatchRequest } from "./service-contract.js";
 type DispatchService = WorkerPlacementDispatchService;
 
 describe("worker placement dispatch coordinator", () => {
+  it.each(["dispatch", "move"] as const)(
+    "preserves prepared grant checks through %s admission",
+    async (operation) => {
+      const current = vi.fn();
+      const grant = vi.fn();
+      const lifetime = vi.fn();
+      const session = vi.fn();
+      const authorization = Object.assign(current, {
+        assertWorkerGrant: grant,
+        assertWorkerLifetime: lifetime,
+      });
+      const inspectAuthorization = (authorize: Parameters<DispatchService["dispatch"]>[2]) => {
+        expect(authorize?.assertWorkerGrant).toBeTypeOf("function");
+        expect(authorize?.assertWorkerLifetime).toBeTypeOf("function");
+        authorize?.assertWorkerGrant?.();
+        expect(grant).toHaveBeenCalledOnce();
+        expect(current).not.toHaveBeenCalled();
+        expect(session).toHaveBeenCalledOnce();
+        authorize?.assertWorkerLifetime?.();
+        expect(lifetime).toHaveBeenCalledOnce();
+        expect(session).toHaveBeenCalledTimes(2);
+        authorize?.();
+        expect(current).toHaveBeenCalledOnce();
+        expect(session).toHaveBeenCalledTimes(3);
+        return ACTIVE_PLACEMENT;
+      };
+      const service = createCoordinatorTestService({
+        dispatch: async (_request, _report, authorize) => inspectAuthorization(authorize),
+        move: async (_request, _report, authorize) => inspectAuthorization(authorize),
+      });
+      const coordinated = coordinateWorkerPlacementDispatch(service, (_request, run) =>
+        run(undefined, session),
+      );
+      if (operation === "dispatch") {
+        await coordinated.dispatch(REQUEST, undefined, authorization);
+      } else {
+        await coordinated.move(MOVE_REQUEST, undefined, authorization);
+      }
+    },
+  );
+
   it.each([
     { outcome: "resolve", timing: "before" },
     { outcome: "reject", timing: "before" },

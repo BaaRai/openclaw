@@ -20,7 +20,7 @@ import {
 export type SessionPlacementStartMode = "dispatch" | "recover" | "retry";
 
 export type SessionPlacementTarget =
-  | { kind: "profile"; profileId: string; os?: string; machineClass?: string }
+  | { kind: "profile"; profileId: string; os?: string; machineClass?: string; required?: true }
   | { kind: "device"; deviceId: string }
   | { kind: "auto-device" };
 
@@ -164,9 +164,15 @@ function parseSessionPlacementTarget(value: unknown): SessionPlacementTarget | n
   if (
     value.kind === "profile" &&
     Object.keys(value).every(
-      (key) => key === "kind" || key === "profileId" || key === "os" || key === "machineClass",
+      (key) =>
+        key === "kind" ||
+        key === "profileId" ||
+        key === "os" ||
+        key === "machineClass" ||
+        key === "required",
     ) &&
     isNonEmptyString(value.profileId) &&
+    (value.required === undefined || value.required === true) &&
     (value.os === undefined || (isNonEmptyString(value.os) && value.os.length <= 64)) &&
     (value.machineClass === undefined ||
       (isNonEmptyString(value.machineClass) && value.machineClass.length <= 128))
@@ -194,6 +200,7 @@ function validateSessionPlacementRecovery(
   recoveryScope: string,
   expectedSessionKey?: string,
 ): SessionPlacementRecovery | null {
+  const target = parseSessionPlacementTarget(value.target);
   if (
     value.createParams?.incognito === true ||
     !isNonEmptyString(value.sessionKey) ||
@@ -202,7 +209,7 @@ function validateSessionPlacementRecovery(
     typeof value.message !== "string" ||
     (!isNonEmptyString(value.message) && !value.attachments?.length) ||
     (value.attachments !== undefined && !Array.isArray(value.attachments)) ||
-    !parseSessionPlacementTarget(value.target) ||
+    !target ||
     !isNonEmptyString(value.agentId) ||
     value.gatewayUrl !== gatewayUrl ||
     value.recoveryScope !== recoveryScope ||
@@ -229,8 +236,11 @@ function validateSessionPlacementRecovery(
   ) {
     return null;
   }
-  // SAFETY: every required recovery field and nested closed target was validated above.
-  return { ...recovery, ...(mentions ? { mentions } : {}) } as SessionPlacementRecovery;
+  return {
+    ...recovery,
+    target,
+    ...(mentions ? { mentions } : {}),
+  } as SessionPlacementRecovery; // SAFETY: every recovery field and target were validated.
 }
 
 function removeSessionPlacementRecoveryRow(storage: Storage, key: string): boolean {
@@ -516,10 +526,9 @@ export function clearSessionPlacementRecovery(
     const scopePrefix = sessionPlacementRecoveryScopeStoragePrefix(gatewayUrl, recoveryScope);
     for (let index = storage.length - 1; index >= 0; index -= 1) {
       const key = storage.key(index);
-      if (!key?.startsWith(scopePrefix)) {
-        continue;
+      if (key?.startsWith(scopePrefix)) {
+        removeSessionPlacementRecoveryRow(storage, key);
       }
-      removeSessionPlacementRecoveryRow(storage, key);
     }
   } catch {
     // Recovery state is best-effort to remove after the durable operation completes.
