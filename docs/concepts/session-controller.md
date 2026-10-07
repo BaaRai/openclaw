@@ -106,7 +106,7 @@ timeout merely because they have a client-visible run ID.
 ## Inputs and custody
 
 Inputs include channel messages, Gateway user turns, agent RPC turns, scheduled
-wakes, heartbeats, and subagent completion handoffs. Adapters retain each input
+wakes, heartbeats, subagent completion handoffs, and restart-recovery resends. Adapters retain each input
 owner's authentication, visibility, routing, idempotency, and acknowledgment
 contract; a common scheduling interface does not make those inputs equivalent.
 

@@ -609,11 +609,20 @@ interrupted by a restart and to continue from the existing transcript. If a
 final reply had already been produced but not delivered, its text is included
 so the agent can deliver it instead of redoing the work.
 
+Each resend is one ordinary input in the session's queue, so Stop,
+`sessions.abort`, reset, and delete apply to it like any other waiting input.
+Startup resends run one at a time: the next interrupted session is resent only
+after the previous recovered turn settles, which keeps a cold start with many
+interrupted sessions responsive. An owed resend runs before a message that
+arrives on the same session during startup; later messages queue behind it in
+arrival order. While a recovered turn runs, new messages follow the session's
+normal [queue mode](/concepts/queue#queue-modes).
+
 The restart does not cancel the user's task. The agent checks the current state,
 reconciles tool results whose outcomes are unknown, and continues without asking
 the user to repeat the request. Preparing a new message cannot consume the
-interruption marker; the recovery owner retains it until work is adopted or
-settled.
+interruption marker; the durable recovery claim retains it until work is
+adopted or settled.
 
 Recovery reads the interrupted turn's source before starting another run, even
 when a final reply is already pending. If the transcript cannot be read, the
