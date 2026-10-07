@@ -240,17 +240,31 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     },
   );
 
-  it("wakes after a retired frozen member disappears from the registry", async () => {
+  it.each([
+    {
+      name: "a yield cohort member disappears from the registry",
+      wake: { requesterYieldBatch: true, rearmGeneration: 1 } as const,
+      retiredRow: undefined,
+    },
+    {
+      name: "a delivery batch member disappears from the registry",
+      wake: {},
+      retiredRow: undefined,
+    },
+    {
+      name: "a delivery batch member's wake was retired",
+      wake: {},
+      retiredRow: makeSettledChild({ runId: "run-b", requesterSettleWake: undefined }),
+    },
+  ])("wakes only the surviving frozen member after $name", async ({ wake, retiredRow }) => {
     const remainingChild = makeSettledChild({
       runId: "run-a",
-      delivery: { status: "delivered" },
-      requesterSettleWake: {
-        batchRunIds: ["run-a", "run-b"],
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
-      },
+      delivery: { status: "pending" },
+      requesterSettleWake: { batchRunIds: ["run-a", "run-b"], ...wake },
     });
-    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([remainingChild]);
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(
+      retiredRow ? [remainingChild, retiredRow] : [remainingChild],
+    );
 
     const woke = await maybeWakeRequesterAfterAllChildrenSettled(
       wakeParams({ settledEntry: remainingChild }),
@@ -258,7 +272,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
 
     expect(woke).toBe(true);
     expect(deliverSpy).toHaveBeenCalledOnce();
-    expect(completeBatchSpy).toHaveBeenCalledWith(["run-a"], 1, {
+    expect(completeBatchSpy).toHaveBeenCalledWith(["run-a"], wake.rearmGeneration, {
       delivered: true,
       path: "direct",
     });

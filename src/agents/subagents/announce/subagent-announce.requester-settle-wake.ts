@@ -147,7 +147,9 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       .map((runId) => runsById.get(runId))
       .filter(
         (entry): entry is SubagentRunRecord =>
-          entry?.requesterSettleWake?.rearmGeneration === currentRearmGeneration,
+          entry !== undefined &&
+          entry.requesterSettleWake !== undefined &&
+          entry.requesterSettleWake.rearmGeneration === currentRearmGeneration,
       );
     if (
       settledBatch.some(
