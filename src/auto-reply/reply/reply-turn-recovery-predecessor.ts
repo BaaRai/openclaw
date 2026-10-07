@@ -12,7 +12,6 @@ import { reserveSessionControllerClaimPredecessor } from "../../sessions/session
 import {
   retireSessionControllerInput,
   type SessionControllerInput,
-  type SessionControllerMailbox,
   type SessionControllerMailboxClaim,
 } from "../../sessions/session-controller.mailbox.js";
 import {
@@ -99,32 +98,6 @@ export function resolveReservedRestartResendId(entry: InternalSessionEntry): str
     : undefined;
 }
 
-// Finds the current attempt's resend input while it still waits unclaimed in the mailbox.
-function findWaitingRestartResend(
-  mailbox: SessionControllerMailbox | undefined,
-  entry: InternalSessionEntry,
-  claim: SessionControllerMailboxClaim | undefined,
-): SessionControllerInput | undefined {
-  const state = entry.mainRestartRecovery;
-  if (!mailbox || !state || state.chargedAttempts === 0) {
-    return undefined;
-  }
-  // Admission keeps the attempt number, so a prepared or admitted resend shares this identity.
-  const reservationId = resolveRestartResendReservationId({
-    sessionId: entry.sessionId,
-    cycleId: state.cycleId,
-    attempt: state.chargedAttempts,
-  });
-  return mailbox.entries.find(
-    (input) =>
-      input.sourceTurnId === reservationId &&
-      input.phase !== "consumed" &&
-      !input.claim &&
-      !input.retirementRequested &&
-      !claim?.inputs.includes(input),
-  );
-}
-
 /**
  * An explicit interrupt wins over a resend that has not started. Returns true when
  * admission must reload: a waiting resend input was cancelled as a Stop and records
@@ -134,7 +107,7 @@ function findWaitingRestartResend(
 export async function yieldToInterruptedRestartResend(params: {
   claim: SessionControllerMailboxClaim | undefined;
   entry: InternalSessionEntry | undefined;
-  mailbox: SessionControllerMailbox | undefined;
+  mailbox: { entries: readonly SessionControllerInput[] } | undefined;
   releaseAdmission: () => void;
   target: MainSessionRecoveryStoreTarget;
   waitForRecovery: () => Promise<void>;
@@ -147,8 +120,24 @@ export async function yieldToInterruptedRestartResend(params: {
   ) {
     return false;
   }
-  const waitingResend = findWaitingRestartResend(params.mailbox, entry, params.claim);
-  if (waitingResend || entry.mainRestartRecovery?.reservation) {
+  const state = entry.mainRestartRecovery;
+  // A prepared or admitted resend keeps its attempt number, so this identity finds its input.
+  const reservationId = state?.chargedAttempts
+    ? resolveRestartResendReservationId({
+        sessionId: entry.sessionId,
+        cycleId: state.cycleId,
+        attempt: state.chargedAttempts,
+      })
+    : undefined;
+  const waitingResend = params.mailbox?.entries.find(
+    (input) =>
+      reservationId !== undefined &&
+      input.sourceTurnId === reservationId &&
+      input.phase !== "consumed" &&
+      !input.claim &&
+      !input.retirementRequested,
+  );
+  if (waitingResend || state?.reservation) {
     params.releaseAdmission();
     if (waitingResend) {
       cancelCapturedSessionControllerSource(
