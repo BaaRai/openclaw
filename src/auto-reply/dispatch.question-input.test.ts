@@ -286,6 +286,11 @@ describe("routed channel question input delivery order", () => {
             });
             if (outcome === "terminal") {
               expect(result).toEqual({ handled: false });
+            } else if (outcome === "forbidden") {
+              expect(result).toMatchObject({
+                handled: false,
+                refusedNotice: { text: expect.any(String) },
+              });
             } else {
               expect(result).toMatchObject({ handled: true, payload: { isError: true } });
             }

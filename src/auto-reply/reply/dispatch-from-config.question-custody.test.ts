@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayClientRequestError } from "../../../packages/gateway-client/src/request-error.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { AgentQuestionDispatcher } from "../../agents/harness/gateway-question-dispatch.js";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
 import {
@@ -231,6 +232,16 @@ describe("dispatch input custody after a question response", () => {
 
   it("delivers a host question refusal when the agent owns normal replies", async () => {
     const fixture = createQuestionDispatch("host-refusal");
+    // Only a source that lost its own authority is refused rather than queued.
+    const followupRun = createQueueTestRun({ prompt: "answer" });
+    followupRun.operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "guest",
+      scopes: ["operator.write"],
+      source: {},
+      assertCurrent: () => {
+        throw new Error("operator authority revoked");
+      },
+    });
     const dispatcher = createDispatcher();
     const question = registerPendingAgentQuestion({
       sessionKey: fixture.operation.key,
@@ -251,7 +262,7 @@ describe("dispatch input custody after a question response", () => {
         replyResolver: async (ctx, opts) => {
           const result = await runReplyQuestionInput({
             commandBody: "answer",
-            followupRun: createQueueTestRun({ prompt: "answer" }),
+            followupRun,
             sessionKey: fixture.operation.key,
             sessionCtx: ctx,
             opts,

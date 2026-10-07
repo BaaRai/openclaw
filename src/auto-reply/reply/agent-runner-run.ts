@@ -365,7 +365,9 @@ export async function runReplyAgent(
       };
     };
 
+    // Steering skips the question creator's caller policy, so refused input queues.
     if (
+      !questionInput.refusedNotice &&
       effectiveShouldSteer &&
       isActive &&
       !shouldQueueAuthorityMismatch &&
@@ -397,14 +399,16 @@ export async function runReplyAgent(
       return result === "handled" ? undefined : result;
     }
 
-    const activeRunQueueAction = resolveActiveRunQueueAction({
-      hasQueuedFollowups,
-      interrupt: resolvedQueue.mode === "interrupt",
-      isActive,
-      isHeartbeat,
-      shouldFollowup: effectiveShouldFollowup || shouldQueueAuthorityMismatch,
-      resetTriggered: effectiveResetTriggered,
-    });
+    const activeRunQueueAction = questionInput.refusedNotice
+      ? "enqueue-followup"
+      : resolveActiveRunQueueAction({
+          hasQueuedFollowups,
+          interrupt: resolvedQueue.mode === "interrupt",
+          isActive,
+          isHeartbeat,
+          shouldFollowup: effectiveShouldFollowup || shouldQueueAuthorityMismatch,
+          resetTriggered: effectiveResetTriggered,
+        });
     if (activeRunQueueAction === "drop") {
       retireSessionControllerInput(controllerInput);
       if (replyOperationRunState) {
@@ -454,7 +458,7 @@ export async function runReplyAgent(
       } else {
         typing.cleanup();
       }
-      return undefined;
+      return questionInput.refusedNotice;
     }
 
     const replySessionKey = sessionKey ?? followupRun.run.sessionKey;

@@ -99,8 +99,16 @@ When channel streaming is `partial` or `block`, steering can look like several s
 A plain-text answer to a pending agent question goes to that question before
 ordinary queue handling, including when a native CLI cannot accept steering.
 OpenClaw checks the answer against the question creator's permissions and active
-run, not the model selected for your next turn. Changed permissions or a closed
-creator produce an explicit refusal rather than starting another turn.
+run, not the model selected for your next turn.
+
+A message that cannot answer the question, for example from a sender with
+different permissions, is queued as a followup instead. It is never steered into
+the waiting turn, so it cannot answer the question. The sender gets a notice that
+the message was queued; it runs after the asking turn finishes, which can take
+until the question times out. Only a message whose own source is no longer
+current (cancelled, or its operator authority revoked) is refused instead of
+queued. In `interrupt` mode a new message still aborts the active run first,
+which closes its question.
 
 If the answer may have committed but confirmation is lost, OpenClaw reports that
 uncertainty and does not resend it as steering or a followup. Check the conversation

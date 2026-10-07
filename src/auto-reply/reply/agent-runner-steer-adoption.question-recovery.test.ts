@@ -576,11 +576,20 @@ describe("question response custody through reply adoption", () => {
             expect(adopted).toHaveBeenCalledOnce();
             expect(settled).toHaveBeenCalledOnce();
           } else {
-            expect(result).toMatchObject({ handled: true, payload: { isError: true } });
-            expect(state.admission).toEqual({
-              status: "skipped",
-              reason: "question-response-refused",
-            });
+            if (change === "source-closure" || change === "operator-source") {
+              expect(result).toMatchObject({ handled: true, payload: { isError: true } });
+              expect(state.admission).toEqual({
+                status: "skipped",
+                reason: "question-response-refused",
+              });
+            } else {
+              // A creator-policy refusal leaves the input for its caller to queue.
+              expect(result).toMatchObject({
+                handled: false,
+                refusedNotice: { text: expect.stringContaining("It was queued") },
+              });
+              expect(state.admission).toBeUndefined();
+            }
             expect(committed).not.toHaveBeenCalled();
             expect(adopted).not.toHaveBeenCalled();
             expect(settled).not.toHaveBeenCalled();

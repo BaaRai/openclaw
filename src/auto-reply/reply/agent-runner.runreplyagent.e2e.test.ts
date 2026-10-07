@@ -65,6 +65,7 @@ import { registerReasoningFallbackTests } from "./agent-runner.reasoning-fallbac
 import { registerReplyAdmissionCases } from "./agent-runner.runreplyagent.admission.cases.js";
 import { registerImmediateFailurePolicyCases } from "./agent-runner.runreplyagent.failure-policy.cases.js";
 import { registerOverflowPresentationCases } from "./agent-runner.runreplyagent.overflow.cases.js";
+import { registerQuestionRefusalCases } from "./agent-runner.runreplyagent.question-refusal.cases.js";
 import { createReplyQueueFixture } from "./agent-runner.runreplyagent.queue.test-support.js";
 import { registerRequiredReplyCompletionCases } from "./agent-runner.runreplyagent.required-reply.cases.js";
 import { registerSteeringReceiptCases } from "./agent-runner.runreplyagent.steering-receipts.cases.js";
@@ -817,6 +818,13 @@ describe("runReplyAgent active steering", () => {
     createMinimalRun,
     makeSessionEntry,
     makeSessionFixture,
+    state,
+  });
+
+  registerQuestionRefusalCases({
+    createMinimalRun,
+    makeSessionFixture,
+    requireScheduledFollowupRunner,
     state,
   });
 
