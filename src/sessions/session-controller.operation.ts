@@ -44,6 +44,7 @@ import {
   operationsByUpstreamAbortSignal,
   producerCompletionByOperation,
   prepareReplyRunKeyUpdate,
+  recordOperationBackendRunId,
   getSessionControllerEntry,
   addSessionControllerEntryAlias,
   controllerEntryByOperation,
@@ -536,6 +537,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       }
       recordActivity();
       toolAuthority.bindBackendFingerprint(handle.toolAuthorityFingerprint);
+      recordOperationBackendRunId(operation, handle.runId);
       owner.attachment = {
         operation,
         backend: handle,

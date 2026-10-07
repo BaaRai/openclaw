@@ -17,6 +17,7 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
   lifecycleAdmissionByOperation: new WeakMap<ReplyOperation, ReplyOperationAdmission>(),
   evictOperationByOperation: new WeakMap<ReplyOperation, () => void>(),
   executionStartedOperations: new WeakSet<ReplyOperation>(),
+  backendRunIdsByOperation: new WeakMap<ReplyOperation, Set<string>>(),
   operationsByUpstreamAbortSignal: new WeakMap<AbortSignal, ReplyOperation>(),
   producerCompletionByOperation: new WeakMap<ReplyOperation, Promise<void>>(),
   afterClearByOperation: new WeakMap<ReplyOperation, ReplyOperationAfterClear>(),
@@ -36,6 +37,7 @@ export const lifecycleAdmissionByOperation = controllerState.lifecycleAdmissionB
 
 export const evictReplyOperationByOperation = controllerState.evictOperationByOperation;
 export const executionStartedOperations = controllerState.executionStartedOperations;
+export const backendRunIdsByOperation = controllerState.backendRunIdsByOperation;
 export const operationsByUpstreamAbortSignal = controllerState.operationsByUpstreamAbortSignal;
 export const producerCompletionByOperation = controllerState.producerCompletionByOperation;
 export const afterClearByOperation = controllerState.afterClearByOperation;

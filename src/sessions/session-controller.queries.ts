@@ -3,7 +3,7 @@ import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.j
 import { ReplyRunAlreadyActiveError, type ReplyOperation } from "./session-controller.contracts.js";
 import {
   activeSessionOperations,
-  getAttachedBackend,
+  hasOperationBackendRunId,
   findSessionControllerEntries,
   isReplyRunEvidenceStale,
   getSessionControllerOperation,
@@ -130,10 +130,13 @@ export function resolveActiveReplyOperationForSessionId(
   return resolution.kind === "one" ? resolution.operation : undefined;
 }
 
-/** Finds the unfinished operation that owns a backend or Gateway protocol run ID. */
+/**
+ * Finds the unfinished operation that owns a backend or Gateway protocol run ID. A backend
+ * run stays owned after its attempt detaches, until the operation itself settles.
+ */
 export function findSessionControllerOperationByRunId(runId: string): ReplyOperation | undefined {
   for (const operation of activeSessionOperations()) {
-    if (!operation.result && getAttachedBackend(operation)?.runId === runId) {
+    if (!operation.result && hasOperationBackendRunId(operation, runId)) {
       return operation;
     }
   }

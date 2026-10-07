@@ -357,6 +357,20 @@ export function markReplyOperationExecutionStarted(operation: ReplyOperation): v
 export function hasReplyOperationExecutionStarted(operation: ReplyOperation): boolean {
   return controllerStorage.executionStartedOperations.has(operation);
 }
+/** Backend run IDs stay the operation's identity after detach, until the operation settles. */
+export function recordOperationBackendRunId(operation: ReplyOperation, runId: string | undefined) {
+  if (!runId) {
+    return;
+  }
+  const runIds = controllerStorage.backendRunIdsByOperation.get(operation) ?? new Set<string>();
+  runIds.add(runId);
+  controllerStorage.backendRunIdsByOperation.set(operation, runIds);
+}
+
+export function hasOperationBackendRunId(operation: ReplyOperation, runId: string): boolean {
+  return controllerStorage.backendRunIdsByOperation.get(operation)?.has(runId) === true;
+}
+
 export function getAttachedBackend(operation: ReplyOperation): ReplyBackendHandle | undefined {
   const entry = controllerStorage.controllerEntryByOperation.get(operation);
   return entry?.active === operation && entry.attachment?.operation === operation
