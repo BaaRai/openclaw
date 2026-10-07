@@ -13,10 +13,3 @@ export type TrajectoryRuntimeRetentionPlan = {
     order: string;
   }[];
 };
-
-export type TrajectoryRuntimeRetentionReadOperations = {
-  "trajectoryRetention.read": {
-    input: TrajectoryRuntimeRetentionInput & { agentId: string; now: number };
-    output: TrajectoryRuntimeRetentionPlan;
-  };
-};

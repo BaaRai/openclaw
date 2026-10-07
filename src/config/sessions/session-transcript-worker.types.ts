@@ -19,6 +19,10 @@ import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-tur
 import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { VoiceSessionMatch } from "../../talk/client-voice-session-store.js";
 import type {
+  TrajectoryRuntimeRetentionInput,
+  TrajectoryRuntimeRetentionPlan,
+} from "../../trajectory/runtime-retention.contract.js";
+import type {
   SessionActivitySummaryBatchInput,
   SessionActivitySummaryBatchResult,
 } from "./activity-summary-source.types.js";
@@ -318,6 +322,15 @@ type SessionHistoricalEvictionCandidatesWorkerInput = {
   preserveRecentMs?: number | null;
 };
 
+type TrajectoryRetentionWorkerInput = {
+  kind: "trajectory-retention";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  expectedIdentity: DatabaseFileIdentity;
+  input: TrajectoryRuntimeRetentionInput;
+  now: number;
+};
+
 type SessionArchivedEvictionCandidatesWorkerInput = Omit<
   SessionHistoricalEvictionCandidatesWorkerInput,
   "admissionIdentities" | "preserveRecentMs"
@@ -336,6 +349,7 @@ type BoardWidgetDocumentWorkerInput = BoardReadWorkerInput<
 >;
 
 export type SessionHistoryWorkerInput =
+  | TrajectoryRetentionWorkerInput
   | BoardSnapshotWorkerInput
   | BoardWidgetDocumentWorkerInput
   | SessionStoreProjectionWorkerInput
@@ -408,6 +422,10 @@ export type SessionHistoryWorkerPreparedInput =
   PreparedHistoryInput<SessionHistoryDatabaseWorkerInput>;
 
 export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValues & {
+  "trajectory-retention": {
+    kind: "trajectory-retention";
+    plan: TrajectoryRuntimeRetentionPlan;
+  };
   "board-snapshot": {
     kind: "board-snapshot";
     value: BoardReadOperations["boards.readSnapshot"]["output"];
@@ -551,6 +569,10 @@ type CancellableSessionHistoryReader<
 > = (input: Omit<Input, "kind" | "database">, signal?: AbortSignal) => Promise<Value>;
 
 export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
+  readTrajectoryRetention: (
+    input: Omit<TrajectoryRetentionWorkerInput, "kind" | "database">,
+    options: { signal?: AbortSignal; timeoutMs: number },
+  ) => Promise<TrajectoryRuntimeRetentionPlan>;
   readBoardSnapshot: SessionHistoryReader<
     BoardSnapshotWorkerInput,
     BoardReadOperations["boards.readSnapshot"]["output"]

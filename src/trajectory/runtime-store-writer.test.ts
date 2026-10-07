@@ -80,18 +80,30 @@ const retention = vi.hoisted(() => ({
   accepted: undefined as Promise<void> | undefined,
   reads: 0,
 }));
-vi.mock("../infra/sqlite-readonly-worker.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../infra/sqlite-readonly-worker.js")>();
+vi.mock("../config/sessions/session-transcript-worker-runtime.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("../config/sessions/session-transcript-worker-runtime.js")
+    >();
   return {
     ...actual,
-    runSqliteReadOnlyOperation: async (
-      ...args: Parameters<typeof actual.runSqliteReadOnlyOperation>
+    retainSessionHistoryWorkerDatabase: (
+      ...args: Parameters<typeof actual.retainSessionHistoryWorkerDatabase>
     ) => {
-      if (args[1].type === "trajectoryRetention.read") {
-        retention.reads += 1;
-        await retention.beforeRead?.();
-      }
-      return actual.runSqliteReadOnlyOperation(...args);
+      const retained = actual.retainSessionHistoryWorkerDatabase(...args);
+      return {
+        ...retained,
+        owner: {
+          ...retained.owner,
+          readTrajectoryRetention: async (
+            ...readArgs: Parameters<typeof retained.owner.readTrajectoryRetention>
+          ) => {
+            retention.reads += 1;
+            await retention.beforeRead?.();
+            return retained.owner.readTrajectoryRetention(...readArgs);
+          },
+        },
+      };
     },
   };
 });
@@ -120,7 +132,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("settles retention despite another append while its coalesced read is pending", async () => {
+it("refreshes retained retention reads while session writes and appends remain available", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const target = {
       agentId: "main",
@@ -162,10 +174,12 @@ it("settles retention despite another append while its coalesced read is pending
         "first",
         "while-retention-reads",
       ]);
+      await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 2 });
     } finally {
       release.resolve();
       await retention.accepted;
     }
+    expect(retention.reads).toBe(2);
     expect(
       await loadSqliteTrajectoryRuntimeEvents({ ...target, sessionId: "old-trajectory" }),
     ).toEqual([]);

@@ -19,6 +19,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
   receive: (value: SessionTranscriptWorkerValues[SessionHistoryWorkerInput["kind"]]) => TResult,
   signal?: AbortSignal,
   onRequest?: (value: unknown) => void,
+  timeoutMs?: number,
 ) => Promise<TResult>;
 
 type SessionHistoryWorkerValue = SessionTranscriptWorkerValues[SessionHistoryWorkerInput["kind"]];
@@ -87,6 +88,25 @@ export function createSessionHistoryWorkerReaders(
       );
   }
   return {
+    readTrajectoryRetention: (input, options) => {
+      const captured = {
+        ...input,
+        input: { ...input.input },
+        expectedIdentity: { ...input.expectedIdentity },
+        env: captureSessionTranscriptStorageEnvironment(input.env),
+      };
+      return runRequest(
+        () => ({ kind: "trajectory-retention", ...captured }),
+        JSON.stringify(captured).length * 2,
+        (value) => {
+          assertResultKind(value, "trajectory-retention", "trajectory retention");
+          return value.plan;
+        },
+        options.signal,
+        undefined,
+        options.timeoutMs,
+      );
+    },
     readBoardSnapshot: reader("board-snapshot", "a Board snapshot", (result) => result.value),
     readBoardWidgetDocument: reader(
       "board-widget-document",

@@ -11,6 +11,7 @@ type DurableHistoryReadOperationRequest = Extract<
   SessionTranscriptWorkerInput,
   {
     kind:
+      | "trajectory-retention"
       | "board-snapshot"
       | "board-widget-document"
       | "transcript-match"
@@ -45,6 +46,7 @@ export function isSessionHistoryReadOperation(
   request: SessionTranscriptWorkerInput,
 ): request is DurableHistoryReadOperationRequest {
   switch (request.kind) {
+    case "trajectory-retention":
     case "board-snapshot":
     case "board-widget-document":
     case "transcript-match":
@@ -101,6 +103,32 @@ async function prepareHistoryRead(
   retainedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): Promise<() => SessionTranscriptWorkerValues[SessionHistoryReadOperationRequest["kind"]]> {
   switch (request.kind) {
+    case "trajectory-retention": {
+      const [
+        { withOpenClawAgentDatabaseReadOnly },
+        { assertOpenClawAgentDatabaseIdentity },
+        { prepareTrajectoryRuntimeRetention },
+      ] = await Promise.all([
+        import("../../state/openclaw-agent-db-readonly.js"),
+        import("../../state/openclaw-agent-db-identity.js"),
+        import("../../trajectory/runtime-retention.sqlite.js"),
+      ]);
+      return () => {
+        const read = withOpenClawAgentDatabaseReadOnly(
+          (database) => {
+            assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
+            const plan = prepareTrajectoryRuntimeRetention(database.db, request.input, request.now);
+            assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
+            return plan;
+          },
+          { ...request.database, env: request.env },
+        );
+        if (!read.found) {
+          throw new Error(`Trajectory retention cannot read its database: ${read.reason}`);
+        }
+        return { kind: request.kind, plan: read.value };
+      };
+    }
     case "board-snapshot":
     case "board-widget-document": {
       const [
