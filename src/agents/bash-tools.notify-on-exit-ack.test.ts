@@ -138,7 +138,6 @@ it("keeps an identical successor queued when heartbeat consumes a stale snapshot
       intent: "event",
       reason: "exec-event",
       deps: {
-        getQueueSize: () => 0,
         getReplyFromConfig: replySpy,
         telegram: sendTelegram,
       },

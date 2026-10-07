@@ -140,7 +140,7 @@ async function createMirrorFixture(
     runHeartbeatOnce({
       cfg,
       ...wake,
-      deps: { getReplyFromConfig: replySpy, getQueueSize: () => 0, nowMs: () => nowMs },
+      deps: { getReplyFromConfig: replySpy, nowMs: () => nowMs },
     });
   const awareness = () =>
     drainFormattedSystemEvents({

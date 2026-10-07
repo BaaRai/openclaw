@@ -7,17 +7,11 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveMainSessionKey } from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
-import {
-  clearCronJobActive,
-  markCronJobActive,
-  markCronJobWaitingForHeartbeat,
-  resetCronActiveJobs,
-} from "../cron/active-jobs.js";
+import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { readCronScratchSnapshot } from "../cron/scratch-read.js";
 import { writeCronJobScratchForMaintenance } from "../cron/scratch-write.kernel.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
-import { enqueueCommandInLane, type CommandLaneTaskMarker } from "../process/command-queue.js";
-import { CommandLane } from "../process/lanes.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { racePromiseWithAbortSignal } from "./abort-signal.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
 import { runHeartbeatOnce, startHeartbeatRunner } from "./heartbeat-runner.js";
@@ -33,11 +27,7 @@ import {
   setupTelegramHeartbeatPluginRuntimeForTests,
   withTempHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
-import {
-  HEARTBEAT_SKIP_CRON_IN_PROGRESS,
-  requestHeartbeatAndWait,
-  setHeartbeatWakeHandler,
-} from "./heartbeat-wake.js";
+import { requestHeartbeatAndWait, setHeartbeatWakeHandler } from "./heartbeat-wake.js";
 import {
   consumeSelectedSystemEventEntries,
   enqueueSystemEvent,
@@ -357,7 +347,7 @@ describe("Heartbeat event routing", () => {
     { name: "shared", queue: "shared", dedicated: "none", busy: false },
     { name: "excluded base", queue: "base", dedicated: "none", busy: false },
     { name: "legacy exec and cron", queue: "legacy", dedicated: "exec", busy: false },
-    { name: "busy legacy", queue: "legacy", dedicated: "none", busy: true },
+    { name: "busy isolated run", queue: "legacy", dedicated: "none", busy: true },
   ])("preserves generic wake queue ownership for $name", async ({ queue, dedicated, busy }) => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
       const cfg = createLastTargetConfig({
@@ -402,6 +392,16 @@ describe("Heartbeat event routing", () => {
         return { text: queue === "base" ? "Restart complete" : "HEARTBEAT_OK" };
       });
 
+      // A running isolated turn must stop the row rotation before the legacy row is archived.
+      const operation = busy
+        ? createReplyOperation({
+            sessionKey: isolatedKey,
+            sessionId: "busy",
+            resetTriggered: false,
+          })
+        : undefined;
+      operation?.setPhase("running");
+      onTestFinished(() => operation?.complete());
       const result = await runHeartbeatOnce({
         cfg,
         agentId: "main",
@@ -409,11 +409,7 @@ describe("Heartbeat event routing", () => {
         source: "hook",
         intent: "immediate",
         reason: "hook:wake",
-        deps: {
-          getReplyFromConfig: replySpy,
-          telegram: sendTelegram,
-          getQueueSize: () => (busy ? 1 : 0),
-        },
+        deps: { getReplyFromConfig: replySpy, telegram: sendTelegram },
       });
       if (busy) {
         expect(result).toMatchObject({ status: "skipped", reason: "requests-in-flight" });
@@ -570,43 +566,6 @@ describe("Heartbeat cron and exec event ownership", () => {
     expect(ctx.Body).not.toContain("heartbeat poll");
   }
   const reminder = "Reminder: Send the nightly report";
-  function withCronOwner(
-    fn: (fixture: Fixture, marker?: CommandLaneTaskMarker) => Promise<void>,
-    marker?: CommandLaneTaskMarker,
-  ) {
-    return withHeartbeat(async (fixture) => {
-      fixture.enqueue(reminder, "cron:nightly-report");
-      fixture.replySpy.mockResolvedValue({ text: "Handled the reminder" });
-      const owner = markCronJobActive("nightly-report");
-      const release = markCronJobWaitingForHeartbeat(owner, marker);
-      try {
-        await fn(fixture, marker);
-      } finally {
-        release();
-        clearCronJobActive("nightly-report", owner);
-      }
-    });
-  }
-  function runCron(fixture: Fixture, cron = 0, nested = 0) {
-    return fixture.run({
-      source: "cron",
-      intent: "immediate",
-      reason: "cron:nightly-report",
-      sessionKey: fixture.sessionKey,
-      deps: {
-        getQueueSize: (lane) =>
-          lane === CommandLane.Cron ? cron : lane === CommandLane.CronNested ? nested : 0,
-      },
-    });
-  }
-  function expectCronBusy(
-    result: Awaited<ReturnType<typeof runHeartbeatOnce>>,
-    replySpy: HeartbeatReplySpy,
-  ) {
-    expect(result).toEqual({ status: "skipped", reason: HEARTBEAT_SKIP_CRON_IN_PROGRESS });
-    expect(replySpy).not.toHaveBeenCalled();
-  }
-
   it.each(["outside active hours", "with heartbeat noise", "without delivery"])(
     "builds the cron reminder prompt %s",
     async (scenario) => {
@@ -661,48 +620,6 @@ describe("Heartbeat cron and exec event ownership", () => {
     },
   );
 
-  it("ignores only the exact current command lane task that owns the cron wake", async () => {
-    await enqueueCommandInLane(CommandLane.Cron, async (marker) => {
-      await withCronOwner(async (f) => {
-        expect((await runCron(f, 1)).status).toBe("ran");
-        expectCronPrompt(getFirstReplyContext(f.replySpy), reminder);
-        expect(peekSystemEvents(f.sessionKey)).toEqual([]);
-      }, marker);
-      await withCronOwner(async (f) => expectCronBusy(await runCron(f, 2), f.replySpy), marker);
-    });
-  });
-  it.each(["nested lane", "stale task marker", "unowned job"])(
-    "blocks a cron wake under pressure from %s",
-    async (busy) => {
-      let staleMarker: CommandLaneTaskMarker | undefined;
-      if (busy === "stale task marker") {
-        await enqueueCommandInLane(CommandLane.Cron, async (marker) => {
-          staleMarker = marker;
-        });
-        if (!staleMarker) {
-          throw new Error("expected command lane marker");
-        }
-      }
-      await withHeartbeat(async (f) => {
-        f.enqueue(reminder, "cron:nightly-report");
-        const owner = markCronJobActive("nightly-report");
-        const release =
-          busy === "unowned job" ? undefined : markCronJobWaitingForHeartbeat(owner, staleMarker);
-        if (release) {
-          f.replySpy.mockResolvedValue({ text: "Handled the reminder" });
-        }
-        try {
-          expectCronBusy(
-            await runCron(f, busy === "stale task marker" ? 1 : 0, busy === "nested lane" ? 1 : 0),
-            f.replySpy,
-          );
-        } finally {
-          release?.();
-          clearCronJobActive("nightly-report", owner);
-        }
-      });
-    },
-  );
   it("retains a suppressed cron reminder until delivery, then consumes it exactly once", async () => {
     await withHeartbeat(async (f) => {
       f.enqueue(reminder, "cron:nightly-report");
@@ -826,7 +743,6 @@ describe("Heartbeat cron and exec event ownership", () => {
               sessionKey: queueKey,
               source: noise ? "interval" : "cron",
               reason: noise ? "interval" : "cron:owner-report",
-              deps: { getQueueSize: () => 0 },
             });
           expect((await run()).status).toBe(noise ? "ran" : "failed");
           expect(f.replySpy).toHaveBeenCalledOnce();

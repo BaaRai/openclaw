@@ -54,7 +54,6 @@ it.each([
         cfg,
         deps: {
           telegram: sendTelegram,
-          getQueueSize: () => 0,
           nowMs: () => 0,
           getReplyFromConfig: replySpy,
         },

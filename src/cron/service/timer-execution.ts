@@ -1,13 +1,5 @@
-import {
-  HEARTBEAT_SKIP_CRON_IN_PROGRESS,
-  type HeartbeatRunResult,
-} from "../../infra/heartbeat-wake.js";
-import type { CommandLaneTaskMarker } from "../../process/command-queue.js";
-import {
-  type CronActiveJobMarker,
-  isCronActiveJobMarkerCurrent,
-  markCronJobWaitingForHeartbeat,
-} from "../active-jobs.js";
+import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
+import { isCronActiveJobMarkerCurrent } from "../active-jobs.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { isHeartbeatTaskCronJob } from "../heartbeat-task.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
@@ -156,7 +148,7 @@ export async function executeJobCore(
   const heartbeatTask = isHeartbeatTaskCronJob(effectiveJob) ? effectiveJob : undefined;
   if (effectiveJob.payload.kind === "heartbeat" || heartbeatTask) {
     // Monitors and migrated tasks share the wake bus, keeping coalescing,
-    // quiet hours, cooldown, flood, and busy guards in the heartbeat runner.
+    // quiet hours, cooldown, flood, and busy guards on the heartbeat path.
     const agentId = resolveCronJobEffectiveAgentId(
       effectiveJob,
       state.deps.resolveDefaultAgentId?.() ?? state.deps.defaultAgentId,
@@ -184,19 +176,10 @@ export async function executeJobCore(
             effectiveJob.schedule.kind === "every" ? effectiveJob.schedule.everyMs : undefined,
         };
     const heartbeatWaitLifecycle = options?.onHeartbeatExecutionStarted?.(heartbeatWake);
-    const releaseHeartbeatWait = markCronJobWaitingForHeartbeat(
-      options?.activeJobMarker,
-      options?.owningCronLaneTaskMarker,
-    );
-    let heartbeatResult: HeartbeatRunResult;
-    try {
-      heartbeatResult = await (state.deps.requestHeartbeatAndWait?.(heartbeatWake, {
-        ...(abortSignal ? { abortSignal } : {}),
-        ...heartbeatWaitLifecycle,
-      }) ?? { status: "failed", reason: "heartbeat wake settlement unavailable" });
-    } finally {
-      releaseHeartbeatWait();
-    }
+    const heartbeatResult: HeartbeatRunResult = (await state.deps.requestHeartbeatAndWait?.(
+      heartbeatWake,
+      { ...(abortSignal ? { abortSignal } : {}), ...heartbeatWaitLifecycle },
+    )) ?? { status: "failed", reason: "heartbeat wake settlement unavailable" };
     if (abortSignal?.aborted) {
       return resolveAbortError();
     }
@@ -217,8 +200,6 @@ export async function executeJobCore(
       effectiveJob,
       abortSignal,
       options?.onHeartbeatExecutionStarted,
-      options?.activeJobMarker,
-      options?.owningCronLaneTaskMarker,
     );
     return triggerEval ? { ...result, triggerEval } : result;
   }
@@ -232,8 +213,6 @@ async function executeMainSessionCronJob(
   job: CronJob,
   abortSignal: AbortSignal | undefined,
   onHeartbeatExecutionStarted?: ExecuteJobCoreOptions["onHeartbeatExecutionStarted"],
-  activeJobMarker?: CronActiveJobMarker,
-  owningCronLaneTaskMarker?: CommandLaneTaskMarker,
 ): Promise<
   CronRunOutcome &
     CronRunTelemetry &
@@ -277,32 +256,23 @@ async function executeMainSessionCronJob(
   if (job.wakeMode === "now" && state.deps.requestHeartbeatAndWait) {
     const heartbeatWaitLifecycle = onHeartbeatExecutionStarted?.(heartbeatWake);
     const waitStartedAt = state.deps.nowMs();
-    const releaseHeartbeatWait = markCronJobWaitingForHeartbeat(
-      activeJobMarker,
-      owningCronLaneTaskMarker,
-    );
     let handedOff = false;
     let heartbeatResult: HeartbeatRunResult;
     try {
       heartbeatResult = await state.deps.requestHeartbeatAndWait(heartbeatWake, {
         abortSignal,
         ...heartbeatWaitLifecycle,
-        stopWaitingOnRetry: (result, retryAtMs) => {
+        stopWaitingOnRetry: (_result, retryAtMs) => {
           // Only busy/guard deferrals spend this budget; an executing turn still
           // owns completion. Detaching leaves the queue's original retry intact.
           const remainingMs = 2 * 60_000 - (state.deps.nowMs() - waitStartedAt);
-          handedOff =
-            result.reason === HEARTBEAT_SKIP_CRON_IN_PROGRESS ||
-            remainingMs <= 0 ||
-            retryAtMs - Date.now() > remainingMs;
+          handedOff = remainingMs <= 0 || retryAtMs - Date.now() > remainingMs;
           return handedOff;
         },
       });
     } catch (error) {
       removeQueuedSystemEvent();
       throw error;
-    } finally {
-      releaseHeartbeatWait();
     }
     if (abortSignal?.aborted) {
       removeQueuedSystemEvent();

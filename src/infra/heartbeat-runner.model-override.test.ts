@@ -64,7 +64,7 @@ async function replyOptions(
       agentId,
       sessionKey,
       ...params.wake,
-      deps: { getReplyFromConfig: replySpy, getQueueSize: () => 0, nowMs: () => 0 },
+      deps: { getReplyFromConfig: replySpy, nowMs: () => 0 },
     });
     expect(replySpy).toHaveBeenCalledOnce();
     const [ctx, options, passedConfig] = replySpy.mock.calls[0]!;

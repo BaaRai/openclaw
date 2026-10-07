@@ -36,7 +36,7 @@ it("keeps recovered work on the ordinary budget and periodic heartbeats on 600 s
     await seedSessionStore(storePath, sessionKey, { sessionId: "requester" });
     // Drive the emitted wake explicitly; recovery delivery, queueing, and classification stay real.
     const wake = vi.spyOn(heartbeatWake, "requestHeartbeat").mockImplementation(() => {});
-    const deps = { getReplyFromConfig: replySpy, getQueueSize: () => 0, nowMs: () => 0 };
+    const deps = { getReplyFromConfig: replySpy, nowMs: () => 0 };
     for (const kind of ["systemEvent", "agentTurn"] as const) {
       replySpy.mockReset().mockResolvedValue({ text: "HEARTBEAT_OK" });
       wake.mockClear();

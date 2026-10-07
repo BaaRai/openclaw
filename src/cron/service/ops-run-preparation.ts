@@ -1,4 +1,3 @@
-import type { CommandLaneTaskMarker } from "../../process/command-queue.js";
 import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
 import type { CronActiveJobMarker } from "../active-jobs.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
@@ -82,7 +81,6 @@ export type ManualRunOptions = {
   scheduleOwnershipAtMs?: number;
   payload?: CronPayload;
   terminalTracker?: ManualRunTerminalTracker;
-  owningCronLaneTaskMarker?: CommandLaneTaskMarker;
   evaluateTrigger?: boolean;
   streamBatch?: string;
   streamScheduleKey?: string;
@@ -409,7 +407,6 @@ export async function prepareManualRun(
       jobId: reservedJob.id,
       runId: opts?.runId,
       terminalTracker: opts?.terminalTracker,
-      owningCronLaneTaskMarker: opts?.owningCronLaneTaskMarker,
       commitGuard: opts?.commitGuard,
       reservationAt,
       scheduleOwnershipAtMs: opts?.scheduleOwnershipAtMs ?? reservationAt,

@@ -133,7 +133,7 @@ it.skipIf(process.platform === "win32").each([
         await runHeartbeatOnce({
           cfg,
           ...wake,
-          deps: { getQueueSize: () => 0, getReplyFromConfig: replySpy, telegram: sendTelegram },
+          deps: { getReplyFromConfig: replySpy, telegram: sendTelegram },
         });
       }
       expect(replySpy).toHaveBeenCalledTimes(child ? 0 : 1);

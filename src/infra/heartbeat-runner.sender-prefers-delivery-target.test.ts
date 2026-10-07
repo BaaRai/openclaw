@@ -47,7 +47,6 @@ describe("runHeartbeatOnce", () => {
           deps: {
             getReplyFromConfig: replySpy,
             slack: sendSlack,
-            getQueueSize: () => 0,
             nowMs: () => 0,
           },
         });

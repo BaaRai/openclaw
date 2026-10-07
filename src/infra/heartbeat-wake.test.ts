@@ -7,7 +7,6 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import {
-  HEARTBEAT_SKIP_CRON_IN_PROGRESS,
   HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   requestHeartbeat,
   requestHeartbeatAndWait,
@@ -634,22 +633,6 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-now",
     });
   });
-
-  it.each([HEARTBEAT_SKIP_CRON_IN_PROGRESS])(
-    "retries %s after the default retry delay",
-    async (reason) => {
-      vi.useFakeTimers();
-      const handler = vi
-        .fn()
-        .mockResolvedValueOnce({ status: "skipped", reason })
-        .mockResolvedValueOnce({ status: "ran", durationMs: 1 });
-      await expectRetryAfterDefaultDelay({
-        handler,
-        initialReason: "interval",
-        expectedRetryReason: "interval",
-      });
-    },
-  );
 
   it("lets a fresh event run while a scheduled retry observes idle grace", async () => {
     vi.useFakeTimers();

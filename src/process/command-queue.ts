@@ -635,15 +635,6 @@ export function listCommandLaneTotals(): Array<{
   }));
 }
 
-/** Return whether this exact lane task still owns an active queue slot. */
-export function isCommandLaneTaskMarkerCurrent(marker: CommandLaneTaskMarker | undefined): boolean {
-  if (!marker) {
-    return false;
-  }
-  const state = getQueueState().lanes.get(normalizeLane(marker.lane));
-  return state?.generation === marker.generation && state.activeTaskIds.has(marker.taskId);
-}
-
 export function getTotalQueueSize() {
   let total = 0;
   for (const s of getQueueState().lanes.values()) {

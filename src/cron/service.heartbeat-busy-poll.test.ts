@@ -1,6 +1,6 @@
-// Keep the real scheduler, wake owner, preflight, busy guards, and SQLite stores.
-// Busy polls hold actual command-lane work; a fabricated skipped result misses this bug.
-// Model/channel I/O and late-admission activity are injected at their owned boundaries.
+// Keep the real scheduler, wake owner, preflight, mailbox admission, and SQLite stores.
+// Busy polls hold an actual controller turn on the target session; a fabricated skipped
+// result misses this bug. Model/channel I/O is injected at its owned boundary.
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -29,9 +29,9 @@ import {
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";
-import { enqueueCommandInLane, getQueueSize, resetAllLanes } from "../process/command-queue.js";
+import { resetAllLanes } from "../process/command-queue.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
-import { CommandLane } from "../process/lanes.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -214,20 +214,16 @@ async function createPollFixture(options: { scratch?: string; isolated?: boolean
         (await writeCronJobScratch({ storePath, jobId: monitor.id, content: options.scratch })).ok,
       ).toBe(true);
     }
-    async function holdLane(lane: string) {
-      const started = createDeferred();
-      const release = createDeferred();
-      releases.push(() => release.resolve());
-      const work = enqueueCommandInLane(lane, async () => {
-        started.resolve();
-        await release.promise;
+    function holdSession(key = sessionKey) {
+      const operation = createReplyOperation({
+        sessionKey: key,
+        sessionId: "busy-session",
+        resetTriggered: false,
       });
-      await started.promise;
-      expect(getQueueSize(lane)).toBe(1);
-      return async () => {
-        release.resolve();
-        await work;
-      };
+      operation.setPhase("running");
+      const release = () => operation.complete();
+      releases.push(release);
+      return release;
     }
     return {
       cron,
@@ -237,13 +233,12 @@ async function createPollFixture(options: { scratch?: string; isolated?: boolean
       storePath,
       sessionKey,
       reply,
-      deps,
       runOnce,
       request,
       waitForRequest,
       finished,
       waitForFinished,
-      holdLane,
+      holdSession,
       close,
     };
   } catch (error) {
@@ -282,9 +277,9 @@ describe("native heartbeat busy poll settlement", () => {
           waitForRequest,
           finished,
           waitForFinished,
-          holdLane,
+          holdSession,
         }) => {
-          const releaseMain = await holdLane(CommandLane.Main);
+          const releaseSession = holdSession();
           const firstTick = monitor.state.nextRunAtMs!;
           await vi.advanceTimersByTimeAsync(firstTick - Date.now());
           await waitForRequest(1);
@@ -342,7 +337,7 @@ describe("native heartbeat busy poll settlement", () => {
           expect(finished()).toHaveLength(1);
           expect(runOnce).toHaveBeenCalledOnce();
           expect(reply).not.toHaveBeenCalled();
-          await releaseMain();
+          releaseSession();
           await vi.advanceTimersByTimeAsync(nextTick - Date.now() - 1);
           expect(runOnce).toHaveBeenCalledOnce();
           await vi.advanceTimersByTimeAsync(1);
@@ -364,7 +359,7 @@ describe("native heartbeat busy poll settlement", () => {
     },
   );
 
-  it("keeps cron-in-progress and native force semantics while a direct manual wake still retries", async () => {
+  it("retires a forced native poll on a busy session while a direct manual wake still retries", async () => {
     await withPollFixture(
       async ({
         cron,
@@ -375,9 +370,9 @@ describe("native heartbeat busy poll settlement", () => {
         request,
         waitForRequest,
         finished,
-        holdLane,
+        holdSession,
       }) => {
-        const releaseCron = await holdLane(CommandLane.CronNested);
+        const releaseSession = holdSession();
         const forced = cron.run(monitor.id, "force");
         await waitForRequest(1);
         await vi.advanceTimersByTimeAsync(250);
@@ -393,7 +388,7 @@ describe("native heartbeat busy poll settlement", () => {
         );
         expect(finished()[0]).toMatchObject({
           status: "skipped",
-          error: "heartbeat skipped: cron-in-progress",
+          error: "heartbeat skipped: requests-in-flight",
         });
         const settled = vi.fn();
         const manual = requestHeartbeatAndWait({
@@ -408,7 +403,7 @@ describe("native heartbeat busy poll settlement", () => {
         expect(settled).not.toHaveBeenCalled();
         expect(reply).not.toHaveBeenCalled();
         expect(runOnce).toHaveBeenCalledTimes(2);
-        await releaseCron();
+        releaseSession();
         await vi.advanceTimersByTimeAsync(1_000);
         await expect(manual).resolves.toMatchObject({ status: "ran" });
         expect(reply).toHaveBeenCalledOnce();
@@ -430,9 +425,9 @@ describe("native heartbeat busy poll settlement", () => {
           request,
           waitForRequest,
           finished,
-          holdLane,
+          holdSession,
         }) => {
-          const releaseMain = await holdLane(CommandLane.Main);
+          const releaseSession = holdSession();
           const text =
             kind === "cron" ? "Reminder: Check the retained reminder" : "Retained generic event";
           enqueueSystemEventWithReceipt(text, {
@@ -451,7 +446,7 @@ describe("native heartbeat busy poll settlement", () => {
           expect(finished()).toHaveLength(0);
           expect(peekSystemEventEntries(sessionKey).map((entry) => entry.text)).toContain(text);
           expect(reply).not.toHaveBeenCalled();
-          await releaseMain();
+          releaseSession();
           await vi.advanceTimersByTimeAsync(60_000);
           await expect(parent).resolves.toMatchObject({ ok: true, ran: true });
           expect(finished()).toHaveLength(1);
@@ -470,7 +465,16 @@ describe("native heartbeat busy poll settlement", () => {
     "coalesces a native monitor with a task, retains the exact payload, and settles both parents on %s",
     async (outcome) => {
       await withPollFixture(
-        async ({ cron, monitor, reply, runOnce, request, waitForRequest, finished, holdLane }) => {
+        async ({
+          cron,
+          monitor,
+          reply,
+          runOnce,
+          request,
+          waitForRequest,
+          finished,
+          holdSession,
+        }) => {
           if (outcome === "failure") {
             reply.mockImplementationOnce(async (_ctx, options) => {
               setHeartbeatAgentTurnStatus(options, "failed");
@@ -491,7 +495,7 @@ describe("native heartbeat busy poll settlement", () => {
             { systemOwned: true },
           );
           const task = "job" in added ? added.job : added;
-          const releaseMain = await holdLane(CommandLane.Main);
+          const releaseSession = holdSession();
           const parents = [cron.run(monitor.id, "force"), cron.run(task.id, "force")];
           // Polling with vi.waitFor advances the coalescer while SQLite admission is still pending.
           await waitForRequest(2);
@@ -505,7 +509,7 @@ describe("native heartbeat busy poll settlement", () => {
           });
           expect(finished()).toHaveLength(0);
           expect(reply).not.toHaveBeenCalled();
-          await releaseMain();
+          releaseSession();
           await vi.advanceTimersByTimeAsync(60_000);
           await expect(Promise.all(parents)).resolves.toEqual([
             expect.objectContaining({ ok: true, ran: true }),
@@ -525,40 +529,29 @@ describe("native heartbeat busy poll settlement", () => {
     },
   );
 
-  it("retains late isolated admission and a subsequent pre-execution busy retry", async () => {
+  it("retains an isolated poll while its run session is busy", async () => {
     await withPollFixture(
       async ({
         cron,
         monitor,
-        deps,
+        sessionKey,
         reply,
         runOnce,
         request,
         waitForRequest,
         finished,
-        holdLane,
+        holdSession,
       }) => {
-        // The wake-stage check is clear; the second check is in preparation after
-        // delivery resolution. This is the actual late admission boundary.
-        deps.isReplyRunActive = vi
-          .fn()
-          .mockReturnValueOnce(false)
-          .mockReturnValueOnce(true)
-          .mockReturnValue(false);
+        // Preparation already admitted the isolated row, so the guard keeps the retry.
+        const releaseSession = holdSession(`${sessionKey}:heartbeat`);
         const parent = cron.run(monitor.id, "force");
         await waitForRequest(1);
         expect(request).toHaveBeenCalledOnce();
         await vi.advanceTimersByTimeAsync(250);
         await runOnce.mock.results[0]?.value;
-        expect(deps.isReplyRunActive).toHaveBeenCalledTimes(2);
         expect(finished()).toHaveLength(0);
         expect(reply).not.toHaveBeenCalled();
-        const releaseMain = await holdLane(CommandLane.Main);
-        await vi.advanceTimersByTimeAsync(60_000);
-        expect(runOnce).toHaveBeenCalledTimes(2);
-        await runOnce.mock.results[1]?.value;
-        expect(finished()).toHaveLength(0);
-        await releaseMain();
+        releaseSession();
         await vi.advanceTimersByTimeAsync(60_000);
         await expect(parent).resolves.toMatchObject({ ok: true, ran: true });
         expect(finished()[0]?.error).toBeUndefined();

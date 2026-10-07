@@ -25,7 +25,10 @@ import {
 } from "./heartbeat-runner-execution.js";
 import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
 import { getHeartbeatWakeAbortSignal, type HeartbeatRunResult } from "./heartbeat-wake.js";
-import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
+import {
+  markSessionEventWakeWorkStarted,
+  retireRefusedSessionEventWakePoll,
+} from "./session-event-wake.js";
 
 export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<HeartbeatRunResult> {
   const wake = await resolveHeartbeatWakeStage(opts);
@@ -173,18 +176,29 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
           deliverHeartbeatDispatch(policy, payload, state.agentTurnOwner?.abortSignal ?? signal),
       },
     });
-    if (policy.result) {
-      return policy.result;
+    if (!policy.result) {
+      const execution = resolveReplyOperationAgentTurn(state);
+      const reason =
+        execution === "superseded"
+          ? "preempted"
+          : execution === "cancelled"
+            ? "agent-runner-cancelled"
+            : "requests-in-flight";
+      emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
+      policy.result = { status: "skipped", reason };
     }
-    const execution = resolveReplyOperationAgentTurn(state);
-    const reason =
-      execution === "superseded"
-        ? "preempted"
-        : execution === "cancelled"
-          ? "agent-runner-cancelled"
-          : "requests-in-flight";
-    emitHeartbeatEvent({ status: "skipped", reason, durationMs: Date.now() - startedAt });
-    return { status: "skipped", reason };
+    // The target session's mailbox refused this turn before it ran; an admitted turn that
+    // later stalls keeps its retry. An event-free poll waits for its next cadence tick.
+    if (
+      policy.result.status === "skipped" &&
+      policy.result.reason === "requests-in-flight" &&
+      (state.admission === undefined || state.admission.status === "skipped") &&
+      prepared.run.kind !== "isolated" &&
+      wake.preflight.pendingEventEntries.length === 0
+    ) {
+      retireRefusedSessionEventWakePoll();
+    }
+    return policy.result;
   } catch (error) {
     if (policy.result) {
       return policy.result;

@@ -67,6 +67,8 @@ type WakeAttempt = {
   signal: AbortSignal;
   wake: PendingWake;
   terminalPollDisposition: boolean;
+  /** An earlier attempt of this wake already started work, so a refusal now must retry. */
+  startedBefore: boolean;
 };
 type RequestOptions = Omit<SessionEventWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
@@ -79,7 +81,6 @@ const GLOBAL_TARGET = "::";
 const RETRY_REASONS = new Set([
   "active-run",
   "requests-in-flight",
-  "cron-in-progress",
   "preempted",
   "channel-not-ready",
 ]);
@@ -391,7 +392,12 @@ function createSessionEventWakeRuntime() {
           handOff(wakes, index);
           return;
         }
-        const attempt: WakeAttempt = { signal, wake, terminalPollDisposition: false };
+        const attempt: WakeAttempt = {
+          signal,
+          wake,
+          terminalPollDisposition: false,
+          startedBefore: wake.workStarted,
+        };
         let result: SessionEventWakeResult;
         let onAbort: (() => void) | undefined;
         try {
@@ -662,8 +668,7 @@ function createSessionEventWakeRuntime() {
       attempt &&
       !attempt.signal.aborted &&
       attempt.terminalPollDisposition &&
-      attempt.wake.pureNativePoll &&
-      !attempt.wake.workStarted,
+      attempt.wake.pureNativePoll,
     );
   }
 
@@ -691,6 +696,19 @@ function createSessionEventWakeRuntime() {
     return true;
   }
 
+  // A turn refused by mailbox admission had no effects, even after this attempt's preparation.
+  function retireRefusedSessionEventWakePoll(): void {
+    const attempt = attempts.getStore();
+    if (
+      attempt &&
+      !attempt.signal.aborted &&
+      attempt.wake.pureNativePoll &&
+      !attempt.startedBefore
+    ) {
+      attempt.terminalPollDisposition = true;
+    }
+  }
+
   return {
     setSessionEventWakeHandler,
     requestSessionEventWake,
@@ -698,6 +716,7 @@ function createSessionEventWakeRuntime() {
     getSessionEventWakeAbortSignal: () => attempts.getStore()?.signal,
     markSessionEventWakeWorkStarted,
     deferSessionEventWakePoll,
+    retireRefusedSessionEventWakePoll,
     isSessionEventWakePollDeferred: () => isTerminalPollAttempt(attempts.getStore()),
     areSessionEventWakesEnabled: () => enabled,
     setSessionEventWakesEnabled: (value: boolean) => {
@@ -714,6 +733,7 @@ export const {
   getSessionEventWakeAbortSignal,
   markSessionEventWakeWorkStarted,
   deferSessionEventWakePoll,
+  retireRefusedSessionEventWakePoll,
   isSessionEventWakePollDeferred,
   areSessionEventWakesEnabled,
   setSessionEventWakesEnabled,

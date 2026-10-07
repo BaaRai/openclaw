@@ -111,7 +111,6 @@ async function withHeartbeat<T>(
           deps: {
             [channel]: send,
             getReplyFromConfig: replySpy,
-            getQueueSize: () => 0,
             nowMs: () => (options.previousActivity ? now : 0),
             webAuthExists: async () => true,
             hasActiveWebListener: () => true,
@@ -860,7 +859,7 @@ describe("heartbeat inbound hook boundary", () => {
         await expect(
           runHeartbeatOnce({
             cfg,
-            deps: { getReplyFromConfig: replySpy, telegram: sendTelegram, getQueueSize: () => 0 },
+            deps: { getReplyFromConfig: replySpy, telegram: sendTelegram },
           }),
         ).resolves.toMatchObject({ status: "ran" });
         expect(handler).not.toHaveBeenCalled();
@@ -961,7 +960,7 @@ describe("heartbeat next-user outcomes", () => {
             cfg,
             agentId: "ops",
             sessionKey,
-            deps: { getReplyFromConfig: replySpy, telegram: sendTelegram, getQueueSize: () => 0 },
+            deps: { getReplyFromConfig: replySpy, telegram: sendTelegram },
           }),
         ).toMatchObject({ status: "ran" });
         expect(sendTelegram).not.toHaveBeenCalled();

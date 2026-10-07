@@ -8,6 +8,7 @@ import {
   isSessionEventWakePollDeferred,
   markSessionEventWakeWorkStarted,
   requestSessionEventWakeAndWait,
+  retireRefusedSessionEventWakePoll,
   setSessionEventWakeHandler as setRuntimeSessionEventWakeHandler,
 } from "./session-event-wake.js";
 
@@ -58,7 +59,6 @@ describe("session event wake private poll disposition", () => {
     { reason: "requests-in-flight", defer: true, retryMs: SESSION_EVENT_IDLE_RETRY_MS },
     { reason: "active-run", defer: false, retryMs: SESSION_EVENT_IDLE_RETRY_MS },
     { reason: "requests-in-flight", defer: false, retryMs: SESSION_EVENT_IDLE_RETRY_MS },
-    { reason: "cron-in-progress", defer: false, retryMs: 1_000 },
   ])(
     "settles $reason only with a private disposition (defer=$defer)",
     async ({ reason, defer, retryMs }) => {
@@ -197,11 +197,7 @@ describe("session event wake private poll disposition", () => {
           isSessionEventWakePollDeferred(),
         ]);
         return dispositions.length === 1
-          ? {
-              status: "skipped",
-              reason:
-                retryMs === SESSION_EVENT_IDLE_RETRY_MS ? "requests-in-flight" : "cron-in-progress",
-            }
+          ? { status: "skipped", reason: "requests-in-flight", retryAtMs: Date.now() + retryMs }
           : terminalFailure;
       });
       setSessionEventWakeHandler(handler);
@@ -308,7 +304,7 @@ describe("session event wake private poll disposition", () => {
         }
         dispositions.push(deferSessionEventWakePoll());
         return dispositions.length === 1
-          ? { status: "skipped", reason: "cron-in-progress" }
+          ? { status: "skipped", reason: "requests-in-flight", retryAtMs: Date.now() + 1_000 }
           : terminalFailure;
       });
       setSessionEventWakeHandler(handler);
@@ -349,6 +345,39 @@ describe("session event wake private poll disposition", () => {
       }
     },
   );
+
+  it.each([
+    { name: "native poll", request: {}, startedBefore: false, retired: true },
+    { name: "native poll retry", request: {}, startedBefore: true, retired: false },
+    {
+      name: "task turn",
+      request: { intent: "task", tasks: [task] },
+      startedBefore: false,
+      retired: false,
+    },
+  ] as const)("retires a refused $name only before earlier work: $retired", async (params) => {
+    const skipped = { status: "skipped" as const, reason: "requests-in-flight" };
+    const handler = vi.fn<WakeHandler>(async () => {
+      markSessionEventWakeWorkStarted();
+      // The refused attempt follows one admitted attempt when earlier work started.
+      const refusal = handler.mock.calls.length - (params.startedBefore ? 1 : 0);
+      if (refusal === 0) {
+        return { status: "skipped", reason: "preempted" };
+      }
+      if (refusal > 1) {
+        return terminalFailure;
+      }
+      retireRefusedSessionEventWakePoll();
+      return skipped;
+    });
+    setSessionEventWakeHandler(handler);
+    const result = requestSessionEventWakeAndWait(nativePoll(params.request));
+
+    await vi.advanceTimersByTimeAsync(2 * SESSION_EVENT_IDLE_RETRY_MS + 1);
+    const attempts = (params.startedBefore ? 1 : 0) + (params.retired ? 1 : 2);
+    expect(handler).toHaveBeenCalledTimes(attempts);
+    expect(await result).toBe(params.retired ? skipped : terminalFailure);
+  });
 
   it("revokes a tentative poll disposition when work starts in the same attempt", async () => {
     const dispositions: boolean[] = [];
@@ -433,7 +462,7 @@ describe("session event wake private poll disposition", () => {
         throw new Error("test-attempt-interrupted");
       }
       return handler.mock.calls.length === 2
-        ? { status: "skipped", reason: "cron-in-progress" }
+        ? { status: "skipped", reason: "requests-in-flight", retryAtMs: Date.now() + 1_000 }
         : terminalFailure;
     });
     setSessionEventWakeHandler(handler);

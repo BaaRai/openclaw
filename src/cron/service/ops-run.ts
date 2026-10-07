@@ -56,7 +56,6 @@ async function finishPreparedManualRun(
       coreResult = await executeJobCoreWithTimeout(state, executionJob, {
         runId: taskRunId,
         activeJobMarker: prepared.activeJobMarker,
-        owningCronLaneTaskMarker: prepared.owningCronLaneTaskMarker,
         streamBatch: prepared.streamBatch,
         streamScheduleKey: prepared.streamScheduleKey,
         streamSourceIdentity: prepared.streamSourceIdentity,
@@ -291,12 +290,12 @@ export async function enqueueRun(
           opts?.commitGuard?.();
           return await enqueueCommandInLane(
             CommandLane.Cron,
-            async (owningCronLaneTaskMarker) => {
+            async () => {
               acceptQueue();
               dispatched = true;
               const result = await executePreparedManualRun(
                 state,
-                { ...prepared, owningCronLaneTaskMarker },
+                prepared,
                 mode,
                 activationSettled.resolve,
               );

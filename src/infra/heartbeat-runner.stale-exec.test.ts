@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetConfigRuntimeState, type OpenClawConfig } from "../config/config.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { resetHeartbeatEventsForTest } from "./heartbeat-events.js";
@@ -176,9 +177,19 @@ describe("stale exec heartbeat wakes", () => {
   );
 
   it(
-    "retires a stale exec wake before retryable busy gates",
-    heartbeatCase(async ({ run }) => {
-      expect(await run({ deps: { getQueueSize: () => 1 } })).toEqual(stale);
+    "retires a stale exec wake while its session is busy",
+    heartbeatCase(async ({ sessionKey, run }) => {
+      const operation = createReplyOperation({
+        sessionKey,
+        sessionId: "busy-session",
+        resetTriggered: false,
+      });
+      operation.setPhase("running");
+      try {
+        expect(await run()).toEqual(stale);
+      } finally {
+        operation.complete();
+      }
     }),
   );
 

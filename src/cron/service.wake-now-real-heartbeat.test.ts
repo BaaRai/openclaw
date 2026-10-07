@@ -26,7 +26,7 @@ import {
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";
-import { enqueueCommandInLane, getQueueSize } from "../process/command-queue.js";
+import { getQueueSize } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
@@ -338,7 +338,7 @@ async function runMainCronCase(
 }
 
 describe("main cron with the real heartbeat runner", () => {
-  it("settles a busy routeless monitor without delaying restart", async () => {
+  it("settles a routeless monitor without delaying restart", async () => {
     vi.useFakeTimers();
     const sandbox = makeSandbox();
     const cfg: OpenClawConfig = {
@@ -386,8 +386,6 @@ describe("main cron with the real heartbeat runner", () => {
         }
       },
     };
-    const foreground = createDeferred();
-    const foregroundRun = enqueueCommandInLane(CommandLane.Main, () => foreground.promise);
     let cron = new CronService(deps);
     try {
       await cron.start();
@@ -412,9 +410,9 @@ describe("main cron with the real heartbeat runner", () => {
       await expect(finished.promise).resolves.toMatchObject({
         jobId: job.id,
         status: "skipped",
-        error: "heartbeat skipped: requests-in-flight",
+        error: "heartbeat skipped: no-route",
       });
-      expect(attempts).toEqual([{ status: "skipped", reason: "requests-in-flight" }]);
+      expect(attempts).toEqual([{ status: "skipped", reason: "no-route" }]);
       const completed = cron.getJob(job.id)!;
       expect(completed.state.runningAtMs).toBeUndefined();
       expect(completed.state.consecutiveErrors).toBe(0);
@@ -429,8 +427,6 @@ describe("main cron with the real heartbeat runner", () => {
       expect(events.filter((event) => event.action === "finished")).toHaveLength(1);
 
       // A finished ambient poll leaves no retry or cron run to delay shutdown.
-      foreground.resolve();
-      await foregroundRun;
       await vi.advanceTimersByTimeAsync(60_000);
       expect(attempts).toHaveLength(1);
       expect(events.filter((event) => event.action === "finished")).toHaveLength(1);
@@ -438,8 +434,6 @@ describe("main cron with the real heartbeat runner", () => {
       expect(sendTelegram).not.toHaveBeenCalled();
       expect(deps.enqueueSystemEvent).not.toHaveBeenCalled();
     } finally {
-      foreground.resolve();
-      await foregroundRun;
       cron.stop();
       heartbeatRunner.stop();
       await vi.waitFor(() => expect(getActiveCronJobCount()).toBe(0));

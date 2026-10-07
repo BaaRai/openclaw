@@ -92,7 +92,6 @@ async function createFixture(
         deps: {
           telegram: sendTelegram,
           getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
           nowMs: () => 0,
         },
       }),

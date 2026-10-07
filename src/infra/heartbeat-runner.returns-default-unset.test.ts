@@ -525,18 +525,13 @@ describe("runHeartbeatOnce", () => {
     options?: {
       nowMs?: number;
       getReplyFromConfig?: HeartbeatDeps["getReplyFromConfig"];
-      listActiveSessionRunKeys?: HeartbeatDeps["listActiveSessionRunKeys"];
     },
   ): HeartbeatDeps => ({
     whatsapp: sendWhatsApp,
-    getQueueSize: () => 0,
     nowMs: () => options?.nowMs ?? 0,
     webAuthExists: async () => true,
     hasActiveWebListener: () => true,
     ...(options?.getReplyFromConfig ? { getReplyFromConfig: options.getReplyFromConfig } : null),
-    ...(options?.listActiveSessionRunKeys
-      ? { listActiveSessionRunKeys: options.listActiveSessionRunKeys }
-      : null),
   });
 
   it("skips when agent heartbeat is not enabled", async () => {
@@ -593,33 +588,6 @@ describe("runHeartbeatOnce", () => {
     expect(replyBody(replySpy).InternalTurnSource).toBe("exec");
     expect(replyBody(replySpy).Body).toContain("Handle the result internally");
     expect(replyBody(replySpy).Body).not.toContain("Please relay the command output to the user");
-  });
-
-  it.each([
-    ["the heartbeat main session", (cfg: OpenClawConfig) => resolveMainSessionKey(cfg)],
-    ["another session for the same agent", () => "agent:main:telegram:alerts"],
-  ])("retries instead of dispatching while %s has an embedded run", async (_name, activeKey) => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          heartbeat: { every: "5m", target: "none" },
-        },
-      },
-    };
-    const replySpy = vi.fn().mockResolvedValue({ text: "heartbeat reply" });
-    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
-
-    const res = await runHeartbeatOnce({
-      cfg,
-      deps: createHeartbeatDeps(sendWhatsApp, {
-        getReplyFromConfig: replySpy,
-        listActiveSessionRunKeys: () => [activeKey(cfg)],
-      }),
-    });
-
-    expect(res).toEqual({ status: "skipped", reason: "requests-in-flight" });
-    expect(replySpy).not.toHaveBeenCalled();
-    expect(sendWhatsApp).not.toHaveBeenCalled();
   });
 
   it("skips outside active hours", async () => {
