@@ -877,7 +877,7 @@ describe("restored historical cancellation ownership", () => {
         expect(driver.wake).not.toHaveBeenCalled();
         expectNoExecutionReplay();
       } finally {
-        driver.controller.clearScheduledResumeTimers();
+        driver.controller.clearRuntimeState();
       }
     },
   );

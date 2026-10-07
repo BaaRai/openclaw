@@ -13,6 +13,8 @@ import {
   runWithGatewayDetachedWorkAdmission,
   runWithGatewayIndependentRootWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
+import { findSessionControllerOperationByRunId } from "../../../sessions/session-controller.queries.js";
+import { runInDetachedAsyncContext } from "../../../shared/detached-async-context.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
@@ -53,6 +55,7 @@ import {
 import type { RegisterSubagentRunParams } from "./subagent-registry-run-launch-record.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import { clearSubagentRunsReadCacheForTest } from "./subagent-registry-state.js";
+import { reconcileProvisionalSubagentKill } from "./subagent-registry-sweep-kill.js";
 import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
@@ -141,6 +144,7 @@ const subagentLifecycleController = new SubagentLifecycleController({
   notifyContextEngineSubagentEnded: contextCleanup.notifyContextEngineSubagentEnded,
   retireSupersededRun: retireSupersededSubagentRun,
   resumeSubagentRun,
+  confirmProvisionalKill: confirmProvisionalSubagentKill,
   callGateway: callSubagentRegistryGateway,
   captureSubagentCompletionReply: async (sessionKey, options) =>
     (await loadSubagentAnnounceModule()).captureSubagentCompletionReply(sessionKey, options),
@@ -158,7 +162,7 @@ const subagentLifecycleController = new SubagentLifecycleController({
 });
 
 const {
-  clearScheduledResumeTimers,
+  clearRuntimeState,
   completeCleanupBookkeeping,
   completeSubagentRun,
   finalizeResumedAnnounceGiveUp,
@@ -279,6 +283,57 @@ export function resumeSubagentRun(runId: string, source: "live" | "restore" = "l
   resumeFinalizedSubagentRun(runId, entry);
 }
 
+/** Retires a killed row's obligations, re-evaluating its yielded cohort. */
+function retireKilledSubagentObligations(entry: SubagentRunRecord): Promise<void> {
+  return subagentLifecycleController.retireSubagentObligations(entry, () => {
+    if (!isSameSubagentRunOwner(subagentRuns.get(entry.runId), entry)) {
+      throw new Error("Killed subagent row changed before obligation retirement.");
+    }
+  });
+}
+
+/**
+ * Confirms a provisional kill once the killed run's controller operation settles, when its
+ * canonical outcome is final, and once a live requester turn that claims the row has
+ * transferred its children. Without such operations the kill confirms immediately.
+ */
+function confirmProvisionalSubagentKill(entry: SubagentRunRecord): void {
+  const settlements = [entry.runId, entry.requesterTurnRunId].flatMap((runId) => {
+    const operation = runId ? findSessionControllerOperationByRunId(runId) : undefined;
+    return operation ? [operation.ownerSettlement] : [];
+  });
+  // The caller may be the killed run's own terminal callback; never inherit its turn context.
+  void runInDetachedAsyncContext(() => confirmAfterSettlements(entry, settlements));
+}
+
+async function confirmAfterSettlements(
+  entry: SubagentRunRecord,
+  settlements: readonly Promise<void>[],
+): Promise<void> {
+  await Promise.allSettled(settlements);
+  await runWithGatewayDetachedWorkAdmission(async () => {
+    const current = subagentRuns.get(entry.runId);
+    if (!current?.killReconciliation || !isSameSubagentRunOwner(current, entry)) {
+      return;
+    }
+    await reconcileProvisionalSubagentKill({
+      runId: current.runId,
+      entry: current,
+      now: Date.now(),
+      runs: subagentRuns,
+      completeSubagentRunWithRecovery: completionRuntime.completeSubagentRunWithRecovery,
+      retireSupersededRun: retireSupersededSubagentRun,
+      retireObligations: retireKilledSubagentObligations,
+      startSubagentAnnounceCleanupFlow,
+      getRunsForChildSession: getSubagentRunsForChildSession,
+      warn,
+    });
+  }, "subagents:kill-confirm").catch((error: unknown) => {
+    // The sweeper reconciles a kill whose confirmation could not run here.
+    log.warn("failed to confirm provisional subagent kill", { runId: entry.runId, error });
+  });
+}
+
 function resumeFinalizedSubagentRun(runId: string, entry: SubagentRunRecord) {
   // A yielded wake waits only while a delivery owner remains: the session queue, or
   // this row's own unfinished cleanup. Completed cleanup leaves the wake as the owner.
@@ -322,7 +377,7 @@ function resumeFinalizedSubagentRun(runId: string, entry: SubagentRunRecord) {
   }
 
   if (typeof entry.execution.endedAt === "number" && entry.execution.endedAt > 0) {
-    // Without a pending requester wake, the sweeper owns provisional cancellation cleanup.
+    // Operation settlement or, without one, the sweeper owns provisional cancellation cleanup.
     if (
       entry.killReconciliation ||
       contextCleanup.suppressAnnounceForSteerRestart(entry) ||
@@ -471,12 +526,7 @@ const subagentSweeper = createSubagentRegistrySweeper({
   runContextEngineSubagentEnded: contextCleanup.runContextEngineSubagentEnded,
   notifyContextEngineSubagentEnded: contextCleanup.notifyContextEngineSubagentEnded,
   retireSupersededRun: retireSupersededSubagentRun,
-  retireObligations: (entry) =>
-    subagentLifecycleController.retireSubagentObligations(entry, () => {
-      if (!isSameSubagentRunOwner(subagentRuns.get(entry.runId), entry)) {
-        throw new Error("Killed subagent row changed before obligation retirement.");
-      }
-    }),
+  retireObligations: retireKilledSubagentObligations,
   getRunsForChildSession: getSubagentRunsForChildSession,
   getRunsForCollectorGroup: getSubagentRunsForCollectorGroup,
   warn,
@@ -565,7 +615,7 @@ async function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
       postimages: new Map([...rows.keys()].map((id) => [id, null])),
     }));
   }
-  clearScheduledResumeTimers();
+  clearRuntimeState();
   for (const timer of resumeRetryTimers) {
     clearTimeout(timer);
   }

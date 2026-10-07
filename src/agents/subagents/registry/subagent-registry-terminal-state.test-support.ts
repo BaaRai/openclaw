@@ -160,7 +160,7 @@ export function registerTerminalStateSignalAuthorityTests({
         }
       } finally {
         restoreAdmission?.();
-        controller?.clearScheduledResumeTimers();
+        controller?.clearRuntimeState();
         await cleanupSessionStateTestState();
       }
     },

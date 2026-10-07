@@ -139,6 +139,7 @@ export function requesterWakeDriver(inputs: ReturnType<typeof records>[]) {
     notifyContextEngineSubagentEnded: vi.fn(async () => {}),
     retireSupersededRun: vi.fn(async () => {}),
     resumeSubagentRun: vi.fn(),
+    confirmProvisionalKill: vi.fn(),
     callGateway: vi.fn(),
     captureSubagentCompletionReply: vi.fn(),
     runSubagentAnnounceFlow: vi.fn(),

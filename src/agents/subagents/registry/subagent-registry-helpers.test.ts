@@ -10,7 +10,6 @@ import { updateSwarmCollectorCompletion } from "../swarm/swarm-collector.js";
 import {
   capFrozenResultText,
   logAnnounceGiveUp,
-  resolveAnnounceRetryDelayMs,
   safeRemoveAttachmentsDir,
   updateSubagentArchiveAtMs,
 } from "./subagent-registry-helpers.js";
@@ -30,27 +29,6 @@ function createRunEntry(overrides: Partial<SubagentRunRecord> = {}): SubagentRun
     ...overrides,
   };
 }
-
-describe("resolveAnnounceRetryDelayMs", () => {
-  it("preserves the zero-jitter retry schedule through attempt 10", () => {
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
-
-    expect(
-      Array.from({ length: 10 }, (_, index) => resolveAnnounceRetryDelayMs(index + 1)),
-    ).toEqual([
-      15_000, 30_000, 60_000, 120_000, 240_000, 300_000, 300_000, 300_000, 300_000, 300_000,
-    ]);
-    randomSpy.mockRestore();
-  });
-
-  it("applies positive jitter without exceeding the five-minute cap", () => {
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
-
-    expect(resolveAnnounceRetryDelayMs(1)).toBe(18_000);
-    expect(resolveAnnounceRetryDelayMs(6)).toBe(300_000);
-    randomSpy.mockRestore();
-  });
-});
 
 describe("capFrozenResultText", () => {
   it("preserves a valid UTF-8 prefix within the frozen-result byte budget", () => {

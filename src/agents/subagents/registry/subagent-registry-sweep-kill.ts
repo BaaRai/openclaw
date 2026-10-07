@@ -28,7 +28,6 @@ import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
-import { PROVISIONAL_KILL_RECONCILIATION_MS } from "./subagent-registry-helpers.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { getLatestSubagentRunForChild } from "./subagent-registry-queries.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
@@ -255,6 +254,13 @@ export async function reconcileDurableSubagentKillIntent(params: {
   }
 }
 
+/**
+ * Confirms a provisional kill once its canonical outcome is final: after the killed run's
+ * controller operation settles, or when the sweeper ages out a kill no settlement reached.
+ * A canonical completion the cancellation did not supersede replaces it. Otherwise the kill
+ * stands: its obligations retire, which re-evaluates a yielded cohort, and announce cleanup
+ * resumes once no cohort holds it.
+ */
 export async function reconcileProvisionalSubagentKill(params: {
   runId: string;
   entry: SubagentRunRecord;
@@ -265,6 +271,7 @@ export async function reconcileProvisionalSubagentKill(params: {
     source: string,
   ) => Promise<void>;
   retireSupersededRun: (runId: string, entry: SubagentRunRecord) => Promise<void>;
+  retireObligations: (entry: SubagentRunRecord) => Promise<void>;
   startSubagentAnnounceCleanupFlow: (runId: string, entry: SubagentRunRecord) => boolean;
   getRunsForChildSession: (
     childSessionKey: string,
@@ -300,9 +307,6 @@ export async function reconcileProvisionalSubagentKill(params: {
         reconciliation.taskCancellationAccepted === true)
     );
   };
-  if (killedAt + PROVISIONAL_KILL_RECONCILIATION_MS > now) {
-    return false;
-  }
   const completion = await resolveSubagentSessionCompletion({
     childSessionKey: entry.childSessionKey,
     childAgentId: entry.childAgentId,
@@ -360,7 +364,7 @@ export async function reconcileProvisionalSubagentKill(params: {
         triggerCleanup: !hasNewerGeneration,
         suppressSessionEffects: hasNewerGeneration,
       },
-      "sweeper-provisional-kill-completion",
+      "provisional-kill-completion",
     );
     if (
       hasNewerGeneration &&
@@ -388,20 +392,31 @@ export async function reconcileProvisionalSubagentKill(params: {
     await params.retireSupersededRun(runId, entry);
     return true;
   }
+  // The kill stands. Retire its obligations unless its kill owner already did; retiring
+  // again would abort the continuation its cohort may already be delivering. A yielded
+  // cohort keeps its retired member and resolves first; its release re-enters here.
+  if (runs.get(runId)?.suppressCompletionDelivery !== true) {
+    await params.retireObligations(runs.get(runId)!);
+  }
+  if (!isCurrentKill() || runs.get(runId)?.requesterSettleWake) {
+    return false;
+  }
   const published = await mutateSubagentRuns(
     [runId],
     (rows) => {
       const current = rows.get(runId);
-      if (!current || !isCurrentKill(current) || findNextRunCreatedAt() !== undefined) {
+      if (
+        !current ||
+        !isCurrentKill(current) ||
+        current.requesterSettleWake ||
+        findNextRunCreatedAt() !== undefined
+      ) {
         return { value: undefined };
       }
       const next: SubagentRunRecord = {
         ...current,
-        suppressCompletionDelivery:
-          current.killReconciliation?.suppressTaskDelivery === true ||
-          current.killReconciliation?.taskCancellationAccepted === true
-            ? true
-            : undefined,
+        // A confirmed kill retires the row's completion obligation.
+        suppressCompletionDelivery: true,
         suppressAnnounceReason: undefined,
         killReconciliation: undefined,
         cleanupHandled: false,

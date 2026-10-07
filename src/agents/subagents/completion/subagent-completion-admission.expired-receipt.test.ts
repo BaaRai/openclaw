@@ -136,7 +136,7 @@ describe("requester receipts after completion expiry", () => {
         expect(stored?.requesterSettleWake).toBeUndefined();
         expect(stored?.completion?.resultText).toBe(resultText);
       } finally {
-        driver.controller.clearScheduledResumeTimers();
+        driver.controller.clearRuntimeState();
       }
     },
   );

@@ -144,7 +144,7 @@ describe("completed requester delivery replay fence", () => {
       expect(driver.wake).not.toHaveBeenCalled();
     } finally {
       tail.resolve(undefined);
-      driver.controller.clearScheduledResumeTimers();
+      driver.controller.clearRuntimeState();
       await settle();
     }
     await reopenOwners();
@@ -177,7 +177,7 @@ describe("completed requester delivery replay fence", () => {
       await restored.run(input.subagent);
       expect(restored.wake).toHaveBeenCalledTimes(1);
     } finally {
-      restored.controller.clearScheduledResumeTimers();
+      restored.controller.clearRuntimeState();
       await settle();
     }
   });
@@ -251,7 +251,7 @@ describe("completed requester delivery replay fence", () => {
       expect(driver.wake).not.toHaveBeenCalled();
     } finally {
       release.resolve(undefined);
-      driver.controller.clearScheduledResumeTimers();
+      driver.controller.clearRuntimeState();
       await settle();
     }
   });

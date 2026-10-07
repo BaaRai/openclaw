@@ -211,7 +211,7 @@ it("keeps an observed late-result store retirement after the original selector r
   } finally {
     release.resolve();
     await settleRootWork(true);
-    driver.controller.clearScheduledResumeTimers();
+    driver.controller.clearRuntimeState();
   }
 
   const saved = loadSubagentRegistryFromSqlite().get(entry.runId);

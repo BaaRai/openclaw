@@ -117,7 +117,7 @@ export async function completeCleanupBookkeeping(
     }
   };
   if (cleanupParams.provisionalKill) {
-    // The provider result or bounded kill reconciliation owns terminal settle.
+    // The provider result or the kill's confirmation owns terminal settle.
     // Its kill marker was committed by the caller before reaching this tail.
     scheduleCleanupTails({ allowRetiredRow: false, isDeleteCleanup: false });
     return;

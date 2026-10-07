@@ -239,13 +239,10 @@ vi.mock("./subagent-registry-cleanup.js", async (importOriginal) => ({
 
 vi.mock("./subagent-registry-helpers.js", () => ({
   ANNOUNCE_EXPIRY_MS: 5 * 60_000,
-  PROVISIONAL_KILL_RECONCILIATION_MS: 5 * 60_000,
   SESSION_DELIVERY_DEADLINE_MS: 30 * 60_000,
   capFrozenResultText: (text: string) => text.trim(),
   logAnnounceGiveUp: helperMocks.logAnnounceGiveUp,
   persistSubagentSessionTiming: helperMocks.persistSubagentSessionTiming,
-  resolveAnnounceRetryDelayMs: (retryCount: number) =>
-    Math.min(1_000 * 2 ** Math.max(0, retryCount - 1), 8_000),
   safeRemoveAttachmentsDir: helperMocks.safeRemoveAttachmentsDir,
   shouldRemoveSubagentAttachments: (entry: SubagentRunRecord, cleanup = entry.cleanup) =>
     cleanup === "delete" || !entry.retainAttachmentsOnKeep,
@@ -1180,7 +1177,6 @@ describe("subagent registry lifecycle hardening", () => {
       expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number");
       expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalled();
-      expect(controller.scheduledResumeTimers.size).toBe(0);
       expect(getActiveGatewayRootWorkCount()).toBe(0);
       expect(tryBeginGatewayRootWorkAdmission()).toBeNull();
     } finally {
@@ -1189,112 +1185,6 @@ describe("subagent registry lifecycle hardening", () => {
       resetGatewayWorkAdmission();
     }
   });
-
-  it("retries a detached cleanup failure and completes on the next attempt", async () => {
-    vi.useFakeTimers();
-    const entry = createRunEntry({
-      endedAt: 4_000,
-      expectsCompletionMessage: false,
-      retainAttachmentsOnKeep: false,
-    });
-    helperMocks.safeRemoveAttachmentsDir.mockRejectedValueOnce(new Error("cleanup failed"));
-    const resumeSubagentRun = vi.fn((runId: string) => {
-      controller.startSubagentAnnounceCleanupFlow(runId, entry);
-    });
-    const controller = createLifecycleController({ entry, resumeSubagentRun });
-
-    try {
-      expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
-      await waitForLifecycleState(() => expect(readLifecycleRun(entry).cleanupHandled).toBe(false));
-      expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
-      expect(vi.getTimerCount()).toBe(1);
-
-      await vi.advanceTimersByTimeAsync(1_000);
-
-      expect(resumeSubagentRun).toHaveBeenCalledExactlyOnceWith(entry.runId);
-      await waitForLifecycleState(() =>
-        expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number"),
-      );
-    } finally {
-      helperMocks.safeRemoveAttachmentsDir.mockReset().mockResolvedValue(undefined);
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-    }
-  });
-
-  it.each([
-    { phase: "backoff", related: false },
-    { phase: "backoff", related: true },
-    { phase: "exhaustion", related: false },
-    { phase: "exhaustion", related: true },
-  ])(
-    "preserves cleanup $phase when another run settles (related=$related)",
-    async ({ phase, related }) => {
-      vi.useFakeTimers();
-      const entry = createRunEntry({
-        endedAt: Date.now() - 1_000,
-        expectsCompletionMessage: false,
-        retainAttachmentsOnKeep: false,
-      });
-      const runs = new Map([[entry.runId, entry]]);
-      helperMocks.safeRemoveAttachmentsDir.mockRejectedValue(new Error("cleanup failed"));
-      const controller = createLifecycleController({
-        entry,
-        runs,
-        resumeSubagentRun: (runId) => {
-          const current = runs.get(runId);
-          if (current) {
-            controller.startSubagentAnnounceCleanupFlow(runId, current);
-          }
-        },
-      });
-
-      try {
-        controller.startSubagentAnnounceCleanupFlow(entry.runId, entry);
-        await waitForLifecycleState(() =>
-          expect(readLifecycleRun(entry).cleanupHandled).toBe(false),
-        );
-        if (phase === "exhaustion") {
-          for (let retry = 0; retry < 3; retry += 1) {
-            await vi.runOnlyPendingTimersAsync();
-          }
-        }
-        const attempts = phase === "exhaustion" ? 4 : 1;
-        expect(helperMocks.safeRemoveAttachmentsDir).toHaveBeenCalledTimes(attempts);
-
-        for (let index = 0; index < 3; index += 1) {
-          const settled = createRunEntry({
-            runId: `settled-${index}`,
-            childSessionKey: `agent:main:subagent:settled-${index}`,
-            requesterSessionKey: related ? entry.childSessionKey : "agent:other:main",
-            endedAt: Date.now(),
-            expectsCompletionMessage: false,
-            retainAttachmentsOnKeep: true,
-          });
-          runs.set(settled.runId, settled);
-          controller.startSubagentAnnounceCleanupFlow(settled.runId, settled);
-          await waitForLifecycleState(() =>
-            expect(readLifecycleRun(settled).cleanupCompletedAt).toBeTypeOf("number"),
-          );
-          await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-        }
-
-        expect(helperMocks.safeRemoveAttachmentsDir).toHaveBeenCalledTimes(attempts);
-        expect(readLifecycleRun(entry).cleanupHandled).toBe(false);
-        expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
-        if (phase === "backoff") {
-          await vi.advanceTimersByTimeAsync(1_000);
-          expect(helperMocks.safeRemoveAttachmentsDir).toHaveBeenCalledTimes(2);
-        } else {
-          expect(vi.getTimerCount()).toBe(0);
-        }
-      } finally {
-        helperMocks.safeRemoveAttachmentsDir.mockReset().mockResolvedValue(undefined);
-        controller.clearScheduledResumeTimers();
-        vi.useRealTimers();
-      }
-    },
-  );
 
   registerRequesterSettleRetirementTests({
     createRunEntry,
@@ -1384,47 +1274,7 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
-  it("drops a failed-cleanup retry after a newer cleanup generation starts", async () => {
-    vi.useFakeTimers();
-    const entry = createRunEntry({
-      endedAt: 4_000,
-      expectsCompletionMessage: false,
-      retainAttachmentsOnKeep: false,
-    });
-    let releaseNewCleanup: (() => void) | undefined;
-    helperMocks.safeRemoveAttachmentsDir
-      .mockRejectedValueOnce(new Error("cleanup failed"))
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            releaseNewCleanup = resolve;
-          }),
-      );
-    const resumeSubagentRun = vi.fn();
-    const controller = createLifecycleController({ entry, resumeSubagentRun });
-
-    try {
-      expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
-      await waitForLifecycleState(() => expect(readLifecycleRun(entry).cleanupHandled).toBe(false));
-      expect(vi.getTimerCount()).toBe(1);
-
-      expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
-      await waitForLifecycleState(() => expect(releaseNewCleanup).toBeTypeOf("function"));
-      await vi.advanceTimersByTimeAsync(1_000);
-
-      expect(resumeSubagentRun).not.toHaveBeenCalled();
-      releaseNewCleanup?.();
-      await waitForLifecycleState(() =>
-        expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number"),
-      );
-    } finally {
-      releaseNewCleanup?.();
-      controller.clearScheduledResumeTimers();
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops retrying detached cleanup failures and leaves the run durably unlocked", async () => {
+  it("records a detached cleanup failure once and leaves the run durably unlocked", async () => {
     vi.useFakeTimers();
     const entry = createRunEntry({
       endedAt: 4_000,
@@ -1433,9 +1283,7 @@ describe("subagent registry lifecycle hardening", () => {
     });
     const persist = vi.fn();
     helperMocks.safeRemoveAttachmentsDir.mockRejectedValue(new Error("cleanup failed"));
-    const resumeSubagentRun = vi.fn((runId: string) => {
-      controller.startSubagentAnnounceCleanupFlow(runId, entry);
-    });
+    const resumeSubagentRun = vi.fn();
     const controller = createLifecycleController({
       entry,
       beforeWrite: persist,
@@ -1445,21 +1293,15 @@ describe("subagent registry lifecycle hardening", () => {
     try {
       expect(controller.startSubagentAnnounceCleanupFlow(entry.runId, entry)).toBe(true);
       await waitForLifecycleState(() => expect(readLifecycleRun(entry).cleanupHandled).toBe(false));
-      expect(vi.getTimerCount()).toBe(1);
 
-      for (let attempts = 0; attempts < 10 && vi.getTimerCount() > 0; attempts += 1) {
-        await vi.runOnlyPendingTimersAsync();
-      }
-
-      expect(helperMocks.safeRemoveAttachmentsDir.mock.calls.length).toBeGreaterThan(1);
-      expect(helperMocks.safeRemoveAttachmentsDir.mock.calls.length).toBeLessThan(10);
-      expect(readLifecycleRun(entry).cleanupHandled).toBe(false);
+      expect(helperMocks.safeRemoveAttachmentsDir).toHaveBeenCalledOnce();
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
       expect(persist).toHaveBeenLastCalledWith(expect.objectContaining({ runIds: [entry.runId] }));
       expect(vi.getTimerCount()).toBe(0);
+      expect(resumeSubagentRun).not.toHaveBeenCalled();
     } finally {
       helperMocks.safeRemoveAttachmentsDir.mockReset().mockResolvedValue(undefined);
-      controller.clearScheduledResumeTimers();
+      controller.clearRuntimeState();
       vi.useRealTimers();
     }
   });
@@ -3663,7 +3505,7 @@ describe("subagent registry lifecycle hardening", () => {
     } finally {
       pendingHandoff.resolve("retryable");
       await vi.advanceTimersByTimeAsync(0);
-      controller.clearScheduledResumeTimers();
+      controller.clearRuntimeState();
       vi.useRealTimers();
     }
   });
@@ -3704,7 +3546,7 @@ describe("subagent registry lifecycle hardening", () => {
     } finally {
       requesterFinished.resolve("delivered");
       await vi.advanceTimersByTimeAsync(0);
-      controller.clearScheduledResumeTimers();
+      controller.clearRuntimeState();
       vi.useRealTimers();
     }
   });
@@ -3928,7 +3770,7 @@ describe("subagent registry lifecycle hardening", () => {
       expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
     } finally {
       announce.resolve();
-      controller.clearScheduledResumeTimers();
+      controller.clearRuntimeState();
     }
   });
 
@@ -4060,7 +3902,7 @@ describe("subagent registry lifecycle hardening", () => {
         announce.resolve();
         mirror.resolve({ messages: [] });
         await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-        controller.clearScheduledResumeTimers();
+        controller.clearRuntimeState();
       }
     },
   );

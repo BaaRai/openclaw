@@ -86,13 +86,10 @@ export const resumeAncestorCleanup = (
     if (entry.requesterSettleWake) {
       scheduleRequesterSettleWake(context, runId, entry);
     }
-    // A failed cleanup belongs to its retry timer or exhausted process-local
-    // budget; even descendant settlement must not reopen that attempt early.
     if (
       typeof entry.execution.endedAt !== "number" ||
       entry.cleanupCompletedAt ||
       entry.cleanupHandled ||
-      context.cleanupFailureCounts.has(getSubagentRunRuntimeKey(entry)) ||
       isDeliverySuspended(entry) ||
       params.suppressAnnounceForSteerRestart(entry)
     ) {
@@ -140,8 +137,8 @@ export const startSubagentAnnounceCleanupFlow = (
   let runId = entry.runId;
   const runtimeKey = getSubagentRunRuntimeKey(observedEntry);
   if (entry.killReconciliation) {
-    // Restores and unrelated cleanup retries must not publish a provisional
-    // kill. The sweeper re-enters here after durable reconciliation.
+    // Restores and unrelated cleanup must not publish a provisional kill.
+    // The kill's confirmation re-enters here.
     return false;
   }
   const cleanup = entry.cleanup;

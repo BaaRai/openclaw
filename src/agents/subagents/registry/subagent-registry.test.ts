@@ -2426,7 +2426,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
-  it("publishes aborted agent.wait snapshots only after killed reconciliation", async () => {
+  it("retires an aborted agent.wait run as a confirmed kill without announcing", async () => {
     mockGatewayMethods(mocks.callGateway, {
       "agent.wait": {
         status: "ok",
@@ -2442,32 +2442,7 @@ describe("subagent registry seam flow", () => {
       expectsCompletionMessage: true,
     });
 
-    await waitForFast(() => {
-      const run = findRequesterRun("run-aborted-wait");
-      expect(run?.endedReason).toBe("subagent-killed");
-      expect(run?.suppressAnnounceReason).toBe("killed");
-    });
-    expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-
-    await mod.testing.sweepOnceForTests();
-    await waitForFast(() => expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1));
-    const announceParams = expectRecordFields(
-      getMockCallArg(mocks.runSubagentAnnounceFlow, 0, 0, "aborted wait announce"),
-      { childRunId: "run-aborted-wait" },
-      "aborted wait announce params",
-    );
-    expectRecordFields(
-      announceParams.outcome,
-      {
-        status: "error",
-        error: "subagent run terminated",
-        startedAt: 100,
-        endedAt: 250,
-        elapsedMs: 150,
-      },
-      "aborted wait announce outcome",
-    );
-
+    // No controller operation runs this fixture, so its kill is confirmed at once.
     await waitForFast(() => {
       expect(
         mod
@@ -2475,6 +2450,7 @@ describe("subagent registry seam flow", () => {
           .some((entry) => entry.runId === "run-aborted-wait"),
       ).toBe(false);
     });
+    expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
   });
 
   it("retires stable operator cancellation despite a late persisted completion", async () => {
@@ -3266,44 +3242,13 @@ describe("subagent registry seam flow", () => {
       expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
       return;
     }
-    await waitForFast(() => {
-      const run = findRequesterRun(runId);
-      expect(run?.endedReason).toBe("subagent-killed");
-      expect(run?.execution.outcome?.status).toBe("error");
-      expect(run?.suppressAnnounceReason).toBe("killed");
-    });
+    // A confirmed kill retires the run's completion obligation and the row.
+    await waitForFast(() =>
+      expect(
+        mod.listSubagentRunsForRequester("agent:main:main").some((entry) => entry.runId === runId),
+      ).toBe(false),
+    );
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-
-    await mod.testing.sweepOnceForTests();
-    await waitForFast(() => expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1));
-
-    if (verifiesAnnouncement) {
-      const announceParams = expectRecordFields(
-        getMockCallArg(mocks.runSubagentAnnounceFlow, 0, 0, "aborted announce"),
-        { childRunId: runId },
-        "aborted announce params",
-      );
-      expectRecordFields(
-        announceParams.outcome,
-        {
-          status: "error",
-          error: "subagent run terminated",
-          startedAt: 10,
-          endedAt: 20,
-          elapsedMs: 10,
-        },
-        "aborted announce outcome",
-      );
-      await waitForFast(() =>
-        expect(
-          mod
-            .listSubagentRunsForRequester("agent:main:main")
-            .some((entry) => entry.runId === runId),
-        ).toBe(false),
-      );
-      await vi.advanceTimersByTimeAsync(20_000);
-      expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
-    }
   });
 
   it("finishes canonical killed cleanup when its best-effort hook fails", async () => {
@@ -3338,13 +3283,6 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    await waitForFast(() => {
-      const run = findRequesterRun("run-killed-recovery");
-      expect(run?.execution.outcome?.status).toBe("error");
-      expect(run?.endedReason).toBe("subagent-killed");
-      expect(run?.suppressAnnounceReason).toBe("killed");
-    });
-    await mod.testing.sweepOnceForTests();
     await waitForFast(() => {
       expect(
         mod

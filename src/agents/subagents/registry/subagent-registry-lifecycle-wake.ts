@@ -51,6 +51,14 @@ function releaseRequesterSettleWakeBatch(
       params.resumedRuns.delete(getSubagentRunRuntimeKey(entry));
       params.clearPendingLifecycleError(entry.runId);
     }
+    // A provisional kill held by its cohort is confirmed once the cohort releases it.
+    if (
+      entry.requesterSettleWake === undefined &&
+      entry.killReconciliation &&
+      params.runs.has(entry.runId)
+    ) {
+      params.confirmProvisionalKill(entry);
+    }
   }
   const requesterSessionKeys = new Set(entries.map((entry) => entry.requesterSessionKey));
   for (const [runId, entry] of params.runs) {

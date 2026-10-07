@@ -290,7 +290,7 @@ export function registerPrivateCompletionSettlementTests({
         expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
       } finally {
         requesterTurn.restore();
-        controller.clearScheduledResumeTimers();
+        controller.clearRuntimeState();
       }
     },
   );
@@ -534,7 +534,7 @@ export function registerRequesterSettleRetirementTests({
           expect(readLifecycleRun(ancestor).cleanupCompletedAt).toBeTypeOf("number"),
         );
       } finally {
-        controller.clearScheduledResumeTimers();
+        controller.clearRuntimeState();
         for (const entry of [ancestor, intermediate, descendant]) {
           subagentRuns.delete(entry.runId);
         }

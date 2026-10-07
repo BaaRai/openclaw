@@ -101,7 +101,6 @@ function terminalPublication(entry: SubagentRunRecord): readonly unknown[] {
 }
 
 export class SubagentLifecycleController {
-  readonly scheduledResumeTimers = new Set<ReturnType<typeof setTimeout>>();
   readonly activeRequesterSettleWakes = new Map<
     string,
     { rearm?: SubagentRunRecord; evaluated?: SubagentRunRecord }
@@ -114,7 +113,6 @@ export class SubagentLifecycleController {
   readonly progressEndedEntries = new WeakSet<object>();
   readonly cleanupReservations = new Set<object>();
   readonly activeCleanupAttempts = new Map<object, number>();
-  readonly cleanupFailureCounts = new WeakMap<object, number>();
 
   private readonly runtimeRuns = new Map<object, SubagentRunRecord>();
   private readonly terminalEffectUsers = new Map<object, number>();
@@ -299,11 +297,7 @@ export class SubagentLifecycleController {
     }
   }
 
-  clearScheduledResumeTimers = () => {
-    for (const timer of this.scheduledResumeTimers) {
-      clearTimeout(timer);
-    }
-    this.scheduledResumeTimers.clear();
+  clearRuntimeState = () => {
     this.activeRequesterSettleWakes.clear();
     this.cleanupReservations.clear();
     this.runtimeRuns.clear();
@@ -376,13 +370,6 @@ export class SubagentLifecycleController {
       )
     );
   };
-  incrementCleanupFailureCount(entry: SubagentRunRecord): number {
-    const identity = this.trackRun(entry);
-    const count = (this.cleanupFailureCounts.get(identity) ?? 0) + 1;
-    this.cleanupFailureCounts.set(identity, count);
-    return count;
-  }
-
   runRequesterSettleWake = (
     entry: SubagentRunRecord,
     run: () => Promise<unknown>,
@@ -570,10 +557,8 @@ export class SubagentLifecycleController {
       schedule: (runId, entry, kind) => {
         this.trackRun(entry);
         if (kind === "completion") {
-          if (!this.cleanupFailureCounts.has(getSubagentRunRuntimeKey(entry))) {
-            this.options.resumedRuns.delete(getSubagentRunRuntimeKey(entry));
-            this.options.resumeSubagentRun(runId);
-          }
+          this.options.resumedRuns.delete(getSubagentRunRuntimeKey(entry));
+          this.options.resumeSubagentRun(runId);
           return;
         }
         scheduleRequesterSettleWake(this, runId, entry);

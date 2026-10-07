@@ -16,7 +16,10 @@ import {
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
 import type { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
-import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
+import {
+  PROVISIONAL_KILL_RECONCILIATION_MS,
+  safeRemoveAttachmentsDir,
+} from "./subagent-registry-helpers.js";
 import type {
   SubagentLifecycleController,
   SubagentLifecycleOptions,
@@ -328,17 +331,22 @@ export function createSubagentRegistrySweeper(params: {
           continue;
         }
         if (entry.killReconciliation) {
-          await reconcileProvisionalSubagentKill({
-            runId,
-            entry,
-            now,
-            runs,
-            completeSubagentRunWithRecovery: params.completeSubagentRunWithRecovery,
-            retireSupersededRun: params.retireSupersededRun,
-            startSubagentAnnounceCleanupFlow: params.startSubagentAnnounceCleanupFlow,
-            getRunsForChildSession: params.getRunsForChildSession,
-            warn: params.warn,
-          });
+          // Operation settlement confirms a live run's kill; only a kill no settlement
+          // reached (a dormant or event-less row) is reconciled here once it ages out.
+          if (entry.killReconciliation.killedAt + PROVISIONAL_KILL_RECONCILIATION_MS <= now) {
+            await reconcileProvisionalSubagentKill({
+              runId,
+              entry,
+              now,
+              runs,
+              completeSubagentRunWithRecovery: params.completeSubagentRunWithRecovery,
+              retireSupersededRun: params.retireSupersededRun,
+              retireObligations: params.retireObligations,
+              startSubagentAnnounceCleanupFlow: params.startSubagentAnnounceCleanupFlow,
+              getRunsForChildSession: params.getRunsForChildSession,
+              warn: params.warn,
+            });
+          }
           continue;
         }
         if (

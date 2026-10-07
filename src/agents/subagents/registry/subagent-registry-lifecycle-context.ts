@@ -33,6 +33,8 @@ export type SubagentLifecycleOptions = {
   notifyContextEngineSubagentEnded: ContextCleanup["notifyContextEngineSubagentEnded"];
   retireSupersededRun(runId: string, entry: SubagentRunRecord): Promise<void>;
   resumeSubagentRun(runId: string): void;
+  /** Confirms a provisional kill once its run's controller operation settles. */
+  confirmProvisionalKill(entry: SubagentRunRecord): void;
   callGateway: typeof defaultCallGateway;
   captureSubagentCompletionReply: CaptureSubagentCompletionReply;
   cleanupBrowserSessionsForLifecycleEnd?: BrowserCleanup;
@@ -64,13 +66,10 @@ export interface SubagentLifecycleCompletionContext extends SubagentLifecycleCom
 }
 
 export interface SubagentLifecycleCleanupContext extends SubagentLifecycleCommonContext {
-  readonly scheduledResumeTimers: Set<ReturnType<typeof setTimeout>>;
-  readonly cleanupFailureCounts: WeakMap<object, number>;
   readonly cleanupReservations: Set<object>;
   readonly activeCleanupAttempts: Map<object, number>;
   pruneRetiredRuns(runIds?: readonly string[]): void;
   bumpCleanupGeneration(entry: SubagentRunRecord): number;
-  incrementCleanupFailureCount(entry: SubagentRunRecord): number;
   isCleanupAttemptCurrent(runId: string, entry: SubagentRunRecord, generation: number): boolean;
   isCleanupGeneration(entry: SubagentRunRecord, generation: number): boolean;
   isCleanupGenerationCurrent(runId: string, entry: SubagentRunRecord, generation: number): boolean;

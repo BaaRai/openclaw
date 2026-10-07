@@ -230,6 +230,7 @@ export function createLifecycleControllerFixture(
     notifyContextEngineSubagentEnded: vi.fn(async () => {}),
     retireSupersededRun: vi.fn(async () => {}),
     resumeSubagentRun: vi.fn(),
+    confirmProvisionalKill: vi.fn(),
     callGateway: dependencies.callGateway,
     captureSubagentCompletionReply: vi.fn(async () => "final completion reply"),
     cleanupBrowserSessionsForLifecycleEnd: dependencies.cleanupBrowserSessionsForLifecycleEnd,
@@ -295,6 +296,6 @@ export function createLifecycleControllerFixture(
   controller.revokeTerminalSessionEffects = runOwned(
     controller.revokeTerminalSessionEffects.bind(controller),
   );
-  onTestFinished(() => controller.clearScheduledResumeTimers());
+  onTestFinished(() => controller.clearRuntimeState());
   return controller;
 }
