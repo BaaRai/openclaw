@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { GuestOwner, type GuestJournal, type GuestRecord, type Invoke } from "./guest.js";
+import { GuestOwner, type GuestJournal, type GuestRecord } from "./guest.js";
+import type { Invoke } from "./native.js";
 
 const runtimeId = "oc-cr-00000000-0000-4000-8000-000000000001";
 const config = { rootfs: "/opt/guest", allowEgress: false, guestLifetimeSeconds: 60 };

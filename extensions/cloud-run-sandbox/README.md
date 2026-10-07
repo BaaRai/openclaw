@@ -1,25 +1,22 @@
-# Cloud Run sandbox — experimental draft
+# Cloud Run sandbox — draft
 
-This implements the **tool-execution half** of [RFC 76](https://github.com/openclaw/rfcs/pull/76), not durable Gateway hosting. It uses the Google preview launcher inside an already provisioned Cloud Run container. It does not provision cloud resources, elevate itself, or change the standard OpenClaw Dockerfile.
+An opt-in prototype for the **tool-execution half** of [RFC 76](https://github.com/openclaw/rfcs/pull/76). It runs shell/file operations in named Google Cloud Run preview guests using the existing public sandbox SDK. It does not provision cloud resources or provide durable Gateway hosting.
 
-## Lifecycle and filesystem
+## Execution and cleanup
 
-- Each command owns a unique named guest. Creation runs only an idle process; untrusted code launches separately after creation and current-authority checks.
-- Cancellation, interrupt, timeout, preparation failure and normal finalization delete that exact guest with `sandbox delete --force`. Killing the launcher alone is insufficient. Concurrent commands have separate guests.
-- Core owns runtime generations. A plugin-scoped SQLite journal owns their child guests, recorded before allocation. No expiry or eviction is allowed; allocation fails at 10,000 outstanding receipts.
-- Failed deletion retains its receipt. Recovery deletes acknowledged orphan names. An interrupted or failed creation remains **unsettled**: an absent name does not prove a late create cannot publish it. This draft fails closed and still needs a provider settlement contract for automatic recovery. Stop/recreate the enclosing Cloud Run container and reconcile its receipt before reuse; never erase receipts while the container may still run.
-- Root overlays are ephemeral. Only selected workspace mounts persist between commands. Background children are removed on command completion; separate commands cannot share a guest-root server. A finite guest lifetime (default 600 seconds, maximum 3600) also limits long commands.
-- A clean, independently built root filesystem is mandatory. Never use `/`, Gateway state, credentials, or a copy of the live host filesystem. Read-only is **not** secret. The root and its ancestors must be root-owned, not group/world writable.
-- Egress defaults off. Enabling it is broad outbound access, not a domain allowlist; review metadata, private-network and service-identity exposure first.
-- Explicit environment values are staged via stdin into the fresh guest, not launcher arguments. Parent environment is not copied into the guest.
+Each command gets a fresh guest with an explicit clean root and selected workspace mounts. Creation starts only an idle process; current runtime authority is checked before admitting command/file work. Explicit environment values are staged over stdin, not placed in launcher arguments.
 
-## Prerequisites
+Cancellation, interrupt and finalization delete the **guest**, not just the launcher. A non-evicting SQLite journal records each guest before allocation; failed cleanup retains its receipt and does not skip independent guests. Guest-root changes and background processes do not persist between commands. The idle process has a finite lifetime, defaulting to 600 seconds.
 
-Enable Google sandbox support on the enclosing Cloud Run workload. Workspace binds and egress failed from UID 1000 in the October 7 experiment. This draft requires Linux/root in a **dedicated experimental image**; the standard image keeps `USER node`.
+## Required environment
 
-Build the guest root separately at image-build time, for example from a minimal Python image. It needs POSIX shell, sleep, env, Python 3, filesystem tools, dynamic loader and libraries. Do not copy live mounted secrets, Gateway state or runtime credentials into it. Merely copying executable files is insufficient.
+- An isolated Cloud Run workload with Google sandbox support enabled. Current mount/egress functionality requires Linux/root in a dedicated experimental environment. **The standard OpenClaw image keeps `USER node`.**
+- A separately prepared, root-owned guest filesystem containing POSIX shell, sleep, env, Python 3, filesystem tools, loader and libraries. Never use `/`, Gateway state, credentials, or a copy of the live host filesystem. Read-only is not secret.
+- Disjoint host sources whenever either mount is writable. **Ordinary nested skill/instruction folders inside writable workspaces currently fail closed.** Disjoint read-only resources work; nested sources need a provider-supported pinned mount mechanism.
 
-This private plugin is not published to npm or ClawHub. Use a source/linked development install in an isolated test Gateway:
+## Configuration
+
+This private plugin is not published to npm or ClawHub. Use a source/linked development install in a test Gateway:
 
 ```json5
 {
@@ -47,27 +44,28 @@ This private plugin is not published to npm or ClawHub. Use a source/linked deve
 }
 ```
 
-Workspace selection follows core: `none` exposes only its private workspace; `ro` uses read-only mounts; `rw` permits selected workspace writes. A distinct authorized agent workspace maps to `/agent`. All host sources must be disjoint when either mount is writable. This draft **rejects nested skill/instruction sources inside a writable workspace**, including ordinary generated skill layouts, rather than leaving replaceable paths or writable aliases. Disjoint read-only resource sources are supported. Supporting the usual writable-workspace-plus-nested-skills layout requires a provider-supported pinned mount owner; do not disable the guard. Arbitrary Docker binds, setupCommand, managed-project projections, guest PTYs and sandboxed browsers are unsupported; there is no fallback to host execution.
+`none` exposes the selected private workspace; `ro` makes selected mounts read-only; `rw` permits selected workspace writes. A distinct authorized agent workspace maps to `/agent`. Egress defaults off; enabling it grants broad outbound access, not a domain allowlist. Review metadata/private-network exposure first. Lifetime accepts 30–3600 seconds.
 
-**Live component checks (October 7, 2026):** separate `run`/`exec` with a clean root worked; repeated `--mount` flags preserved a writable workspace and a read-only agent mount; a parent private-file canary was hidden; forced deletion after a started marker prevented the delayed completion write. `do` with the tested custom root failed, so this adapter deliberately does not use it. Three bounded, one-task/zero-retry Cloud Run Jobs and their no-role service accounts were deleted after testing.
+## Verification
 
-**Promotion gate:** those are provider-component checks, not a full current-plugin/agent end-to-end certification. Protected nested mounts, hostile path replacement, crash recovery and the full lifecycle matrix still require validation and independent security review. Do not use this draft with real secrets or hostile workloads before that gate passes.
+Unit regressions: `pnpm test extensions/cloud-run-sandbox`.
 
-## Hosting and storage are separate
-
-The actual Gateway initialized with local state on Cloud Run in the October 7 experiment. That does not certify durable state across replacement, authenticated external ingress, channels, upgrades or a model-driven end-to-end turn.
-
-**Do not mount the live OpenClaw state directory on GCS FUSE.** The actual Gateway failed configuration publication/file-identity checks and logged write-order errors involving SQLite, journals and shared-memory files. A successful text counter and tiny SQLite smoke did not establish application filesystem semantics. This is not a claim that every SQLite operation fails. No NFS or object-sync substitute is certified here.
-
-Google billing budgets are alerts, not hard caps. Live validation needs bounded task duration, one task, zero retries, minimal/no-role service identity, bounded instance count, an outer watchdog and verified deletion. This plugin is not a billing-cap mechanism.
-
-## Tests
+Build the opt-in live probe with:
 
 ```sh
-pnpm test extensions/cloud-run-sandbox
-pnpm check:changed
+pnpm exec tsdown --config extensions/cloud-run-sandbox/test/live-proof.config.mjs
 ```
 
-Before promotion, verify none/ro/rw and protected skills; parent file/env canaries; args/stdin/env and file read/write/readback; workdir/symlink escapes; cancellation after a started marker without a later marker; concurrent guests; authority revocation during create/staging; timeout and normal descendant teardown; ambiguous create, deletion retry and crash recovery.
+Copy `.artifacts/cloud-run-live/live-proof.mjs` into an isolated Cloud Run container where the installed OpenClaw SDK resolves. Run `node live-proof.mjs <absolute-clean-rootfs> <absolute-fresh-state-dir>`. The probe refuses a nonempty state directory. Use synthetic data, a no-role service account, one task, zero retries, a bounded task timeout and verified cloud-resource deletion. Billing budgets are alerts, not hard caps.
+
+The probe runs the current plugin against the real launcher and SQLite store. It controls the supplied authority callback to revoke execution after native creation/staging and before final command/file I/O. Separate child processes test acknowledged-orphan cleanup and the interrupted-create receipt. This is **plugin-boundary proof**, not a model-driven turn, core authority-lifecycle certification, or a production security review. It does not provision resources automatically.
+
+## Remaining boundaries
+
+- Ambiguous creation remains fail-closed: absence after one delete cannot rule out a late create. The receipt stays until the enclosing container is stopped and ownership reconciled; automatic recovery needs a stronger provider settlement contract.
+- Runtime listing reports an error while Cloud Run has recorded guests: the launcher has no read-only inspect operation, and guest-controlled executables are not safe health probes. Removal/pruning remain available through their separate cleanup path.
+- Guest PTYs, sandboxed browsers, arbitrary Docker binds, setupCommand and managed-project projections are unsupported. There is no fallback to host execution.
+- **GCS FUSE is not supported for live OpenClaw state.** The real Gateway failed config/file-identity checks and logged SQLite-related write-order errors in the hosting experiment. A small file/SQLite smoke did not prove application compatibility. Ingress, durable hosting and upgrades are separate work.
+- Keep this draft unpromoted until independent security-owner review, remaining hostile/concurrent-path validation and the repository configuration-budget decision are complete.
 
 References: [Google code execution](https://docs.cloud.google.com/run/docs/code-execution), [sandbox CLI](https://docs.cloud.google.com/run/docs/reference/sandbox-cli), [GCS FUSE limitations](https://docs.cloud.google.com/storage/docs/cloud-storage-fuse/overview#limitations).

@@ -1,7 +1,8 @@
 import type { CreateReservedSandboxBackendParamsV1 } from "openclaw/plugin-sdk/sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBackend } from "./backend.js";
-import { GuestOwner, type GuestJournal, type GuestRecord, type Invoke } from "./guest.js";
+import { createBackend, createManager } from "./backend.js";
+import { GuestOwner, type GuestJournal, type GuestRecord } from "./guest.js";
+import type { Invoke } from "./native.js";
 
 vi.mock("./filesystem.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./filesystem.js")>()),
@@ -153,6 +154,26 @@ describe("Cloud Run backend", () => {
     await expect(backend.buildExecSpec({ command: "id", env: {}, usePty: true })).rejects.toThrow(
       "PTY",
     );
+    expect(run).not.toHaveBeenCalled();
+  });
+  it("never executes guest-controlled binaries merely to inspect runtime status", async () => {
+    const run = vi.fn<Invoke>(async () => success());
+    const { backend, owner, rows } = await fixture(run);
+    const guestId = "oc-exec-00000000-0000-4000-8000-000000000002";
+    rows.set(guestId, { runtimeId: backend.runtimeId, guestId, phase: "ready" });
+    await expect(
+      createManager(owner, config).describeRuntime({
+        entry: {
+          containerName: backend.runtimeId,
+          backendId: backend.id,
+          sessionKey: "test",
+          createdAtMs: 0,
+          lastUsedAtMs: 0,
+          image: config.rootfs,
+        },
+        config: {},
+      }),
+    ).rejects.toThrow("read-only runtime status");
     expect(run).not.toHaveBeenCalled();
   });
 });

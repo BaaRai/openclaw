@@ -1,29 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import {
-  createRemoteShellSandboxSession,
-  type SandboxBackendCommandResult,
-} from "openclaw/plugin-sdk/sandbox";
+import type { SandboxBackendCommandResult } from "openclaw/plugin-sdk/sandbox";
 import type { CloudRunConfig } from "./config.js";
 import type { Mount } from "./filesystem.js";
+import { buildNativeCommandSpec, invoke, type Invoke } from "./native.js";
 
-export const LAUNCHER = "/usr/local/gcp/bin/sandbox";
-export const LAUNCHER_ENV = { PATH: "/usr/local/gcp/bin:/usr/bin:/bin" };
 export type GuestRecord = { runtimeId: string; guestId: string; phase: "creating" | "ready" };
 export type GuestJournal = Pick<
   PluginStateKeyedStore<GuestRecord>,
   "register" | "delete" | "entries"
 >;
-export type Invoke = (
-  args: string[],
-  options?: { stdin?: Buffer | string; signal?: AbortSignal },
-) => Promise<SandboxBackendCommandResult>;
-export const invoke: Invoke = async (args, options = {}) => {
-  const session = createRemoteShellSandboxSession({
-    buildCommand: () => ({ argv: [LAUNCHER, ...args], env: LAUNCHER_ENV }),
-  });
-  return await session.runCommand({ remoteCommand: "", allowFailure: true, ...options });
-};
 function requireSuccess(result: SandboxBackendCommandResult, action: string) {
   if (result.code !== 0) {
     throw new Error(
@@ -231,8 +217,7 @@ export class Guest {
   execSpec(command: string[]) {
     this.assertCurrent();
     return {
-      argv: [LAUNCHER, "exec", this.record.guestId, "--", ...command],
-      env: LAUNCHER_ENV,
+      ...buildNativeCommandSpec(["exec", this.record.guestId, "--", ...command]),
       assertCurrent: this.assertCurrent,
     };
   }

@@ -204,27 +204,19 @@ export async function createBackend(
 export function createManager(owner: GuestOwner, config: CloudRunConfig): SandboxBackendManager {
   return {
     async describeRuntime({ entry }) {
-      let running = false;
       for (const { value } of await owner.journal.entries()) {
         assertRecord(value);
         if (value.runtimeId !== entry.containerName) {
           continue;
         }
-        // The platform has no inspect command. Do not fabricate provider liveness.
-        const result = await owner.run(["exec", value.guestId, "--", "/bin/true"], {
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (result.code === 0) {
-          running = true;
-        } else if (
-          result.stderr.toString("utf8").trim() !==
-          "Error: sandbox " + value.guestId + " is not running"
-        ) {
-          throw new Error("Cloud Run runtime status is unavailable");
-        }
+        // There is no read-only inspect command. Even /bin/true is guest-owned
+        // on the writable overlay, so executing it is not a safe status probe.
+        throw new Error(
+          "Cloud Run does not expose read-only runtime status for recorded guests; runtime listing is unavailable until they finish or cleanup completes",
+        );
       }
       return {
-        running,
+        running: false,
         actualConfigLabel: config.rootfs,
         configLabelMatch: entry.image === config.rootfs,
       };
