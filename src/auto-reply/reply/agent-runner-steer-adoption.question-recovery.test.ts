@@ -82,6 +82,7 @@ describe("question response custody through reply adoption", () => {
       });
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "accepted-backing-work",
         toolAuthorityFingerprint: fingerprint,
         cancel: vi.fn(),
@@ -181,6 +182,7 @@ describe("question response custody through reply adoption", () => {
       });
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "accepted-backing-work",
         toolAuthorityFingerprint: fingerprint,
         cancel: vi.fn(),
@@ -268,6 +270,7 @@ describe("question response custody through reply adoption", () => {
         };
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "accepted-backing-work",
           toolAuthorityFingerprint: fingerprint,
           cancel,
@@ -404,6 +407,7 @@ describe("question response custody through reply adoption", () => {
         });
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "accepted-backing-work",
           toolAuthorityFingerprint: fingerprint,
           cancel: vi.fn(),
@@ -719,6 +723,7 @@ describe("question response custody through reply adoption", () => {
             kind: entrypoint === "reply" ? "cli" : "embedded",
             runId: "accepted-backing-work",
             toolAuthorityFingerprint: fingerprint,
+            supportsTranscriptCommitWait: true,
             cancel,
             ...(entrypoint === "reply"
               ? {}

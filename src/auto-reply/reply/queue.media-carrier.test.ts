@@ -153,6 +153,7 @@ describe("followup prompt metadata carrier", () => {
     });
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       supportsQueueMessageImages: true,
       toolAuthorityFingerprint: "media-authority",
       cancel: vi.fn(),

@@ -176,6 +176,7 @@ describe("gateway WebSocket chat abort settlement", () => {
           injectionOperation.setPhase("running");
           injectionOperation.attachBackend({
             kind: "embedded",
+            supportsTranscriptCommitWait: true,
             runId: "accepted-steer-backing-run",
             toolAuthorityFingerprint: fingerprint,
             cancel: () => {},

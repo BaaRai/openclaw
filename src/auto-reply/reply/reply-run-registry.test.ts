@@ -1111,6 +1111,7 @@ describe("reply run registry", () => {
 
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       cancel: vi.fn(),
       isStreaming: () => true,
       queueMessage,
@@ -1138,6 +1139,7 @@ describe("reply run registry", () => {
     });
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       taskSuggestionDeliveryMode: "gateway",
       cancel: vi.fn(),
       isStreaming: () => true,
@@ -1185,6 +1187,7 @@ describe("reply run registry", () => {
     });
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       cancel: vi.fn(),
       isStreaming: () => true,
       queueMessage,
@@ -1198,6 +1201,7 @@ describe("reply run registry", () => {
 
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       cancel: vi.fn(),
       isStreaming: () => true,
       queueMessage,
@@ -1221,6 +1225,7 @@ describe("reply run registry", () => {
 
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       cancel: vi.fn(),
       isStreaming: () => false,
       queueMessage,
@@ -1246,6 +1251,7 @@ describe("reply run registry", () => {
       });
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         cancel: vi.fn(),
         isStreaming: () => false,
         isStopped: () => false,
@@ -1288,6 +1294,7 @@ describe("reply run registry", () => {
 
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       cancel: vi.fn(),
       isStreaming: () => true,
       isStopped: () => true,
@@ -1312,6 +1319,7 @@ describe("reply run registry", () => {
 
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         cancel: vi.fn(),
         isStreaming: () => true,
         [probe]: () => {
@@ -1360,6 +1368,7 @@ describe("reply run registry", () => {
       operation.setPhase("running");
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "run-a",
         toolAuthorityFingerprint: "active-authority",
         cancel: vi.fn(),
@@ -1414,6 +1423,7 @@ describe("reply run registry", () => {
     operation.setPhase("running");
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: {
@@ -1474,6 +1484,7 @@ describe("reply run registry", () => {
       operation.setPhase("running");
       operation.attachBackend({
         kind: "embedded",
+        supportsTranscriptCommitWait: true,
         runId: "run-a",
         cancel,
         messageInjectionV2: {
@@ -1534,6 +1545,7 @@ describe("reply run registry", () => {
     operation.setPhase("running");
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => true, queueMessage: vi.fn(async () => {}) },
@@ -1544,6 +1556,7 @@ describe("reply run registry", () => {
 
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: {
@@ -1564,6 +1577,7 @@ describe("reply run registry", () => {
     operation.setPhase("running");
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: {
@@ -1589,6 +1603,7 @@ describe("reply run registry", () => {
     first.setPhase("running");
     first.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => true, queueMessage: vi.fn(async () => {}) },
@@ -1600,6 +1615,7 @@ describe("reply run registry", () => {
     successor.setPhase("running");
     successor.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => true, queueMessage: successorQueue },
@@ -1627,6 +1643,7 @@ describe("reply run registry", () => {
     const replacementQueue = vi.fn(async () => {});
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => true, queueMessage: replacementQueue },
@@ -1650,6 +1667,7 @@ describe("reply run registry", () => {
     });
     operation.attachBackend({
       kind: "embedded",
+      supportsTranscriptCommitWait: true,
       runId: "run-a",
       cancel: vi.fn(),
       messageInjection: { isAvailable: () => true, queueMessage },

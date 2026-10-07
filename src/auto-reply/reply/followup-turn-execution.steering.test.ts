@@ -106,6 +106,7 @@ describe("queued turn steering", () => {
         operation.bindToolAuthorityRoute({ provider: "anthropic", model: "claude" });
         operation.attachBackend({
           kind: "embedded",
+          supportsTranscriptCommitWait: true,
           runId: "followup-execution",
           cancel: vi.fn(),
           messageInjection: { isAvailable: () => true, queueMessage },
@@ -214,7 +215,12 @@ describe("queued turn steering", () => {
     const queueMessage = vi.fn(async () => {});
     state.execute.mockImplementation(async () => {
       operation.bindToolAuthorityRoute({ provider: "anthropic", model: "claude" });
-      operation.attachBackend({ kind: "embedded", cancel: vi.fn(), queueMessage });
+      operation.attachBackend({
+        kind: "embedded",
+        supportsTranscriptCommitWait: true,
+        cancel: vi.fn(),
+        queueMessage,
+      });
       expect(operation.phase).toBe("running");
       const target = captureCurrentReplyMessageInjectionTarget("main");
       expect(target).toBeDefined();
