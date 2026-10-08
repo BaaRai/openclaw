@@ -21,6 +21,11 @@ import {
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import {
+  isSqliteLockError,
+  sqliteErrorCode,
+  sqliteExtendedResultCode,
+} from "./sqlite-error-diagnostics.js";
+import {
   createExistingSqliteRollbackReader,
   withExistingSqliteRollbackDatabase,
   type ExistingSqliteTransaction,
@@ -564,19 +569,35 @@ export function createManagedHandoffLeaseDatabase(
         existingTransactions.get(db) ??
         ((write, transactionOptions) =>
           runSqliteImmediateTransactionSync(db, write, transactionOptions));
-      return transact(
-        () => {
-          assertCurrent();
-          return operation();
-        },
-        {
-          ...options,
-          withCommit: (commit) => {
+      let entered = false;
+      try {
+        return transact(
+          () => {
+            entered = true;
             assertCurrent();
-            commit();
+            return operation();
           },
-        },
-      );
+          {
+            ...options,
+            withCommit: (commit) => {
+              assertCurrent();
+              commit();
+            },
+          },
+        );
+      } catch (error) {
+        // Older writers do not take the prepared owner's mutex. Never relabel admitted SQL or commit failures.
+        if (writeLockRoot && !entered && isSqliteLockError(error)) {
+          throw Object.assign(
+            new Error(
+              "The managed handoff database is locked. Another OpenClaw update or Doctor from an older release may still be using it. Wait for it to finish, then rerun this command.",
+              { cause: error },
+            ),
+            { code: sqliteErrorCode(error), errcode: sqliteExtendedResultCode(error) },
+          );
+        }
+        throw error;
+      }
     },
   });
 }

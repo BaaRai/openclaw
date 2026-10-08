@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
+import { hasErrnoCode } from "./errno.js";
 import { acquireFileLockSync } from "./file-lock-manager.js";
 import { isLockOwnerDefinitelyStale } from "./stale-lock-file.js";
 
@@ -12,7 +14,13 @@ export function acquireFileLockSyncWithRetry(
     "lockRoot" | "reentrantOwner" | "timeoutMs"
   > = {},
 ): () => void {
-  rejectUnsupportedLockPath(`${path}.lock`);
+  const lockPath = `${path}.lock`;
+  const { lockRoot, reentrantOwner, timeoutMs } = options;
+  const deadline =
+    lockRoot && timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs >= 0
+      ? performance.now() + timeoutMs
+      : undefined;
+  rejectUnsupportedLockPath(lockPath);
   const processStartTime = getFileLockProcessStartTime(process.pid);
   const createPayload = () => ({
     pid: process.pid,
@@ -23,22 +31,67 @@ export function acquireFileLockSyncWithRetry(
     isLockOwnerDefinitelyStale({
       payload: isRecord(payload) ? payload : null,
     });
-  const lock = acquireFileLockSync(path, {
-    ...options,
-    staleMs: 30_000,
-    retry: {
-      ...(options.timeoutMs === undefined ? { retries: 9 } : {}),
-      factor: 1,
-      minTimeout: 20,
-      maxTimeout: 20,
-      randomize: false,
-    },
-    staleRecovery: "remove-if-unchanged",
-    payload: createPayload,
-    shouldReclaim: isStale,
-    shouldRemoveStaleLock: isStale,
-  });
-  return () => lock.release();
+  for (;;) {
+    let reclaimObserved = false;
+    try {
+      const lock = acquireFileLockSync(path, {
+        lockRoot,
+        reentrantOwner,
+        timeoutMs: deadline === undefined ? timeoutMs : Math.max(0, deadline - performance.now()),
+        staleMs: 30_000,
+        retry: {
+          ...(timeoutMs === undefined ? { retries: 9 } : {}),
+          factor: 1,
+          minTimeout: 20,
+          maxTimeout: 20,
+          randomize: false,
+        },
+        staleRecovery: "remove-if-unchanged",
+        payload: createPayload,
+        shouldReclaim: (snapshot) => {
+          reclaimObserved = false;
+          const stale = isStale(snapshot);
+          reclaimObserved = true;
+          return stale;
+        },
+        shouldRemoveStaleLock: isStale,
+      });
+      return () => lock.release();
+    } catch (error) {
+      // fs-safe rechecks the sidecar after our callback. Only disappearance can
+      // be a release; a surviving replacement or another authority failure refuses.
+      if (
+        deadline === undefined ||
+        !reclaimObserved ||
+        !(error instanceof FsSafeError) ||
+        error.code !== "path-mismatch" ||
+        error.message !== "sidecar changed during reclaim policy callback" ||
+        !sidecarAbsent(lockPath)
+      ) {
+        throw error;
+      }
+      if (performance.now() >= deadline) {
+        throw Object.assign(
+          new Error(`Storage lock admission timed out: ${lockPath}`, { cause: error }),
+          {
+            code: "file_lock_timeout",
+            lockPath,
+          },
+        );
+      }
+      // Re-observe through the same Root and its original remaining budget,
+      // before any caller operation or SQLite transaction has been entered.
+    }
+  }
+}
+
+function sidecarAbsent(lockPath: string): boolean {
+  try {
+    fs.lstatSync(lockPath);
+    return false;
+  } catch (error) {
+    return hasErrnoCode(error, "ENOENT");
+  }
 }
 
 function rejectUnsupportedLockPath(lockPath: string): void {
@@ -46,7 +99,7 @@ function rejectUnsupportedLockPath(lockPath: string): void {
   try {
     observed = fs.lstatSync(lockPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (hasErrnoCode(error, "ENOENT")) {
       return;
     }
     throw error;

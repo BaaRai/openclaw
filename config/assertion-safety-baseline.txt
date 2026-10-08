@@ -2187,7 +2187,6 @@ src/infra/exec-host.ts	3
 src/infra/fetch-headers.ts	3
 src/infra/fetch.ts	5
 src/infra/file-lock-manager.ts	1
-src/infra/file-lock-sync.ts	1
 src/infra/fs-safe-remove.ts	4
 src/infra/gateway-lock.ts	2
 src/infra/gateway-processes.ts	1
