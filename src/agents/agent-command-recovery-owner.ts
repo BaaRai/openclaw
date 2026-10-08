@@ -11,7 +11,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   beginSessionWorkAdmission,
-  getSessionWorkAdmissionOwnerRelease,
+  getSessionWorkAdmissionRelease,
   type SessionWorkAdmissionLease,
 } from "../sessions/session-lifecycle-admission.js";
 import type { AgentCommandOpts } from "./command/types.js";
@@ -221,7 +221,7 @@ export async function runWithAgentCommandRecoveryOwner<
       !params.opts.mainRestartRecoveryOwnerLease;
     const recoveryOwnerRelease = () =>
       mayWaitForRecovery
-        ? getSessionWorkAdmissionOwnerRelease({
+        ? getSessionWorkAdmissionRelease({
             scope: target.storePath,
             identities: [target.sessionKey, target.previousSessionId ?? target.sessionId],
             owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -255,6 +255,7 @@ export async function runWithAgentCommandRecoveryOwner<
       if (params.opts.sessionEffects !== "internal") {
         commandAdmission = await beginSessionWorkAdmission({
           scope: prepared.storePath ?? `agent:${prepared.sessionAgentId}`,
+          isSettling: params.opts.isTerminalOutcomeObserved,
           identities: [prepared.sessionKey, prepared.previousSessionId ?? prepared.sessionId],
           owner: COMMAND_ADMISSION_OWNER,
           serializeOwner: true,

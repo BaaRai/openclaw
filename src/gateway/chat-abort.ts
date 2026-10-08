@@ -25,7 +25,10 @@ import {
 } from "../infra/agent-run-registry.js";
 import { notifyGatewayWorkMetricsChanged } from "../infra/gateway-work-metrics-events.js";
 import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
-import { removeChatAbortControllerEntry } from "./chat-abort-lifecycle-internal.js";
+import {
+  markChatAbortTerminalOutcome,
+  removeChatAbortControllerEntry,
+} from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
@@ -469,6 +472,7 @@ function broadcastChatAborted(
     message: params.message ? { ...params.message, timestamp: Date.now() } : undefined,
   };
   const deliverySessionKeys = resolveChatAbortDeliverySessionKeys(ops, sessionKey, payloadAgentId);
+  markChatAbortTerminalOutcome(ops.chatAbortControllers.get(runId));
   ops.broadcast("chat", payload, {
     sessionKeys: deliverySessionKeys,
     ...(params.liveTextGroup ? { liveText: { group: params.liveTextGroup } } : {}),

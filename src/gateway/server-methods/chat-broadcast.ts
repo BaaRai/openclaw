@@ -2,6 +2,7 @@ import { getReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/rep
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { markChatAbortTerminalOutcome } from "../chat-abort-lifecycle-internal.js";
 import { projectChatDisplayMessage } from "../chat-display-projection.js";
 import { capLiveAssistantText } from "../live-chat-projector.js";
 import type { GatewayBroadcastOpts } from "../server-broadcast-types.js";
@@ -12,7 +13,9 @@ type ChatBroadcastContext = Pick<
   GatewayRequestContext,
   "broadcast" | "nodeSendToSession" | "agentRunSeq"
 > &
-  Partial<Pick<GatewayRequestContext, "getRuntimeConfig" | "chatRunState">>;
+  Partial<
+    Pick<GatewayRequestContext, "getRuntimeConfig" | "chatRunState" | "chatAbortControllers">
+  >;
 
 type SideResultPayload = {
   kind: "btw";
@@ -199,6 +202,7 @@ export function broadcastChatDelta(
 }
 
 export function broadcastChatTerminal(params: ChatBroadcastParams & ChatTerminal): void {
+  markChatAbortTerminalOutcome(params.context.chatAbortControllers?.get(params.runId));
   broadcastChatFrame(params);
   params.context.agentRunSeq.delete(params.runId);
 }

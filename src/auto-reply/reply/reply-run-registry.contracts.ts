@@ -25,6 +25,10 @@ export type ReplyBackendCancelReason = "user_abort" | "restart" | "superseded";
 
 export type ReplyTurnKind = "visible" | "heartbeat" | "queued_followup";
 
+export function resolveReplyTurnKind(opts?: { isHeartbeat?: boolean }): ReplyTurnKind {
+  return opts?.isHeartbeat === true ? "heartbeat" : "visible";
+}
+
 export type ReplyBackendQueueMessageOptions = {
   /** Prepared context for this queue item, separate from its transcript and answer text. */
   currentInboundContext?: CurrentInboundPromptContext;

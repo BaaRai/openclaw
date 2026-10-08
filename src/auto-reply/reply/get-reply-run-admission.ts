@@ -18,7 +18,7 @@ import { logVerbose } from "../../globals.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import {
-  getSessionWorkAdmissionOwnerRelease,
+  getSessionWorkAdmissionRelease,
   interruptSessionWorkAdmissions,
 } from "../../sessions/session-lifecycle-admission.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
@@ -476,7 +476,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     const embeddedActiveSessionId = resolveActiveEmbeddedSessionId();
     const replyOperationActiveSessionId = resolveActiveReplyOperationSessionId();
     const recoveryOwnerRelease = storePath
-      ? getSessionWorkAdmissionOwnerRelease({
+      ? getSessionWorkAdmissionRelease({
           scope: storePath,
           identities: [sessionKey, preparedSessionState.sessionId],
           owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

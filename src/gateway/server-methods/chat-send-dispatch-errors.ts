@@ -8,6 +8,7 @@ import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import { markChatAbortTerminalOutcome } from "../chat-abort-lifecycle-internal.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
 import { chatAbortMarkerTimestampMs, type ChatAbortMarker } from "../server-chat-state.js";
@@ -70,7 +71,7 @@ type ChatSendJobAdmission = Pick<
 > & {
   sessionBinding: Pick<
     AdmittedChatSend["sessionBinding"],
-    "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration"
+    "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration" | "terminalOutcomeObserved"
   >;
 };
 
@@ -153,6 +154,7 @@ export async function handleChatSendSetupError(params: {
   }
   params.respond(false, payload, error, { runId: clientRunId, error: formatForLog(params.error) });
   if (!hidden && failureDisposition !== "client-retry") {
+    markChatAbortTerminalOutcome(jobSessionBinding);
     broadcastChatError({
       context: params.context,
       runId: clientRunId,
@@ -322,6 +324,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
           },
         });
         if (!hidden) {
+          markChatAbortTerminalOutcome(jobSessionBinding);
           broadcastChatError({
             context,
             runId: clientRunId,

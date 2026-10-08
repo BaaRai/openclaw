@@ -15,7 +15,6 @@ import {
   consumeSessionWorkAdmissionHandoff,
   getActiveSessionLifecycleMutationCount,
   getActiveSessionWorkAdmissionCount,
-  getSessionWorkAdmissionOwnerRelease,
   getSessionWorkAdmissionRelease,
   hasOnlySessionLifecycleMutationKindActive,
   interruptSessionWorkAdmissions,
@@ -85,17 +84,15 @@ it("observes only the named session admission owner while it is starting", async
   });
   try {
     await started.promise;
-    const release = getSessionWorkAdmissionOwnerRelease({ scope, identities, owner });
+    const release = getSessionWorkAdmissionRelease({ scope, identities, owner });
     expect(release).toBeInstanceOf(Promise);
     unrelated.release();
-    expect(getSessionWorkAdmissionOwnerRelease({ scope, identities, owner })).toBeInstanceOf(
-      Promise,
-    );
+    expect(getSessionWorkAdmissionRelease({ scope, identities, owner })).toBeInstanceOf(Promise);
     allowed.resolve();
     const admission = await admissionPromise;
     admission.release();
     await release;
-    expect(getSessionWorkAdmissionOwnerRelease({ scope, identities, owner })).toBeUndefined();
+    expect(getSessionWorkAdmissionRelease({ scope, identities, owner })).toBeUndefined();
   } finally {
     unrelated.release();
     allowed.resolve();

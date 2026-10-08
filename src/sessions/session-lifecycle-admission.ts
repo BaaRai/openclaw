@@ -53,6 +53,7 @@ type SessionWorkAdmission = HandoffSessionWorkAdmission & {
   phase: "pending" | "acquired";
   owner?: symbol;
   released: Promise<void>;
+  isSettling?: () => boolean;
 };
 
 type SessionLifecycleMutationOwner = {
@@ -401,21 +402,24 @@ function isSessionWorkAdmissionTargetActive(params: {
   );
 }
 
-/** Whether another admitted turn currently owns any of these session identities. */
+/** Capture competing acquired owners without including the initiating execution. */
+function collectCompetingSessionWorkAdmissions(
+  scope: string,
+  identities: Iterable<string | undefined>,
+): Set<SessionWorkAdmission> {
+  const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
+  return collectSessionWorkAdmissions(
+    normalizeSessionIdentities(scope, identities),
+    (admission) => admission.phase === "acquired" && !currentAdmissions?.has(admission),
+  );
+}
+
 export function isCompetingSessionWorkAdmissionActive(
   scope: string,
   identities: Iterable<string | undefined>,
 ): boolean {
-  const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
-  return normalizeSessionIdentities(scope, identities).some((identity) =>
-    Array.from(
-      ACTIVE_SESSION_WORK_ADMISSIONS.get(identity) ?? [],
-      (admission) => admission.phase === "acquired" && !currentAdmissions?.has(admission),
-    ).some(Boolean),
-  );
+  return collectCompetingSessionWorkAdmissions(scope, identities).size > 0;
 }
-
-type SessionWorkAdmissionReleaseParams = SessionLifecycleMutationTarget;
 
 function collectSessionWorkAdmissions(
   identities: Iterable<string>,
@@ -432,35 +436,32 @@ function collectSessionWorkAdmissions(
   return matching;
 }
 
-/** Completion of the currently active turns that own a session. */
-export function getSessionWorkAdmissionRelease(
-  params: SessionWorkAdmissionReleaseParams,
-): Promise<void> | undefined {
-  const matchingAdmissions = collectSessionWorkAdmissions(
-    normalizeSessionIdentities(params.scope, params.identities),
-    (admission) => admission.phase === "acquired",
-  );
-  if (matchingAdmissions.size === 0) {
-    return undefined;
+/** Capture terminal owners without waiting on a live turn or a later successor. */
+export function getTerminalSessionWorkAdmissionRelease(
+  params: SessionLifecycleMutationTarget,
+): Promise<void> | false {
+  const admissions = collectCompetingSessionWorkAdmissions(params.scope, params.identities);
+  if ([...admissions].some((admission) => !admission.isSettling?.())) {
+    return false;
   }
-
-  // A gateway turn can adopt an outer reply admission and open its own inner
-  // admission. Self-archive must wait for both owners to release the session.
-  return Promise.all(Array.from(matchingAdmissions, (admission) => admission.released)).then(
-    () => undefined,
-  );
+  return Promise.all([...admissions].map((admission) => admission.released)).then(() => undefined);
 }
 
-/** Completion of a named owner that is starting or actively working on a session. */
-export function getSessionWorkAdmissionOwnerRelease(
-  params: SessionWorkAdmissionReleaseParams & { owner: symbol },
+/** Join acquired work, or a named owner's pending and acquired admissions. */
+export function getSessionWorkAdmissionRelease(
+  params: SessionLifecycleMutationTarget & { owner?: symbol },
 ): Promise<void> | undefined {
-  const matching = collectSessionWorkAdmissions(
+  const admissions = collectSessionWorkAdmissions(
     normalizeSessionIdentities(params.scope, params.identities),
-    (admission) => admission.owner === params.owner,
+    (admission) =>
+      params.owner === undefined
+        ? admission.phase === "acquired"
+        : admission.owner === params.owner,
   );
-  return matching.size > 0
-    ? Promise.all(Array.from(matching, (admission) => admission.released)).then(() => undefined)
+  // A gateway turn can adopt an outer reply admission and open its own inner
+  // admission. Self-archive must wait for both owners to release the session.
+  return admissions.size > 0
+    ? Promise.all(Array.from(admissions, (admission) => admission.released)).then(() => undefined)
     : undefined;
 }
 
@@ -526,6 +527,8 @@ export async function beginSessionWorkAdmission(params: {
   storeWriterIdentities?: Iterable<string | undefined>;
   /** Stable process-wide identity for owners that must be observable while still pending. */
   owner?: symbol;
+  /** The execution owner has committed its terminal outcome; cleanup still retains this lease. */
+  isSettling?: () => boolean;
   /** Queue behind earlier admissions of the same owner, including pending work. */
   serializeOwner?: boolean;
   resolveGatewayContext?: GatewayContextResolver;
@@ -568,6 +571,7 @@ export async function beginSessionWorkAdmission(params: {
   const admission: SessionWorkAdmission = {
     lifecycleGeneration: getAgentRunLifecycleGeneration(),
     phase: "pending",
+    isSettling: params.isSettling,
     ...(params.owner ? { owner: params.owner } : {}),
     handoffIds: new Set(),
     identities: new Set(identities),

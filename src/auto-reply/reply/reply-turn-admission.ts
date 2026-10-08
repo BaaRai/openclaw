@@ -39,12 +39,13 @@ import {
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   beginSessionWorkAdmission,
-  getSessionWorkAdmissionOwnerRelease,
+  getSessionWorkAdmissionRelease,
   type SessionWorkAdmissionLease,
 } from "../../sessions/session-lifecycle-admission.js";
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import {
   createReplyOperation,
+  hasCommittedReplyOperationOutcome,
   isReplyRunSuccessorAdmissionBlocked,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
@@ -292,6 +293,9 @@ export async function admitReplyTurn(
         const admission = storePath
           ? await beginSessionWorkAdmission({
               scope: storePath,
+              isSettling: () =>
+                operation !== undefined &&
+                (operation.result !== null || hasCommittedReplyOperationOutcome(operation)),
               resolveGatewayContext,
               identities: [params.sessionKey],
               storeWriterIdentities:
@@ -409,7 +413,7 @@ export async function admitReplyTurn(
           // The named admission is the authoritative process-local busy fact even
           // after startup recovery has cleared the durable aborted marker.
           const recoveryOwnerRelease = mayWaitForRecoveryOwner
-            ? getSessionWorkAdmissionOwnerRelease({
+            ? getSessionWorkAdmissionRelease({
                 scope: storePath,
                 identities: [params.sessionKey, sessionId],
                 owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -748,8 +752,4 @@ export async function admitReplyTurn(
       }
     }
   }
-}
-
-export function resolveReplyTurnKind(opts?: { isHeartbeat?: boolean }): ReplyTurnKind {
-  return opts?.isHeartbeat === true ? "heartbeat" : "visible";
 }

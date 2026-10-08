@@ -260,6 +260,7 @@ export function dispatchAgentRunFromGateway(params: {
           ? { prepareAssistantTranscriptMessage: commentaryMedia.prepareAssistantTranscriptMessage }
           : {}),
         beforeTerminalDelivery: completeTerminalProducer,
+        isTerminalOutcomeObserved: () => registeredRunEntry?.terminalOutcomeObserved === true,
       },
       readAgentRunDispatchExecutionIdentity(params),
     );

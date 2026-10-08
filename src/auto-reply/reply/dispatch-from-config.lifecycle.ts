@@ -42,17 +42,14 @@ import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-
 import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
 import type { ReplyDispatcher } from "./reply-dispatcher.types.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
+import { resolveReplyTurnKind } from "./reply-run-registry.contracts.js";
 import {
   forceClearReplyRunBySessionId,
   replyRunRegistry,
   type ReplyOperation,
   waitForReplyBarrierSettlement,
 } from "./reply-run-registry.js";
-import {
-  admitReplyTurn,
-  resolveReplyTurnKind,
-  runWithReplyOperationLifecycleAdmission,
-} from "./reply-turn-admission.js";
+import { admitReplyTurn, runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 
 type DispatchReplyOperationAcquisition =
   | { status: "ready" }

@@ -227,6 +227,8 @@ export type AgentCommandOpts = {
   ) => void | Promise<void>;
   /** Gateway joins terminal transcript writes before delivery or failed-command cleanup. */
   beforeTerminalDelivery?: () => Promise<void>;
+  /** Exact Gateway execution outcome; terminal cleanup retains its session admission. */
+  isTerminalOutcomeObserved?: () => boolean;
   /** Gateway-owned preparation of runtime-appended assistant transcript messages. */
   prepareAssistantTranscriptMessage?: AgentRunTranscriptContext["prepareAssistantTranscriptMessage"];
   /** Called when the actual run model is selected, including fallback retries. */
@@ -270,6 +272,7 @@ export const AGENT_COMMAND_PUBLIC_INGRESS_DEFAULTS = Object.freeze({
   onAdmittedRunContext: undefined,
   onPostAdmittedRunContext: undefined,
   beforeTerminalDelivery: undefined,
+  isTerminalOutcomeObserved: undefined,
   prepareAssistantTranscriptMessage: undefined,
   internalDeliverySuppressErrors: undefined,
 } satisfies Partial<AgentCommandOpts>);

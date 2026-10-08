@@ -17,6 +17,14 @@ export function isCurrentChatAbortExecution(entry: object): boolean {
   return current === entry && current.executionSettlement?.status === "pending";
 }
 
+export function markChatAbortTerminalOutcome(
+  entry: Pick<ChatAbortControllerEntry, "terminalOutcomeObserved"> | undefined,
+): void {
+  if (entry) {
+    entry.terminalOutcomeObserved = true;
+  }
+}
+
 /** Capture one exact registration; a same-key successor is never its completion owner. */
 export function captureChatAbortExecution(params: {
   entries: ReadonlyMap<string, ChatAbortControllerEntry>;

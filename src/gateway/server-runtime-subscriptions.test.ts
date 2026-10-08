@@ -8,6 +8,7 @@ import {
   emitAgentEvent,
   emitAgentEventForOwner,
   getAgentEventLifecycleGeneration,
+  onAgentRuntimeEvent,
   resetAgentEventsForTest,
 } from "../infra/agent-events.js";
 import {
@@ -413,6 +414,43 @@ describe("startGatewayEventSubscriptions", () => {
     ).toEqual({ active: true, runIds: ["run-ops"] });
     await unsubs.agentUnsub();
     expect(handler.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("does not mark a reentrant replacement terminal from the previous claim", () => {
+    const params = createParams();
+    const runId = "replaced-terminal-claim";
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    const identity = {
+      sessionKey: "agent:main:replaced",
+      sessionId: "replaced-session",
+      lifecycleGeneration,
+    };
+    let registration = registerSubscriptionChatRun(params, { runId, ...identity });
+    const ownership = { exclusive: true, ownsContext: true, trackOwner: true };
+    const originalClaim = claimAgentRunContext(runId, identity, ownership);
+    if (!originalClaim) {
+      throw new Error("Missing original claim");
+    }
+    let replacementClaim: string | undefined;
+    const removeListener = onAgentRuntimeEvent((event) => {
+      if (event.runId !== runId) {
+        return;
+      }
+      releaseAgentRunContext(runId, originalClaim);
+      registration.cleanup();
+      registration = registerSubscriptionChatRun(params, { runId, ...identity });
+      replacementClaim = claimAgentRunContext(runId, identity, ownership);
+    });
+    unsubs = startGatewayEventSubscriptions(params);
+    try {
+      emitAgentEventForOwner({ runId, stream: "lifecycle", data: { phase: "end" } }, originalClaim);
+      expect(replacementClaim).toBeTruthy();
+      expect(registration.entry.terminalOutcomeObserved).toBeUndefined();
+    } finally {
+      removeListener();
+      registration.cleanup();
+      releaseAgentRunContext(runId, replacementClaim ?? originalClaim);
+    }
   });
 
   it("drives a registered chat run through the terminal persistence transition table", async () => {
