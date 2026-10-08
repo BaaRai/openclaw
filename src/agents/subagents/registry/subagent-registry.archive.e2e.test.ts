@@ -501,7 +501,13 @@ describe("subagent registry archive behavior", () => {
       endedReason: "subagent-killed",
       outcome: { status: "error", error: "manual kill" },
       suppressAnnounceReason: "killed",
-      killReconciliation: { killedAt: now - 5 * 60_000, taskCancellationAccepted: true },
+      // A requester-wide Stop: the requester already knows, so the sweep retires the row
+      // directly. A kill the requester did not issue reports once before it retires.
+      killReconciliation: {
+        killedAt: now - 5 * 60_000,
+        taskCancellationAccepted: true,
+        suppressTaskDelivery: true,
+      },
       cleanupHandled: true,
       cleanupCompletedAt: now - 5 * 60_000,
       archiveAtMs: now,
