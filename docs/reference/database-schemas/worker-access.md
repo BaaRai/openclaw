@@ -1746,9 +1746,15 @@ message authority checks after preparation. The reader preserves account
 normalization and entry order, propagates admission failures, and joins accepted
 read cleanup before its transport closes. Missing state grants no permission and
 does not initialize a database; boot and Doctor retain initialization. The
-released synchronous SDK reader and pairing request/approval mutations retain
-their native paths, so their shared SQL sites remain T1. No schema, retention,
-durability, or update migration changes.
+released synchronous SDK reader retains only its native allowlist query.
+Channel request, pruning, approval, dismissal, and allowlist mutations use the
+existing shared-state writer and capture the physical store before yielding.
+Approval adapters prepare the selected row outside the write transaction; the
+worker rereads the exact current selection before consuming the request and
+adding an approval. Host authority is checked after preparation and at transaction
+and commit admission. Writes preserve account normalization and update only
+changed rows instead of replacing the whole channel snapshot. No schema,
+retention, durability, permission, or update migration changes.
 
 Native transcript locks serialize accepted reads and writes through callback
 completion and join their settlement before releasing the reservation. Awaited

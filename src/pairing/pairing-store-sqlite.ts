@@ -6,7 +6,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
-  openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -14,6 +13,7 @@ import type { WorkerOperationHandlers } from "../state/worker-operation-registry
 import {
   dedupePreserveOrder,
   resolveAllowFromAccountId,
+  resolvePairingRequestAccountId,
   safeChannelKey,
 } from "./pairing-store-keys.js";
 import type { PairingChannel, PairingRequestRecord } from "./pairing-store.types.js";
@@ -45,7 +45,7 @@ function normalizePersistedPairingMeta(value: unknown): Record<string, string> |
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function normalizePersistedPairingRequest(value: unknown): PairingRequest | undefined {
+export function normalizePersistedPairingRequest(value: unknown): PairingRequest | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -67,13 +67,9 @@ function normalizePersistedPairingRequest(value: unknown): PairingRequest | unde
   return { id, code, createdAt, lastSeenAt, ...(meta ? { meta } : {}) };
 }
 
-export function resolvePairingRequestAccountId(entry: PairingRequest): string {
-  return resolveAllowFromAccountId(entry.meta?.accountId);
-}
-
-function readChannelAllowEntries(database: DatabaseSync, channel: PairingChannel) {
+function readChannelAllowRows(database: DatabaseSync, channel: PairingChannel) {
   const db = getNodeSqliteKysely<PairingDatabase>(database);
-  const rows = executeSqliteQuerySync(
+  return executeSqliteQuerySync(
     database,
     db
       .selectFrom("channel_pairing_allow_entries")
@@ -83,6 +79,10 @@ function readChannelAllowEntries(database: DatabaseSync, channel: PairingChannel
       .orderBy("sort_order", "asc")
       .orderBy("entry", "asc"),
   ).rows;
+}
+
+export function readChannelAllowEntries(database: DatabaseSync, channel: PairingChannel) {
+  const rows = readChannelAllowRows(database, channel);
   const allowFrom: Record<string, string[]> = {};
   for (const row of rows) {
     const accountId = resolveAllowFromAccountId(row.account_id);
@@ -99,10 +99,10 @@ export const pairingReadOperations = {
   }),
 } satisfies WorkerOperationHandlers<DatabaseSync>;
 
-export function readChannelPairingStateFromDatabase(
+export function readChannelPairingSnapshotFromDatabase(
   database: OpenClawStateDatabase,
   channel: PairingChannel,
-): ChannelPairingState {
+) {
   const db = getNodeSqliteKysely<PairingDatabase>(database.db);
   const channelKey = safeChannelKey(channel);
   const requestRows = executeSqliteQuerySync(
@@ -115,7 +115,11 @@ export function readChannelPairingStateFromDatabase(
       .orderBy("account_id", "asc")
       .orderBy("request_id", "asc"),
   ).rows;
-  const allowFrom = readChannelAllowEntries(database.db, channel);
+  const allowRows = readChannelAllowRows(database.db, channel);
+  const allowFrom: Record<string, string[]> = {};
+  for (const row of allowRows) {
+    (allowFrom[resolveAllowFromAccountId(row.account_id)] ??= []).push(row.entry);
+  }
   const requests = requestRows.flatMap((row) => {
     let meta: Record<string, string> | undefined;
     if (row.meta_json) {
@@ -137,14 +141,8 @@ export function readChannelPairingStateFromDatabase(
     });
     return request ? [request] : [];
   });
-  return { version: 1, requests, allowFrom };
-}
-
-export function readChannelPairingState(
-  channel: PairingChannel,
-  env: NodeJS.ProcessEnv,
-): ChannelPairingState {
-  return readChannelPairingStateFromDatabase(openOpenClawStateDatabase({ env }), channel);
+  const state: ChannelPairingState = { version: 1, requests, allowFrom };
+  return { state, requestRows, allowRows };
 }
 
 export function writeChannelPairingStateToDatabase(
@@ -209,7 +207,7 @@ export function updateChannelPairingStateSnapshot<T>(
 ): T {
   return runOpenClawStateWriteTransaction(
     (database) => {
-      const state = readChannelPairingStateFromDatabase(database, channel);
+      const state = readChannelPairingSnapshotFromDatabase(database, channel).state;
       const result = update(state);
       writeChannelPairingStateToDatabase(database, channel, state);
       return result;
