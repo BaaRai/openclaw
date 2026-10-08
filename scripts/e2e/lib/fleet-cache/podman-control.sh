@@ -168,7 +168,7 @@ assert.equal(info.store.volumePath, `${engine}/data/containers/storage/volumes`)
 console.log(JSON.stringify({control: 'podman', version: info.version.Version,
   rootless: info.host.security.rootless, serviceIsRemote: info.host.serviceIsRemote,
   cgroupVersion: info.host.cgroupVersion, cgroupManager: info.host.cgroupManager,
-  storageDriver: info.store.graphDriverName}));
+  storageDriver: info.store.graphDriverName, ociRuntime: info.host.ociRuntime}));
 JS
 private_store_verified=true
 "$node_bin" "$helper_dir/prepare-podman-storage.mjs" "$cli_entry" "$engine_root" "$runtime_root" "$control_root/info.json"
