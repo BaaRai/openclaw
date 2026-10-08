@@ -32,6 +32,19 @@ export function finalizeGatewayRestartSnapshot(
       }
     }
   }
+  // Some maintenance observations intentionally defer plugin verification. Keep
+  // that caller policy without hiding the overall degraded projection.
+  const optionalPluginFailure =
+    !requirePluginHealth &&
+    snapshot.readiness?.state === "degraded" &&
+    snapshot.readiness.reasons.length > 0 &&
+    snapshot.readiness.reasons.every((reason) => reason.startsWith("plugin:"));
+  if (snapshot.readiness && snapshot.readiness.state !== "ready" && !optionalPluginFailure) {
+    snapshot.healthy = false;
+    if (snapshot.readiness.state === "starting") {
+      snapshot.startupPhase = snapshot.readiness.reasons.join(", ") || "Gateway startup";
+    }
+  }
   if (
     (requirePluginHealth && snapshot.activatedPluginErrors?.length) ||
     snapshot.channelProbeErrors?.length

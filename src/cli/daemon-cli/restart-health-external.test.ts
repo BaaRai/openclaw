@@ -139,10 +139,10 @@ describe("restart health", () => {
   });
 
   it.each([
-    { listenerPid: 4300, healthy: true },
+    { listenerPid: 4300, healthy: false },
     { listenerPid: 4400, healthy: false },
   ])(
-    "accepts a correlated device identity rejection only for the verified replacement listener",
+    "does not accept a device identity rejection as replacement readiness",
     async ({ listenerPid, healthy }) => {
       inspectPortUsage.mockResolvedValue({
         port: 18789,
@@ -162,9 +162,7 @@ describe("restart health", () => {
       });
 
       expect(snapshot.healthy).toBe(healthy);
-      if (healthy) {
-        expect(snapshot.probeError).toBeUndefined();
-      }
+      expect(snapshot.readiness?.state).toBe("reachable");
       expect(inspectPortUsage).toHaveBeenCalledTimes(1);
       expect(callGateway).toHaveBeenCalledTimes(1);
     },

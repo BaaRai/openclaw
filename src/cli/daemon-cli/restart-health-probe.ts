@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveReadOnlyLocalGatewayAuth } from "../../gateway/call-device-auth.js";
 import { callGateway } from "../../gateway/call.js";
 import { isGatewayProtocolResponseError } from "../../gateway/client.js";
+import type { GatewayHealthReadiness } from "../../gateway/health/readiness.js";
 import type { PluginHealthErrorSummary } from "../../gateway/health/types.js";
 import {
   createConfiguredGatewayLocalProbe,
@@ -71,6 +72,7 @@ type GatewayRestartProbeAuth = {
 
 export type GatewayReachability = {
   reachable: boolean;
+  readiness?: GatewayHealthReadiness;
   gatewayVersion: string | null;
   gatewayBootId?: string;
   gatewayBuildId: string | null | undefined;
@@ -176,6 +178,34 @@ function isGatewayAuthRejection(reason: string): boolean {
   );
 }
 
+function readGatewayHealthReadiness(health: unknown): GatewayHealthReadiness | undefined {
+  const value = asOptionalRecord(health)?.readiness;
+  // Older Gateways have no overall projection; retain their separate plugin/channel checks.
+  if (value === undefined && asOptionalRecord(health)?.ok === true) {
+    return undefined;
+  }
+  const record = asOptionalRecord(value);
+  const state = record?.state;
+  if (
+    (state === "reachable" ||
+      state === "starting" ||
+      state === "ready" ||
+      state === "degraded" ||
+      state === "failed") &&
+    Array.isArray(record?.reasons) &&
+    record.reasons.every((reason) => typeof reason === "string") &&
+    Array.isArray(record.warnings) &&
+    record.warnings.every((reason) => typeof reason === "string")
+  ) {
+    return {
+      state,
+      reasons: record.reasons.map(formatGatewayRestartProbeError),
+      warnings: record.warnings.map(formatGatewayRestartProbeError),
+    };
+  }
+  return { state: "reachable", reasons: ["readiness-unavailable"], warnings: [] };
+}
+
 function readActivatedPluginErrors(health: unknown): PluginHealthErrorSummary[] {
   const errors = asOptionalRecord(asOptionalRecord(health)?.plugins)?.errors;
   if (!Array.isArray(errors)) {
@@ -205,31 +235,45 @@ function readActivatedPluginErrors(health: unknown): PluginHealthErrorSummary[] 
   });
 }
 
-type ChannelProbeResult = { id: string } & (
-  | { status: "healthy" }
-  | { status: "unhealthy" | "timed-out"; error: string }
-);
+type ChannelProbeResult = { id: string; status: "unhealthy" | "timed-out"; error: string };
 
 function readChannelProbeResults(health: unknown): ChannelProbeResult[] {
   const channels = asOptionalRecord(asOptionalRecord(health)?.channels);
-  return Object.entries(channels ?? {}).flatMap<ChannelProbeResult>(([id, summary]) => {
-    const probe = asOptionalRecord(asOptionalRecord(summary)?.probe);
-    if (!probe) {
-      return [];
-    }
-    // Retain the explicit timeout marker from older Gateways that also sent ok:false.
-    if (probe.timedOut === true || probe.ok === false) {
-      return [
-        {
+  const failures = new Map<string, ChannelProbeResult>();
+  for (const [channelId, value] of Object.entries(channels ?? {})) {
+    const channel = asOptionalRecord(value);
+    const accounts = asOptionalRecord(channel?.accounts);
+    const records: Array<[string, unknown]> = [["", value], ...Object.entries(accounts ?? {})];
+    for (const [accountId, accountValue] of records) {
+      const account = asOptionalRecord(accountValue);
+      if (
+        account?.enabled === false ||
+        account?.configured === false ||
+        account?.linked === false
+      ) {
+        continue;
+      }
+      const probe = asOptionalRecord(account?.probe);
+      if (!probe || (probe.timedOut !== true && probe.ok !== false)) {
+        continue;
+      }
+      const id = formatGatewayRestartProbeError(
+        accountId && accountId !== channel?.accountId ? channelId + "/" + accountId : channelId,
+      );
+      // A deadline cannot erase a definite negative from a selected or secondary account.
+      const status = probe.timedOut === true ? "timed-out" : "unhealthy";
+      if (!failures.has(id) || status === "unhealthy") {
+        failures.set(id, {
           id,
-          status: probe.timedOut === true ? "timed-out" : "unhealthy",
-          error:
+          status,
+          error: formatGatewayRestartProbeError(
             typeof probe.error === "string" && probe.error.trim() ? probe.error : "check failed",
-        },
-      ];
+          ),
+        });
+      }
     }
-    return probe.ok === true ? [{ id, status: "healthy" }] : [];
-  });
+  }
+  return [...failures.values()];
 }
 
 function readUnavailablePlugins(health: unknown): UnavailablePluginHealthSummary[] {
@@ -307,6 +351,7 @@ export async function confirmGatewayReachable(params: {
       },
     });
     result.reachable = true;
+    result.readiness = readGatewayHealthReadiness(health);
     result.activatedPluginErrors = readActivatedPluginErrors(health);
     result.unavailablePlugins = readUnavailablePlugins(health);
     const channelProbes = readChannelProbeResults(health);
@@ -329,6 +374,9 @@ export async function confirmGatewayReachable(params: {
       (isGatewayAuthRejection(error.message) ||
         (params.allowDeviceIdentityRequired === true &&
           error.message === "device identity required"));
+    if (result.reachable) {
+      result.readiness = { state: "reachable", reasons: ["health-unavailable"], warnings: [] };
+    }
     if (!result.reachable) {
       result.staleConnection = classifyGatewayStaleConnectionError(error);
       result.probeError = formatGatewayRestartProbeError(error);
@@ -398,7 +446,7 @@ export async function inspectGatewayPortHealth(params: {
   const listenerOwnershipVerified =
     expectedListenerPid !== undefined &&
     allListenersOwnedByRuntimePid(portUsage.listeners, expectedListenerPid);
-  const { reachable, probeError } = await confirmGatewayReachable({
+  const { reachable, readiness, probeError } = await confirmGatewayReachable({
     port: params.port,
     auth: params.auth,
     ...(params.config ? { config: params.config } : {}),
@@ -406,5 +454,10 @@ export async function inspectGatewayPortHealth(params: {
     env: process.env,
     allowDeviceIdentityRequired: listenerOwnershipVerified,
   });
-  return { portUsage, healthy: reachable, ...(probeError ? { probeError } : {}) };
+  return {
+    portUsage,
+    healthy: reachable && (!readiness || readiness.state === "ready"),
+    ...(readiness ? { readiness } : {}),
+    ...(probeError ? { probeError } : {}),
+  };
 }

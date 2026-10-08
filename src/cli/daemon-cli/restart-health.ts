@@ -93,6 +93,8 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
+  /** Diagnostics need the snapshot, not operational recovery certification. */
+  waitForOperationalReadiness?: boolean;
   /** Diagnostics can report absence immediately; start/restart callers wait for installation. */
   waitForMissingService?: boolean;
   supervisorKeepsAlive?: boolean;
@@ -200,6 +202,13 @@ export async function waitForGatewayHealthyRestart(
   const expiredOutcome = (elapsedMs: number, atStartupCap: boolean): GatewayRestartWaitOutcome => {
     if (generationChanged) {
       return "generation-changed";
+    }
+    if (
+      snapshot.readiness &&
+      snapshot.readiness.state !== "ready" &&
+      snapshot.readiness.state !== "starting"
+    ) {
+      return "gateway-not-ready";
     }
     if (
       snapshot.runtime.status !== "running" ||
@@ -322,6 +331,13 @@ export async function waitForGatewayHealthyRestart(
           elapsedMs,
         );
       }
+      if (
+        params.waitForOperationalReadiness === false &&
+        snapshot.readiness &&
+        snapshot.readiness.state !== "ready"
+      ) {
+        return withWaitContext(snapshot, "gateway-not-ready", elapsedMs);
+      }
       if (boundedDeadlineMs !== undefined && elapsedMs > boundedDeadlineMs + settleDurationMs) {
         return withWaitContext(
           { ...snapshot, healthy: false },
@@ -350,6 +366,9 @@ export async function waitForGatewayHealthyRestart(
       }
       if (snapshot.channelProbeErrors?.length) {
         return withWaitContext(snapshot, "channel-errors", elapsedMs);
+      }
+      if (snapshot.readiness?.state === "failed") {
+        return withWaitContext(snapshot, "gateway-not-ready", elapsedMs);
       }
       if (snapshot.versionMismatch) {
         return withWaitContext(snapshot, "version-mismatch", elapsedMs);
