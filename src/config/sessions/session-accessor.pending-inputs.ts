@@ -36,7 +36,6 @@ import {
   type SessionPendingInput,
   type SessionPendingInputOwner,
   type SessionPendingInputPage,
-  type SessionPendingInputState,
 } from "./session-accessor.sqlite-pending-inputs.js";
 import {
   resolveSqliteSessionKey,
@@ -51,6 +50,7 @@ import {
 } from "./session-pending-input-authority.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import type { PendingInputCustodyGrant } from "./session-pending-input-operations.types.js";
+import type { SessionPendingInputReceipt } from "./session-pending-input-receipt.types.js";
 import { readPendingInputSource } from "./session-pending-input-source.js";
 import { preparePendingInputStore, type PendingInputScope } from "./session-pending-input-store.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
@@ -58,19 +58,8 @@ import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-
 
 export { withSessionPendingInputRelocation };
 export type { SessionPendingInput, SessionPendingInputPage };
-export type SessionPendingInputReceipt = {
-  state: "queued" | "consumed";
-  inputId: string;
-  message: PersistedUserTurnMessage;
-  run: <T>(operation: () => T) => T;
-  runAsync?: <T>(operation: () => T) => Promise<Awaited<T>>;
-  assertLifetimeCurrent?: () => void;
-  finish: (disposition: Exclude<SessionPendingInputState, "queued">) => void;
-  completion?: AgentRunTerminalOutcome;
-  complete?: (outcome: AgentRunTerminalOutcome) => AgentRunTerminalOutcome;
-  completeAsync?: (outcome: AgentRunTerminalOutcome) => Promise<AgentRunTerminalOutcome>;
-  settled?: () => Promise<void>;
-};
+export type { SessionPendingInputReceipt } from "./session-pending-input-receipt.types.js";
+
 const receiptOwners = new WeakMap<SessionPendingInputReceipt, SessionPendingInputOwner>();
 const withdrawnOwners = new WeakSet<SessionPendingInputOwner>();
 

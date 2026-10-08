@@ -1,4 +1,4 @@
-import type { SessionPendingInputReceipt } from "../config/sessions/session-accessor.pending-inputs.js";
+import type { SessionPendingInputReceipt } from "../config/sessions/session-pending-input-receipt.types.js";
 import type {
   PersistedUserTurnMessage,
   UserTurnTranscriptAdmissionReceipt,

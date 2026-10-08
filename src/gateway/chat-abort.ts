@@ -185,6 +185,12 @@ export function registerChatAbortController(params: {
   const queueDeadlineMs = resolveExpiresAtMsFromDurationMs(params.timeoutMs, { nowMs: rawNow });
   const controller = new AbortController();
   let queueTimer: ReturnType<typeof setTimeout> | undefined;
+  const isStopped = (entry: ChatAbortControllerEntry) =>
+    entry.registrationCleanupRequested ||
+    controller.signal.aborted ||
+    entry.abortStopReason !== undefined ||
+    entry.projectSessionTerminalPending === true ||
+    entry.projectSessionTerminalObservedAt !== undefined;
   const onAbort = () => {
     clearTimeout(queueTimer);
     notifyGatewayWorkMetricsChanged();
@@ -210,11 +216,7 @@ export function registerChatAbortController(params: {
       return false;
     }
     const entry = params.chatAbortControllers.get(params.runId);
-    if (
-      entry?.controller !== controller ||
-      entry.registrationCleanupRequested ||
-      controller.signal.aborted
-    ) {
+    if (entry?.controller !== controller || isStopped(entry)) {
       return false;
     }
     if (params.onQueueTimeout && !isFutureDateTimestampMs(queueDeadlineMs, { nowMs: Date.now() })) {
@@ -334,8 +336,8 @@ export function registerChatAbortController(params: {
     queueTimer = setTimeout(() => {
       if (
         params.chatAbortControllers.get(params.runId) === entry &&
-        !entry.executionStarted &&
-        !entry.registrationCleanupRequested
+        entry.executionStarted === false &&
+        !isStopped(entry)
       ) {
         params.onQueueTimeout?.(entry);
       }
