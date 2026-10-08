@@ -116,6 +116,10 @@ async function runModelRun(params: {
   });
   const hasExplicitProviderModelOverride = Boolean(explicitModelOverride);
   const imageFiles = await readModelRunImageFiles(params.files);
+  const inputs =
+    imageFiles.length > 0
+      ? { inputs: imageFiles.map(({ path, mimeType }) => ({ path, mimeType })) }
+      : {};
   const messageContent =
     imageFiles.length > 0
       ? [
@@ -201,14 +205,7 @@ async function runModelRun(params: {
               provider: prepared.selection.provider,
               model: prepared.selection.modelId,
               attempts: [],
-              ...(imageFiles.length > 0
-                ? {
-                    inputs: imageFiles.map((image) => ({
-                      path: image.path,
-                      mimeType: image.mimeType,
-                    })),
-                  }
-                : {}),
+              ...inputs,
               outputs: [
                 {
                   text,
@@ -289,14 +286,7 @@ async function runModelRun(params: {
       mediaUrl: payload.mediaUrl,
       mediaUrls: payload.mediaUrls,
     })),
-    ...(imageFiles.length > 0
-      ? {
-          inputs: imageFiles.map((image) => ({
-            path: image.path,
-            mimeType: image.mimeType,
-          })),
-        }
-      : {}),
+    ...inputs,
   } satisfies CapabilityEnvelope;
 }
 
