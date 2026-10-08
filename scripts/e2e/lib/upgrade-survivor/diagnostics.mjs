@@ -75,6 +75,7 @@ const logNames = [
   "install.log",
   "update.json",
   "update.err",
+  "update-interruption.log",
   "update-noop.json",
   "update-noop.err",
   ...siblingRefusalLogs,
@@ -1856,7 +1857,67 @@ function failedUpdateContext(text, label) {
   try {
     // Match the warning-prefixed updater JSON accepted by assertions.readUpdateJson.
     const result = JSON.parse(text.slice(text.indexOf("{")));
-    if (result?.status !== "error" || !Array.isArray(result.steps)) {
+    if (!Array.isArray(result?.steps)) {
+      return "";
+    }
+    if (["ok", "warning", "skipped"].includes(result.status)) {
+      const pick = (value, fields) =>
+        Object.fromEntries(
+          Object.entries(fields).flatMap(([key, type]) => {
+            const field = value?.[key];
+            return typeof field === type &&
+              (type !== "number" || Number.isFinite(field)) &&
+              (type !== "string" || Buffer.byteLength(field) <= 1024)
+              ? [[key, field]]
+              : [];
+          }),
+        );
+      return [
+        "Reported update completion before outer command failure (not process exit proof):",
+        JSON.stringify(
+          {
+            ...pick(result, {
+              status: "string",
+              mode: "string",
+              reason: "string",
+              durationMs: "number",
+            }),
+            after: pick(result.after, { version: "string", buildId: "string" }),
+            run: {
+              ...pick(result.run, {
+                status: "string",
+                phase: "string",
+                startedAtMs: "number",
+                confirmedAtMs: "number",
+                finishedAtMs: "number",
+              }),
+              verification: pick(result.run?.verification, {
+                runningVersion: "string",
+                runningBuildId: "string",
+                pid: "number",
+                port: "number",
+                serviceRunning: "boolean",
+                versionMatch: "boolean",
+                channelsReady: "boolean",
+                readyz: "boolean",
+                settled: "boolean",
+              }),
+            },
+            lastSteps: result.steps.slice(-8).map((step) =>
+              pick(step, {
+                name: "string",
+                exitCode: "number",
+                termination: "string",
+                durationMs: "number",
+              }),
+            ),
+          },
+          null,
+          2,
+        ),
+      ].join("\n");
+    }
+    if (result.status !== "error") {
       return "";
     }
     const index = result.steps.findIndex(
@@ -1964,7 +2025,7 @@ export function publishDiagnostics(
       omissions[label] = snapshot.omissions[label];
     }
   }
-  function sanitize(text, label) {
+  function sanitize(text, label, retainTail = false) {
     if (text === null || text === undefined) {
       return null;
     }
@@ -1981,6 +2042,7 @@ export function publishDiagnostics(
     }
     // Keep the latest startup/native events after redacting the whole input.
     const tail =
+      retainTail ||
       label === "missing-load-path/baseline-gateway.log" ||
       label === "native-assignment-messages.jsonl";
     const lines = redacted.split(/(?<=\n)/u);
@@ -2001,6 +2063,7 @@ export function publishDiagnostics(
   for (const name of logNames) {
     report.logs[name] = sanitize(snapshot.logs?.[name], name);
   }
+  report.logs["update.err.tail"] = sanitize(snapshot.logs?.["update.err"], "update.err.tail", true);
   for (const field of ["ExecStart", "WorkingDirectory", "supervisorWorkingDirectory"]) {
     report.service[field] = sanitize(snapshot.service?.[field], field);
   }
