@@ -394,11 +394,7 @@ describe("channel progress draft compositor", () => {
     { action: "react", status: "blocked", hidden: false },
     { action: "react", status: "unknown", hidden: false },
     { action: "send", status: "completed", hidden: false },
-  ] as const)("projects prepared message $action/$status without hiding real work", async ({
-    action,
-    status,
-    hidden,
-  }) => {
+  ] as const)("projects message $action/$status progress", async ({ action, status, hidden }) => {
     const { progress } = createProgress({ toolProgress: true }, { preparedItems: true });
     await progress.start();
     await progress.pushItemEvent(
