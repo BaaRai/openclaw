@@ -57,6 +57,8 @@ function resolveCodexHistoryWorkerUrl(): URL {
 
 const historyReads = new WorkerTaskPool<CodexHistoryWorkerInput, CodexHistoryWorkerResult>({
   workerUrl: resolveCodexHistoryWorkerUrl(),
+  workerClass: "reader",
+  // Published plugin supports older hosts that only understand numeric sizing.
   maxWorkers: 1,
 });
 
