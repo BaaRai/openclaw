@@ -101,6 +101,52 @@ describe("session transcript runtime SDK", () => {
     ).resolves.toMatchObject({ ok: false, code: "session-rebound" });
   });
 
+  it.each(["current", "superseded", "revoked"] as const)(
+    "preserves a logical transcript target for a %s admitted writer",
+    async (authority) => {
+      const scope = await createScope();
+      await upsertSessionEntryCore(scope, {
+        activeWriterRunId: authority === "superseded" ? "replacement-run" : "current-run",
+        lifecycleRevision: "revision-a",
+        sessionId: scope.sessionId,
+        updatedAt: 10,
+      });
+      const revoked = new Error("admitted run authority is no longer active");
+      const write = withOwnedSessionTranscriptWrites(
+        {
+          sessionTarget: {
+            ...scope,
+            expectedLifecycleRevision: "revision-a",
+            expectedWriterRunId: "current-run",
+          },
+          assertCommitAllowed: () => {
+            if (authority === "revoked") {
+              throw revoked;
+            }
+          },
+          withTranscriptWrite: async (run) => await run(),
+        },
+        () =>
+          appendAssistantMirrorMessageByIdentity({
+            ...scope,
+            idempotencyKey: "current-run:fallback",
+            text: "The completed tool run was not repeated.",
+          }),
+      );
+      if (authority === "current") {
+        await expect(write).resolves.toMatchObject({ ok: true, messageId: expect.any(String) });
+        expect(await entries(scope)).toHaveLength(1);
+      } else {
+        if (authority === "revoked") {
+          await expect(write).rejects.toBe(revoked);
+        } else {
+          await expect(write).rejects.toBeInstanceOf(SessionTranscriptWriterClaimReboundError);
+        }
+        expect(await entries(scope)).toHaveLength(0);
+      }
+    },
+  );
+
   it("does not append an assistant mirror after cancellation", async () => {
     const scope = await createScope();
     const cancellation = new Error("cancelled by user");

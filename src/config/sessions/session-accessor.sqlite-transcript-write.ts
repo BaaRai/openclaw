@@ -468,7 +468,8 @@ export async function withTranscriptWriteLock<T>(
     throw new Error("Transcript lock changed its physical store");
   }
   return withWorkerTranscriptWriteLock(
-    { ...fenced, ...captured, storePath: captured.path },
+    // Ownership keeps the logical target; captured.path binds the physical database.
+    { ...fenced, ...captured, storePath: fenced.storePath ?? captured.path },
     run,
     runNativeTranscriptWriteLock,
   );
