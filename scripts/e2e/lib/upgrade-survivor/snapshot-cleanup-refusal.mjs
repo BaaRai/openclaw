@@ -387,6 +387,23 @@ function installFault() {
   syncBuiltinESMExports();
 }
 
+export function writeSnapshotCleanupEvidence(artifacts) {
+  // Capture even when the candidate fault never ran; missing observations are
+  // diagnostic evidence, not a passed proof. The host redacts the projection.
+  const names = fs
+    .readdirSync(artifacts)
+    .filter((name) =>
+      /^snapshot-cleanup-(?:fixture|candidate|driver|doctor-\d+|attempts-\d+-\d+|copy-\d+-\d+)\.json$/u.test(
+        name,
+      ),
+    );
+  assert(names.length <= 128, "Snapshot evidence exceeds the diagnostic collection bound");
+  writeJson(
+    path.join(artifacts, "snapshot-cleanup-evidence.json"),
+    Object.fromEntries(names.map((name) => [name, readJson(path.join(artifacts, name))])),
+  );
+}
+
 export function assertSnapshotCleanupRefusal(artifacts, updateResult) {
   const fixture = readJson(path.join(artifacts, fixtureName));
   const driver = readJson(path.join(artifacts, "snapshot-cleanup-driver.json"));

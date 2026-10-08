@@ -92,9 +92,10 @@ function writeJson(name, value) {
 
 async function run(name, command, args, allowFailure = false) {
   const started = Date.now();
-  const diagnostic = name === "recorded-run" || name === "stop-service";
+  const diagnostic =
+    name === "recorded-run" || name === "stop-service" || name === "capture-diagnostics";
   const deadline = diagnostic ? cellDeadline - 5_000 : workDeadline;
-  const cap = name === "recorded-run" ? 20_000 : name === "stop-service" ? 5_000 : Infinity;
+  const cap = name === "stop-service" ? 5_000 : diagnostic ? 20_000 : Infinity;
   // Each managed command can spend another 5s terminating and 5s draining.
   const timeoutMs = Math.min(cap, deadline - started - (diagnostic ? 10_000 : 0));
   fs.writeFileSync(path.join(artifacts, "phase.txt"), `${name}\n`);
@@ -524,7 +525,17 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       assert(update, "Published update did not settle before the fault proof");
       const { assertSnapshotCleanupRefusal } = await import("./snapshot-cleanup-refusal.mjs");
       assertSnapshotCleanupRefusal(artifacts, update);
-      writeJson("summary", { driverVersion, candidate: build, scenario, status: "passed" });
+      writeJson("summary", {
+        baseline: { spec: `openclaw@${driverVersion}`, version: driverVersion },
+        candidate: { kind: "tarball", version: build.version },
+        scenario,
+        status: "passed",
+        installedVersion: readJson(path.join(packageRoot, "package.json")).version,
+        candidateInstallMode: "npm",
+        updateRestartMode: "manual",
+        updateOutcome: "expected-refusal",
+        phases: [{ phase: scenario, status: "passed", at: new Date().toISOString() }],
+      });
     } else {
       // Public status belongs after updater settlement and before fixture teardown.
       // A failed query is secondary to the original update outcome.
@@ -649,6 +660,21 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "--user",
         "stop",
         "openclaw-gateway.service",
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (snapshotCleanupRefusal && !failures.some(hasUnjoinedWork)) {
+    try {
+      const { writeSnapshotCleanupEvidence } = await import("./snapshot-cleanup-refusal.mjs");
+      writeSnapshotCleanupEvidence(artifacts);
+      await run("capture-diagnostics", process.execPath, [
+        fileURLToPath(new URL("./diagnostics.mjs", import.meta.url)),
+        "capture",
+        artifacts,
+        scenario,
+        String(failures.length ? failures[0].exitCode || 1 : 0),
       ]);
     } catch (error) {
       failures.push(error);

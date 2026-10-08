@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import sqlite, { DatabaseSync } from "node:sqlite";
-import { expectDefined } from "@openclaw/normalization-core";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it } from "vitest";
+import { publishDiagnostics } from "../../scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 import {
   assertSnapshotCleanupRefusal,
   observeSnapshotNativeBackups,
+  writeSnapshotCleanupEvidence,
 } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-refusal.mjs";
+import { redactSensitiveText } from "../../src/logging/redact.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -666,3 +669,72 @@ describe("snapshot cleanup refusal evidence", () => {
     },
   );
 });
+
+// Exercise the existing private capture -> host-redaction publication boundary.
+it.each(["failed", "timeout", "passed"] as const)(
+  "publishes snapshot-cell diagnostics after %s",
+  (outcome) => {
+    const root = tempDirs.make("snapshot-proof-artifacts-");
+    const artifacts = join(root, "artifacts");
+    mkdirSync(artifacts);
+    const state = join(root, "state");
+    mkdirSync(state);
+    const write = (name: string, value: unknown) =>
+      writeFileSync(join(artifacts, name), JSON.stringify(value));
+    write("snapshot-cleanup-driver.json", { identity: { commit: "a".repeat(40) } });
+    write("snapshot-cleanup-candidate.json", { sha256: "b".repeat(64) });
+    write("snapshot-cleanup-candidate-identity.json", { privatePackageInventory: true });
+    writeSnapshotCleanupEvidence(artifacts);
+    write("update.stdout", { status: "error", reason: "fixture failure before fault" });
+    writeFileSync(join(artifacts, "update.stderr"), "Authorization: Bearer snapshot-fixture-token");
+    write("summary.json", {
+      status: "passed",
+      baseline: { spec: "openclaw@2026.9.7", version: "2026.9.7" },
+      candidate: { kind: "tarball", version: "2026.9.8" },
+      scenario: "snapshot-cleanup-refusal",
+      installedVersion: "2026.9.7",
+      candidateInstallMode: "npm",
+      updateRestartMode: "manual",
+      updateOutcome: "expected-refusal",
+      phases: [],
+    });
+    const capture = spawnSync(
+      process.execPath,
+      [
+        resolve("scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"),
+        "capture",
+        artifacts,
+        "snapshot-cleanup-refusal",
+        outcome === "passed" ? "0" : outcome === "timeout" ? "124" : "1",
+      ],
+      {
+        env: { ...process.env, HOME: root, OPENCLAW_STATE_DIR: state },
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+    expect(capture.status, capture.stderr).toBe(0);
+    const published = join(root, "published");
+    publishDiagnostics(
+      artifacts,
+      published,
+      redactSensitiveText,
+      outcome === "passed" ? "passed" : "failed",
+    );
+    const text = readFileSync(
+      join(published, outcome === "passed" ? "summary.json" : "failure.json"),
+      "utf8",
+    );
+    const report = JSON.parse(text);
+    if (outcome !== "passed") {
+      expect(report.exitStatus).toBe(outcome === "timeout" ? 124 : 1);
+    }
+    expect(JSON.parse(report.logs["update.stdout"]).reason).toBe("fixture failure before fault");
+    expect(JSON.parse(report.logs["snapshot-cleanup-evidence.json"])).toEqual({
+      "snapshot-cleanup-candidate.json": { sha256: "b".repeat(64) },
+      "snapshot-cleanup-driver.json": { identity: { commit: "a".repeat(40) } },
+    });
+    expect(text).not.toContain("snapshot-fixture-token");
+    expect(text).not.toContain("privatePackageInventory");
+  },
+);
