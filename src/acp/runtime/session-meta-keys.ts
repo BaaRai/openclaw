@@ -200,8 +200,8 @@ export function resolveReadableAcpSessionRow(params: {
   return row && acpSessionRowMatchesEntry(row, entry) ? row : undefined;
 }
 
-export function upsertAcpSessionMetaRow(db: DatabaseSync, row: Insertable<AcpSessionsTable>): void {
-  executeSqliteQuerySync(
+export function upsertAcpSessionMetaRow(db: DatabaseSync, row: Insertable<AcpSessionsTable>) {
+  return executeSqliteQueryTakeFirstSync(
     db,
     getAcpSessionKysely(db)
       .insertInto("acp_sessions")
@@ -221,6 +221,7 @@ export function upsertAcpSessionMetaRow(db: DatabaseSync, row: Insertable<AcpSes
           last_error: (eb) => eb.ref("excluded.last_error"),
           updated_at: (eb) => eb.ref("excluded.updated_at"),
         }),
-      ),
+      )
+      .returningAll(),
   );
 }

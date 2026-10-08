@@ -10,8 +10,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { tryPrepareFreshManagerRuntimeSession } from "../acp/control-plane/manager.runtime-resume-state.js";
 import { getAcpRuntimeBackend } from "../acp/runtime/registry.js";
-import { buildAcpDatabaseSessionKey } from "../acp/runtime/session-meta-keys.js";
-import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
+import { rebindDurableAcpSessionMetaAfterReset } from "../acp/runtime/session-meta-reset.js";
 import { retireSessionMcpRuntime } from "../agents/agent-bundle-mcp-tools.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { clearFinishedSessionsForScopes } from "../agents/bash-process-registry.js";
@@ -1260,7 +1259,7 @@ export async function performGatewaySessionReset(params: {
           }
           return nextEntry;
         },
-        afterEntryMutation: async (mutation) => {
+        afterEntryMutation: async (mutation, committedSource) => {
           if (resetSkipped) {
             return;
           }
@@ -1355,19 +1354,18 @@ export async function performGatewaySessionReset(params: {
             });
           }
           if (deferredAcpResetState) {
-            const resetState = {
-              sessionKey: target.canonicalKey,
-              meta: buildPendingAcpMeta(deferredAcpResetState.meta, Date.now()),
-            };
+            const meta = buildPendingAcpMeta(deferredAcpResetState.meta, Date.now());
             // Bind the captured ACP shell to the committed canonical entry, including
             // fallback/legacy metadata. Never recreate a consumed alias.
-            writeAcpSessionMetaForMigration({
-              sessionKey: buildAcpDatabaseSessionKey(target.canonicalKey, agentId),
-              sessionId: mutation.nextEntry.sessionId,
-              lifecycleRevision: mutation.nextEntry.lifecycleRevision,
-              meta: resetState.meta,
+            await rebindDurableAcpSessionMetaAfterReset({
+              sessionKey: target.canonicalKey,
+              agentId,
+              context: committedSource,
+              entry: mutation.nextEntry,
+              meta,
+              assertCurrent: assertCompletionAuthorized,
             });
-            committedAcpResetState = resetState;
+            committedAcpResetState = { sessionKey: target.canonicalKey, meta };
           }
           params.onCommitted?.({
             key: target.canonicalKey,

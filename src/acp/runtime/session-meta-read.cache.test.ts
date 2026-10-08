@@ -1,8 +1,12 @@
 import path from "node:path";
 import { type DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
-import { observeSqliteReadSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeSqliteReadSql,
+  trackSqliteStatementExecutions,
+} from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import type { SessionAcpMeta } from "../../config/sessions/types.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { admitSqliteSchema, runSqliteReadOperationSync } from "../../infra/sqlite-schema-facts.js";
 import { extractSqliteTableSchema } from "../../infra/sqlite-schema-sql.js";
@@ -14,7 +18,7 @@ import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js"
 import { buildAcpDatabaseSessionKey, upsertAcpSessionMetaRow } from "./session-meta-keys.js";
 import type { AcpSessionReadCommand } from "./session-meta-read.types.js";
 import { readAcpSessionCommand } from "./session-meta-read.worker.js";
-import { bindAcpSessionMeta } from "./session-meta-write.kernel.js";
+import { applyAcpSessionMutation, bindAcpSessionMeta } from "./session-meta-write.kernel.js";
 
 const databases: DatabaseSync[] = [];
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -149,4 +153,62 @@ it("invalidates admitted ACP rows after local native writes and reader retiremen
   closeRetainedOpenClawStateReadConnections();
   writer.prepare("UPDATE acp_sessions SET runtime_session_name = 'reopened'").run();
   expect(read().rows[0]).toMatchObject({ runtime_session_name: "reopened" });
+});
+
+it("publishes decoded set and clear postimages without rereading metadata after either write", () => {
+  const { writer, read } = fixture();
+  const input = {
+    agentId: "main",
+    storageSessionKey: "agent:main:acp:cache",
+    sessionKey: "agent:main:acp:cache",
+    entry: { sessionId: "session", lifecycleRevision: "generation", updatedAt: 200 },
+  };
+  const meta: SessionAcpMeta = {
+    backend: "fixture",
+    agent: "main",
+    runtimeSessionName: "returned-row",
+    mode: "persistent",
+    state: "error",
+    lastActivityAt: 200,
+    identity: {
+      state: "resolved",
+      source: "status",
+      agentSessionId: "synthetic-agent-session",
+      lastUpdatedAt: 200,
+    },
+    cwd: "/synthetic/workspace",
+    runtimeOptions: { model: "fixture-model" },
+    lastError: "synthetic error",
+  };
+  const counter = trackSqliteStatementExecutions(writer, ["read", "write"], (sql) => {
+    if (!/\bacp_sessions\b/iu.test(sql)) {
+      return null;
+    }
+    return /^select\b/iu.test(sql) ? "read" : "write";
+  });
+  try {
+    expect(applyAcpSessionMutation(writer, { ...input, decision: { kind: "set", meta } })).toEqual({
+      kind: "acp",
+      sessionId: "session",
+      lifecycleRevision: "generation",
+      sessionStartedAt: undefined,
+      acp: meta,
+    });
+    expect(read().rows[0]).toMatchObject({
+      runtime_session_name: "returned-row",
+      runtime_options_json: JSON.stringify(meta.runtimeOptions),
+      last_error: meta.lastError,
+    });
+    expect(applyAcpSessionMutation(writer, { ...input, decision: { kind: "clear" } })).toEqual({
+      kind: "acp",
+      sessionId: "session",
+      lifecycleRevision: "generation",
+      sessionStartedAt: undefined,
+      acp: null,
+    });
+    expect(counter.counts).toEqual({ read: 0, write: 2 });
+    expect(read().rows).toEqual([null]);
+  } finally {
+    counter.restore();
+  }
 });
