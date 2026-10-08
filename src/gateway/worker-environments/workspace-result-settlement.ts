@@ -29,6 +29,7 @@ export function createWorkspaceResultJournal(params: {
   >;
   turnClaim: WorkerSessionTurnClaim;
   assertCurrent?: () => void;
+  assertCommitCurrent?: () => void;
   current?: PlacementTurnClaimCurrentCheck;
 }) {
   const owner = {
@@ -47,7 +48,7 @@ export function createWorkspaceResultJournal(params: {
         return params.placements.beginWorkspaceReconciliation(owner, next, params.assertCurrent);
       },
       commit: async (manifestRef: string) => {
-        params.assertCurrent?.();
+        (params.assertCommitCurrent ?? params.assertCurrent)?.();
         await params.placements.updateWorkspaceBaseManifest(
           { claim: params.turnClaim, manifestRef },
           params.assertCurrent,

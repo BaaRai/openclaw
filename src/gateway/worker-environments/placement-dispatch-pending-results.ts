@@ -28,6 +28,7 @@ import type { WorkerWorkspaceResultConflict } from "./workspace-conflicts.js";
 import { verifyReconciledWorkspaceFinal } from "./workspace-finalize.js";
 import { recoverWorkerWorkspaceReconciliation } from "./workspace-reconcile.js";
 import {
+  createWorkspaceResultJournal,
   finalizeWorkspaceResultConflicts,
   settleStagedWorkspaceResult,
 } from "./workspace-result-settlement.js";
@@ -437,36 +438,14 @@ export async function recoverPendingWorkspaceResults(
               }
               return;
             }
-            const owner = {
-              sessionId: active.sessionId,
-              environmentId: active.environmentId,
-              ownerEpoch: active.activeOwnerEpoch,
-              placementGeneration: pending.placementGeneration,
-            };
-            const journal = {
-              load: () =>
-                placements.loadWorkspaceReconciliation(owner, undefined, recovery.assertCurrent),
-              begin: (next: Parameters<typeof placements.beginWorkspaceReconciliation>[1]) => {
-                recovery.assertCurrent();
-                return placements.beginWorkspaceReconciliation(owner, next, recovery.assertCurrent);
-              },
-              commit: async (manifestRef: string) => {
-                assertPreservedEnvironment();
-                await placements.updateWorkspaceBaseManifest(
-                  { claim: turnClaim, manifestRef },
-                  recovery.assertCurrent,
-                  currentCheck,
-                );
-              },
-              abort: () => {
-                recovery.assertCurrent();
-                return placements.abortWorkspaceReconciliation(
-                  owner,
-                  undefined,
-                  recovery.assertCurrent,
-                );
-              },
-            };
+            const { adapter: journal } = createWorkspaceResultJournal({
+              placement: { ...active, generation: pending.placementGeneration },
+              placements,
+              turnClaim,
+              assertCurrent: recovery.assertCurrent,
+              assertCommitCurrent: assertPreservedEnvironment,
+              current: currentCheck,
+            });
             if (stagedResultRef) {
               let ownedStagedResultRef = stagedResultRef;
               // A staged result must never be destroyed by environment lifecycle.
