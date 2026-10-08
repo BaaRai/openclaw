@@ -1,9 +1,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import sqlite, { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  assertSnapshotCleanupRefusal,
+  observeSnapshotNativeBackups,
+} from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-refusal.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -574,4 +579,90 @@ describe("published upgrade survivor consent recovery", () => {
     mutate(result);
     expect(check(result).status).not.toBe(0);
   });
+});
+
+// These are validator counterexamples, not substitutes for the native Docker cell.
+describe("snapshot cleanup refusal evidence", () => {
+  it.each([
+    { fault: "other process retry", receipt: "102-0", error: "Candidate reacquired" },
+    { fault: "native backup retry", receipt: "103-0", native: true, error: "Candidate reacquired" },
+    { fault: "other thread retry", receipt: "101-1", error: "Candidate reacquired" },
+    { fault: "successful exit", exitCode: 0, error: "Updater swallowed" },
+    { fault: "successful result", status: "ok", error: "failed result" },
+    { fault: "unverified payload", payload: false, error: "false !== true" },
+  ])(
+    "rejects $fault despite refusal text",
+    async ({ receipt, native = false, exitCode = 1, status = "error", payload = true, error }) => {
+      const artifacts = tempDirs.make("snapshot-refusal-evidence-");
+      const write = (name: string, value: unknown) =>
+        writeFileSync(join(artifacts, name), JSON.stringify(value));
+      const candidateCommit = "a".repeat(40);
+      const baseline = { commit: "b".repeat(40) };
+      const payloadSha256 = createHash("sha256").update("{}").digest("hex");
+      const identity = { commit: candidateCommit, payloadSha256 };
+      const staging = join(artifacts, "failed-copy");
+      write("snapshot-cleanup-fixture.json", {
+        candidateCommit,
+        baseline,
+        source: join(artifacts, "source.sqlite"),
+      });
+      write("snapshot-cleanup-driver.json", { identity: baseline });
+      write("snapshot-cleanup-candidate-identity.json", {});
+      write("snapshot-cleanup-copy-101-0.json", {
+        identity,
+        doctor: { identity, updateInProgress: true, fullPayloadVerified: payload },
+        staging,
+        cleanupDenials: 1,
+        terminalRefusal: true,
+        sourcePreservedAtRefusal: true,
+        unpublishedAtRefusal: true,
+        cleanupOwnerObserved: true,
+        removed: true,
+      });
+      write("snapshot-cleanup-attempts-101-0.json", { identity, directories: [staging] });
+      if (receipt) {
+        const record = (directory: string) =>
+          write("snapshot-cleanup-attempts-" + receipt + ".json", {
+            identity,
+            directories: [directory],
+          });
+        const retried = join(artifacts, "retried-copy");
+        if (native) {
+          mkdirSync(retried);
+          const sourcePath = join(artifacts, "source.sqlite");
+          const source = new DatabaseSync(sourcePath);
+          const restore = observeSnapshotNativeBackups(sourcePath, record);
+          try {
+            source.exec(
+              "CREATE TABLE snapshot_cleanup_witness(value); INSERT INTO snapshot_cleanup_witness VALUES(1)",
+            );
+            const destination = join(retried, "copy.sqlite");
+            expect(await sqlite.backup(source, destination)).toBeGreaterThan(0);
+            const copy = new DatabaseSync(destination, { readOnly: true });
+            try {
+              expect(copy.prepare("SELECT value FROM snapshot_cleanup_witness").get()?.value).toBe(
+                1,
+              );
+            } finally {
+              copy.close();
+            }
+          } finally {
+            restore();
+            source.close();
+          }
+        } else {
+          record(retried);
+        }
+      }
+      write("update.stdout", {
+        status,
+        reason: "SQLite artifact-preserving copy and cleanup failed",
+      });
+      writeFileSync(join(artifacts, "update.stderr"), "");
+      expect(() => assertSnapshotCleanupRefusal(artifacts, { exitCode, signal: null })).toThrow(
+        error,
+      );
+      expect(existsSync(join(artifacts, "snapshot-cleanup-proof.json"))).toBe(false);
+    },
+  );
 });
