@@ -164,7 +164,9 @@ owner, so callbacks from the closed Gateway cannot settle the recovered wake.
 - **The requester that already knows is not woken.** A Stop, reset, or deletion
   of the parent itself retires its children without a report. So does a kill
   that lands while the parent's own turn still holds the child. Descendants of a
-  stopped child are retired without a report to that child.
+  stopped child are retired without a report to that child. The registry does not
+  record who issued a Stop, so a user Stop of a child while its parent's turn still
+  holds it is not reported to that turn either.
 - **Recorded once.** A delivery outcome, including a transport failure, is
   recorded once and never retried. A required completion has no expiry: it
   waits until the requester runs it, or until the requester session is reset or
