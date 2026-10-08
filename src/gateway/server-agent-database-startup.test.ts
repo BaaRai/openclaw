@@ -38,7 +38,10 @@ import {
   listAgentDatabaseAdmissionRefusals,
   readAgentDatabaseAdmissionRefusal,
 } from "../state/agent-database-admission.js";
-import { withAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
+import {
+  type getAgentDatabaseStartupAdmission,
+  withAgentDatabaseStartupAdmission,
+} from "../state/agent-database-startup.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
@@ -355,6 +358,7 @@ it.for([
       );
     }
     let server: Awaited<ReturnType<typeof startTestGatewayServer>> | undefined;
+    let startupAdmission: ReturnType<typeof getAgentDatabaseStartupAdmission>;
     let suppliedBroker: Awaited<ReturnType<typeof spawnBroker.startGatewaySpawnBroker>>;
     let unadoptedPortClaim: TestPortClaim | undefined;
     try {
@@ -376,6 +380,7 @@ it.for([
       unadoptedPortClaim = portClaim;
       const port = portClaim.port;
       const startup = withAgentDatabaseStartupAdmission(async (admission) => {
+        startupAdmission = admission;
         if (outcome === "shutdown-preparation") {
           admission.signal.addEventListener(
             "abort",
@@ -434,12 +439,14 @@ it.for([
       }
       expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
       if (outcome === "corrupt") {
-        await vi.waitFor(() =>
-          expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
-            code: "agent-database-inspection-failed",
-            repairHint: expect.stringContaining("doctor --fix"),
-          }),
-        );
+        if (!startupAdmission) {
+          throw new Error("Expected captured agent database startup admission");
+        }
+        await startupAdmission.waitForAgentPreparation(agentId, { env, signal });
+        expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
+          code: "agent-database-inspection-failed",
+          repairHint: expect.stringContaining("doctor --fix"),
+        });
         expect(() => openOpenClawAgentDatabase(scope)).toThrow(AgentDatabaseAdmissionError);
         expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(
           agentId === "main" ? 503 : 200,
