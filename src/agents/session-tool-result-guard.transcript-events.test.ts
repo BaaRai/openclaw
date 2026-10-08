@@ -18,7 +18,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { applyAssistantDeliveryDirectives } from "../config/sessions/transcript-assistant-delivery.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
-import { projectInFlightRunSnapshot } from "../gateway/chat-abort.js";
+import { projectInFlightRunSnapshot } from "../gateway/chat-inflight-snapshot.js";
 import { createAgentEventTestHarness } from "../gateway/server-chat.agent-events.test-harness.js";
 import { subscribeAgentEvents } from "../gateway/server-chat.agent-events.test-helpers.js";
 import type { AgentEventRuntimePayload } from "../infra/agent-events.js";

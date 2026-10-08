@@ -6,8 +6,8 @@ import {
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { AgentAssistantSourceReceipt } from "../infra/agent-events.js";
 import * as codeRegions from "../shared/text/code-regions.js";
-import { projectInFlightRunSnapshot } from "./chat-abort.js";
 import { sanitizeChatHistoryMessage } from "./chat-display-projection.sanitize.js";
+import { projectInFlightRunSnapshot } from "./chat-inflight-snapshot.js";
 import { SUPPRESSED_CONTROL_REPLY_TOKENS } from "./control-reply-text.js";
 import { capLiveAssistantText } from "./live-chat-projector.js";
 import { createChatRunState } from "./server-chat-state.js";

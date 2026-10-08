@@ -1,6 +1,5 @@
 import type { AgentPlanStep } from "../channels/streaming.js";
 import type { AgentEventPayload, AgentAssistantSourceReceipt } from "../infra/agent-events.js";
-import type { AssistantTextSnapshot } from "./agent-event-assistant-text.js";
 import type { ChatCanvasBlock } from "./chat-display-projection.canvas.js";
 import {
   createLiveAssistantTextProjection,
@@ -87,39 +86,20 @@ type PendingLiveTextFlush = {
   flush: () => void;
 };
 
-type LiveDisplayState = {
-  projector: ReturnType<typeof createLiveAssistantTextProjection>;
-  current: ReturnType<ReturnType<typeof createLiveAssistantTextProjection>["replace"]>;
-  pendingRawDelta?: string | null;
-  reset?: boolean;
-  unsentDelta: string | null;
-  sentText?: string;
-};
+type LiveDisplayState = NonNullable<assistantText.ChatRunBufferState["display"]>;
 
-export type ChatRunRecord = {
+export type ChatRunRecord = assistantText.ChatRunBufferState & {
   lastActivityAt: number;
   registrations?: ChatRunEntry[];
-  rawBuffer?: string;
-  rawOffset?: number;
-  /** Positions are absolute; null ends retain identity facts after a source replacement. */
-  assistantItems?: Map<
-    string | symbol | undefined,
-    { itemId?: string; committed?: true; start?: number; end?: number | null; scope?: number }
-  >;
   buffer?: string;
   bufferIsCurrent?: () => boolean;
   /** Retire queued connection snapshots when this buffering generation is cleared. */
   liveTextGroup?: AbortController;
   liveTextEpoch?: object;
-  display?: LiveDisplayState;
   planSnapshot?: ChatRunPlanSnapshot;
   progressSnapshot?: ChatRunProgressSnapshot;
   canvasBlocks?: ChatCanvasBlock[];
   deltaSentAt?: number;
-  assistantScope?: AssistantTextSnapshot["scope"];
-  assistantScopeOffset?: number;
-  assistantOccurrenceId?: string;
-  managedMediaUrls?: Set<string>;
   agentText?: Partial<
     Record<"assistant" | "thinking" | "preamble" | "answer_candidate", ChatRunAgentTextState>
   >;

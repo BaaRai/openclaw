@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectInFlightRunSnapshot } from "../../../../src/gateway/chat-abort.js";
+import { projectInFlightRunSnapshot } from "../../../../src/gateway/chat-inflight-snapshot.js";
 import { createChatRunState } from "../../../../src/gateway/server-chat-state.js";
 import { extractText } from "../../lib/chat/message-extract.ts";
 import { isHiddenAssistantStreamText } from "../../lib/chat/message-visibility.ts";

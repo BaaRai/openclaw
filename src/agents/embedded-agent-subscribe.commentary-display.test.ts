@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { projectInFlightRunSnapshot } from "../gateway/chat-abort.js";
+import { projectInFlightRunSnapshot } from "../gateway/chat-inflight-snapshot.js";
 import { createAgentEventTestHarness } from "../gateway/server-chat.agent-events.test-harness.js";
 import { subscribeAgentEvents } from "../gateway/server-chat.agent-events.test-helpers.js";
 import { createSubscribedSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";

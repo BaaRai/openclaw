@@ -13,11 +13,8 @@ import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events
 import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { createAssistantTextStream } from "./agent-event-assistant-text.js";
-import {
-  abortChatRunById,
-  projectInFlightRunSnapshot,
-  registerChatAbortController,
-} from "./chat-abort.js";
+import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
+import { projectInFlightRunSnapshot } from "./chat-inflight-snapshot.js";
 import { capLiveAssistantText } from "./live-chat-projector.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import {

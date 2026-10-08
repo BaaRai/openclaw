@@ -1360,36 +1360,6 @@ export function createAgentEventHandler({
         });
       }
     }
-    if ((isControlUiVisible || hasSessionMessageSubscribers) && sessionKey) {
-      const assistantLiveChatInput = evt.assistantProjection
-        ? resolveAssistantTextInput({ ...evt.data, ...evt.assistantProjection })
-        : evt.stream === "assistant"
-          ? resolveAssistantTextInput(evt.data)
-          : undefined;
-      const suppressAssistant = shouldSuppressAssistantEventForLiveChat(evt.data);
-      if (
-        !isAborted &&
-        assistantLiveChatInput &&
-        (!suppressAssistant || assistantLiveChatInput.itemId)
-      ) {
-        emitChatDelta(
-          sessionKey,
-          sessionAgentId,
-          clientRunId,
-          evt.runId,
-          evt.seq,
-          suppressAssistant
-            ? { ...assistantLiveChatInput, text: "", delta: "" }
-            : assistantLiveChatInput,
-          evt.assistantSource,
-          {
-            controlUiVisible: isControlUiVisible,
-            isCurrent,
-            isHeartbeat: heartbeatPolicy,
-          },
-        );
-      }
-    }
     if (isToolEvent) {
       const toolPhase = typeof evt.data?.phase === "string" ? evt.data.phase : "";
       if (toolPhase === "start") {
@@ -1576,6 +1546,35 @@ export function createAgentEventHandler({
       // WS clients already received the event above via broadcastToConnIds.
       if (isControlUiVisible && isToolEvent && !suppressHeartbeatToolEvents) {
         sendNodeToolPayload(evt, sessionKey, sessionAgentId, agentPayload);
+      }
+      // Dual subscribers must receive canonical assistant text before its derived chat projection.
+      const assistantLiveChatInput = evt.assistantProjection
+        ? resolveAssistantTextInput({ ...evt.data, ...evt.assistantProjection })
+        : evt.stream === "assistant"
+          ? resolveAssistantTextInput(evt.data)
+          : undefined;
+      const suppressAssistant = shouldSuppressAssistantEventForLiveChat(evt.data);
+      if (
+        !isAborted &&
+        assistantLiveChatInput &&
+        (!suppressAssistant || assistantLiveChatInput.itemId)
+      ) {
+        emitChatDelta(
+          sessionKey,
+          sessionAgentId,
+          clientRunId,
+          evt.runId,
+          evt.seq,
+          suppressAssistant
+            ? { ...assistantLiveChatInput, text: "", delta: "" }
+            : assistantLiveChatInput,
+          evt.assistantSource,
+          {
+            controlUiVisible: isControlUiVisible,
+            isCurrent,
+            isHeartbeat: heartbeatPolicy,
+          },
+        );
       }
     }
 

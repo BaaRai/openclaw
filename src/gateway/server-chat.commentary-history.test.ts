@@ -14,7 +14,7 @@ import { applySessionMessagePayload } from "../../ui/src/pages/chat/session-mess
 import { handleAgentEvent } from "../../ui/src/pages/chat/tool-stream.ts";
 import { createSubscribedSessionHarness } from "../agents/embedded-agent-subscribe.e2e-harness.js";
 import { emitAgentEvent, type AgentEventPayload } from "../infra/agent-events.js";
-import { projectInFlightRunSnapshot } from "./chat-abort.js";
+import { projectInFlightRunSnapshot } from "./chat-inflight-snapshot.js";
 import {
   createAgentEventTestHarness,
   widgetResult,

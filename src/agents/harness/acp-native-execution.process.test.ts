@@ -14,7 +14,7 @@ import {
   buildKnownAgentRunFailureReplyPayload,
 } from "../../auto-reply/reply/agent-runner-failure-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { projectInFlightRunSnapshot } from "../../gateway/chat-abort.js";
+import { projectInFlightRunSnapshot } from "../../gateway/chat-inflight-snapshot.js";
 import { createAgentEventTestHarness } from "../../gateway/server-chat.agent-events.test-harness.js";
 import { subscribeAgentEvents } from "../../gateway/server-chat.agent-events.test-helpers.js";
 import type { AgentEventPayload } from "../../infra/agent-events.js";

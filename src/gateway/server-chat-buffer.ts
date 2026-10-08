@@ -1,8 +1,32 @@
 import { randomUUID } from "node:crypto";
 import type { AgentAssistantSourceReceipt } from "../infra/agent-events.js";
-import { mergeAssistantText } from "./agent-event-assistant-text.js";
-import { capLiveAssistantText } from "./live-chat-projector.js";
-import type { ChatRunRecord } from "./server-chat-state.js";
+import { mergeAssistantText, type AssistantTextSnapshot } from "./agent-event-assistant-text.js";
+import {
+  capLiveAssistantText,
+  type createLiveAssistantTextProjection,
+} from "./live-chat-projector.js";
+
+export type ChatRunBufferState = {
+  rawBuffer?: string;
+  rawOffset?: number;
+  /** Positions are absolute; null ends retain identity facts after a source replacement. */
+  assistantItems?: Map<
+    string | symbol | undefined,
+    { itemId?: string; committed?: true; start?: number; end?: number | null; scope?: number }
+  >;
+  assistantScope?: AssistantTextSnapshot["scope"];
+  assistantScopeOffset?: number;
+  assistantOccurrenceId?: string;
+  managedMediaUrls?: Set<string>;
+  display?: {
+    projector: ReturnType<typeof createLiveAssistantTextProjection>;
+    current: ReturnType<ReturnType<typeof createLiveAssistantTextProjection>["replace"]>;
+    pendingRawDelta?: string | null;
+    reset?: boolean;
+    unsentDelta: string | null;
+    sentText?: string;
+  };
+};
 
 type BufferInput = Parameters<typeof mergeAssistantText>[1];
 
@@ -11,7 +35,7 @@ const invalidateRange = (item: { start?: number; end?: number | null }) => {
   item.end = null;
 };
 
-export const bufferVisibleText = (record: ChatRunRecord) => {
+export const bufferVisibleText = (record: ChatRunBufferState) => {
   const text = record.rawBuffer ?? "";
   const offset = record.rawOffset ?? 0;
   const items = [...(record.assistantItems?.values() ?? [])]
@@ -57,7 +81,7 @@ export const bufferVisibleText = (record: ChatRunRecord) => {
 };
 
 export const updateBuffer = (
-  record: ChatRunRecord,
+  record: ChatRunBufferState,
   incoming: BufferInput,
   source?: AgentAssistantSourceReceipt,
 ) => {
@@ -242,7 +266,7 @@ export const updateBuffer = (
   return text;
 };
 
-export const retireBuffer = (record: ChatRunRecord, itemIds: readonly string[]) => {
+export const retireBuffer = (record: ChatRunBufferState, itemIds: readonly string[]) => {
   const items = (record.assistantItems ??= new Map());
   let changed = false;
   for (const itemId of itemIds) {
@@ -263,7 +287,7 @@ export const retireBuffer = (record: ChatRunRecord, itemIds: readonly string[]) 
 };
 
 export const retireSource = (
-  record: ChatRunRecord | undefined,
+  record: ChatRunBufferState | undefined,
   source: AgentAssistantSourceReceipt,
 ) => {
   if (!record || source.committedMessageSeq === undefined) {
