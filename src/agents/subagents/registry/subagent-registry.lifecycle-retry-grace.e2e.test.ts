@@ -20,6 +20,7 @@ import { testing as subagentAnnounceOutputTesting } from "../announce/subagent-a
 import { announceTesting as subagentAnnounceTesting } from "../announce/subagent-announce-overrides.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
+import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
 import {
   settleYieldedCliTurn,
   type LifecycleData,
@@ -31,6 +32,7 @@ import {
   createLifecycleWaits,
 } from "./subagent-registry.lifecycle-waits.test-support.js";
 import * as mod from "./subagent-registry.test-helpers.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const noop = () => {};
 const MAIN_REQUESTER_SESSION_KEY = "agent:main:main";
@@ -755,18 +757,28 @@ describe("subagent registry lifecycle error grace", () => {
         .find((candidate) => candidate.runId === "run-aborted")?.execution.status,
     ).toBe("running");
 
-    await vi.advanceTimersByTimeAsync(15_000);
-    await flushAsync();
-    await agentCallWaits.settle();
+    // The confirmed kill retires its row, so read its outcome from the last published row.
+    let lastPublished: SubagentRunRecord | undefined;
+    const stopRecording = subscribeSubagentRunChanges("projection", () => {
+      lastPublished = structuredClone(mod.getSubagentRunByRunId("run-aborted")) ?? lastPublished;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(15_000);
+      await flushAsync();
+      await agentCallWaits.settle();
+    } finally {
+      stopRecording();
+    }
 
-    const run = mod
-      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
-      .find((candidate) => candidate.runId === "run-aborted");
-    expect(run).toMatchObject({
+    expect(lastPublished).toMatchObject({
       endedReason: "subagent-killed",
       execution: { outcome: { status: "error", error: "subagent run terminated" } },
     });
-    expect(getAgentCalls()).toHaveLength(0);
+    // The requester did not issue this kill, so it hears the stopped outcome exactly once.
+    expect(getAgentCalls()).toHaveLength(1);
+    expect(JSON.stringify(getAgentCalls()[0]?.params)).toContain(
+      "ended without a result: 1 stopped, killed, or deleted before finishing",
+    );
   });
 
   it("announces a provider hard timeout from its canonical lifecycle metadata", async () => {
