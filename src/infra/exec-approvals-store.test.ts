@@ -11,6 +11,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import { sha256Hex } from "./crypto-digest.js";
@@ -33,6 +34,7 @@ import {
   loadExecApprovals,
   loadExecApprovalsReadOnly,
   loadExecApprovalsReadOnlyAsync,
+  prepareExecApprovalsCurrentRead,
   readExecApprovalsSnapshot,
   restoreExecApprovalsSnapshotLocked,
   updateExecApprovals,
@@ -663,6 +665,8 @@ describe("exec approvals SQLite store", () => {
         allowlistSatisfied: true,
       },
     };
+    // Admit the final reader before checking the warmed write path for caller SQL.
+    prepareExecApprovalsCurrentRead(captureOpenClawStateWorkerContext());
     const sql = observeMainThreadSql();
     try {
       const [before, denied, after] = await Promise.allSettled([
