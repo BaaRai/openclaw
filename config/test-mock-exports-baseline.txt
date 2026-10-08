@@ -4546,7 +4546,6 @@
 ["src/cli/daemon-cli/start-repair.test.ts","../../runtime.js","b8f69008190e572fb4037c8bf25cc0d6ad36927c9f61f5bac6f842479376301a",1]
 ["src/cli/daemon-cli/status.gather.test.ts","../../config/config.js","0df31c190dc5ba19f7b7edde235c57b6c0fd43f0be87a6f1ef2f0ba96fc72d18",1]
 ["src/cli/daemon-cli/status.gather.test.ts","../../config/io.runtime.js","d41db266919e93717cf2b105c91a18cfd4789740eda9fa71afae904049093d8b",1]
-["src/cli/daemon-cli/status.gather.test.ts","../../daemon/diagnostics.js","04073e05c9e90e8537807aca9316d05ee1a1559ca78d3422e7615b3f55af8ff7",1]
 ["src/cli/daemon-cli/status.gather.test.ts","../../daemon/inspect.js","4ceaf7d24d3d54d00a024f418b0957e3e91cdaa8fc6acedbe8ebf28d50dac336",1]
 ["src/cli/daemon-cli/status.gather.test.ts","../../daemon/restart-storm.js","414aa87923b3dd34784f72b84ef7b201da1a6b62be6ee9e39068319e69c2c9ab",1]
 ["src/cli/daemon-cli/status.gather.test.ts","../../daemon/service-audit.js","72cffb9c5d18dd32d8ba21afb767c5179cfe2520befbeb73a4ccfcb42968a561",1]
