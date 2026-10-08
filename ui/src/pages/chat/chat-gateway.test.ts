@@ -780,6 +780,14 @@ describe("handleChatGatewayEvent", () => {
       replace: true,
       expected: "",
     },
+    {
+      name: "retires saved text when a replacement tail is a silent token",
+      previous: "The token is ",
+      delta: "",
+      snapshot: "NO_REPLY",
+      replace: true,
+      expected: "",
+    },
   ])("$name", ({ previous, delta, snapshot, replace, expected }) => {
     const state = createState({
       chatRunId: "run-1",

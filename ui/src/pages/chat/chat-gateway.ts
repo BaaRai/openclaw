@@ -423,14 +423,14 @@ export function handleChatGatewayEvent(state: ChatState, incoming?: ChatEventPay
       reconcileChatRunStartup(state, { state: "activity", runId: payload.runId });
     }
     const next = payload.message == null ? null : (extractText(payload.message) ?? "");
-    if (
-      typeof next === "string" &&
-      !isSilentReplyStream(next) &&
-      !isAssistantHeartbeatAckForDisplay(payload.message)
-    ) {
+    if (typeof next === "string") {
+      const hidden =
+        isSilentReplyStream(next) || isAssistantHeartbeatAckForDisplay(payload.message);
+      // A replacement retires the previous baseline even when its new text is hidden;
+      // ignoring it would keep already-saved text visible beside its durable row.
       if (payload.replace) {
-        replaceChatStream(state, next);
-      } else {
+        replaceChatStream(state, hidden ? "" : next);
+      } else if (!hidden) {
         state.chatStream = next;
       }
     }
