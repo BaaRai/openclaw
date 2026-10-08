@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { SessionMaintenancePreservationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
@@ -269,7 +270,10 @@ function capturePlacementObservation(pathname: string, sessionId?: string) {
     assertCurrent(this: void) {
       assertUsable();
       if (observation.revoked || hasPendingPublication(owner, sessionId)) {
-        throw new Error(changedMessage);
+        // Reply initialization can reprepare known inventory conflicts, never lost source custody.
+        throw sessionId === undefined
+          ? new SessionMaintenancePreservationConflictError(changedMessage)
+          : new Error(changedMessage);
       }
     },
     release(this: void) {
