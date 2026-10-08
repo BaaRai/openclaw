@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -130,6 +130,93 @@ function fixtureRow(rows: FixtureRow[], role: string): FixtureRow {
   return row;
 }
 
+type TeardownHandle = Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "once" | "kill">;
+
+/**
+ * Unconditional cleanup for every task-owned process, on success and failure
+ * alike: terminate each fixture PID and tracked handle, join the tracked
+ * handles so libuv consumes their exits, then reap adopted zombies the run
+ * left parented to this harness so later tests start clean. The fixture log
+ * is the roster; file removal must come after this runs.
+ */
+async function teardownFixtureProcesses(params: {
+  logPath: string;
+  tracked: ReadonlyArray<TeardownHandle | undefined>;
+}): Promise<void> {
+  const rows = await readFixtureRows(params.logPath).catch(() => [] as FixtureRow[]);
+  const pids = new Set(rows.map((row) => row.pid));
+  for (const handle of params.tracked) {
+    if (!handle) {
+      continue;
+    }
+    if (typeof handle.pid === "number" && handle.pid > 0) {
+      pids.add(handle.pid);
+    }
+    try {
+      handle.kill?.("SIGKILL");
+    } catch {
+      // The handle may already be gone.
+    }
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // The process may already be gone.
+    }
+  }
+  await Promise.all(
+    params.tracked
+      .filter((handle): handle is TeardownHandle => handle !== undefined)
+      .map(
+        (handle) =>
+          new Promise<void>((resolve) => {
+            if (handle.exitCode != null || handle.signalCode != null) {
+              resolve();
+              return;
+            }
+            const timer = setTimeout(resolve, 2_000);
+            timer.unref?.();
+            handle.once("exit", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+          }),
+      ),
+  );
+  // Killed descendants can land as adopted zombies parented to this harness.
+  // Wait for terminal states, then consume the statuses through the exported
+  // scheduler so a failing run cannot contaminate later tests.
+  const roster = [...pids];
+  await waitFor(
+    () => roster.map((pid) => readStat(pid)),
+    (stats) => stats.every((stat) => stat === undefined || stat.state.startsWith("Z")),
+    2_000,
+  );
+  const processRuntime = await import("openclaw/plugin-sdk/process-runtime").catch(() => undefined);
+  const scheduler = processRuntime?.scheduleAdoptedDescendantReapAfterRootExit;
+  if (typeof scheduler !== "function") {
+    return;
+  }
+  const identities = roster.flatMap((pid) => {
+    const stat = readStat(pid);
+    return stat && stat.state.startsWith("Z") && stat.ppid === process.pid
+      ? [{ pid, startedAt: `${readBootId()}:${stat.startTicks}` }]
+      : [];
+  });
+  if (identities.length === 0) {
+    return;
+  }
+  // A detached, already-exited anchor starts cleanup immediately and never
+  // collides with tracked children the production close already scheduled.
+  scheduler({ pid: process.pid, exitCode: 0, signalCode: null, once: () => undefined }, identities);
+  await waitFor(
+    () => identities.every((identity) => readStat(identity.pid) === undefined),
+    (done) => done,
+    5_000,
+  );
+}
+
 async function writeFixtures(tempDir: string): Promise<{
   logPath: string;
   rootPath: string;
@@ -197,15 +284,20 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
     ensureHarnessIsSubreaper();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-close-reaping-"));
     const fixtures = await writeFixtures(tempDir);
+    // Handles live outside the try so unconditional teardown always sees them.
+    let unrelated: ChildProcess | undefined;
+    let root: ChildProcessWithoutNullStreams | undefined;
     try {
-      const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
         stdio: "ignore",
       });
-      const root = spawn(
+      root = spawn(
         process.execPath,
         [fixtures.rootPath, fixtures.logPath, fixtures.holderPath, fixtures.relayPath],
         { detached: true, stdio: ["pipe", "pipe", "pipe"] },
       ) as ChildProcessWithoutNullStreams;
+      const rootChild: ChildProcessWithoutNullStreams = root;
+      const unrelatedChild: ChildProcess = unrelated;
 
       const rows = await waitFor(
         () => readFixtureRows(fixtures.logPath),
@@ -227,12 +319,12 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
       }
       expect(readStat(fixtureRow(rows, "root").pid)?.ppid).toBe(process.pid);
 
-      const closed = await closeCodexAppServerTransportAndWait(root, { drainStdio: true });
+      const closed = await closeCodexAppServerTransportAndWait(rootChild, { drainStdio: true });
 
       // The tracked root completed normally and libuv consumed its own exit.
       expect(closed).toEqual({ exited: true, cleanup: "closed" });
-      expect(root.exitCode).toBe(0);
-      expect(root.signalCode).toBeNull();
+      expect(rootChild.exitCode).toBe(0);
+      expect(rootChild.signalCode).toBeNull();
       expect(readStat(fixtureRow(rows, "root").pid)).toBeUndefined();
 
       // Run-owned residue check: each retained descendant fully left /proc,
@@ -260,12 +352,9 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
       ).toEqual([]);
 
       // Unrelated work outside the closed tree keeps running untouched.
-      expect(readStat(unrelated.pid!)).toBeDefined();
-      unrelated.kill("SIGKILL");
-      await new Promise((resolve) => {
-        unrelated.once("exit", resolve);
-      });
+      expect(readStat(unrelatedChild.pid!)).toBeDefined();
     } finally {
+      await teardownFixtureProcesses({ logPath: fixtures.logPath, tracked: [root, unrelated] });
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -274,18 +363,23 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
     ensureHarnessIsSubreaper();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-close-reaping-red-"));
     const fixtures = await writeFixtures(tempDir);
+    // The handle lives outside the try so unconditional teardown always sees it.
+    let leaver: ChildProcess | undefined;
     try {
       // The control leaves a child behind on purpose: the leaver exits while
       // its orphan is alive, the subreaper harness adopts the orphan, and the
       // harness kills it with no waiter anywhere. The observer must report
       // the stuck zombie before the exported scheduler consumes it.
-      const leaver = spawn(
+      leaver = spawn(
         process.execPath,
         [fixtures.leaverPath, fixtures.logPath, fixtures.relayPath],
-        { stdio: "ignore" },
+        {
+          stdio: "ignore",
+        },
       );
+      const leaverChild: ChildProcess = leaver;
       await new Promise((resolve) => {
-        leaver.once("exit", resolve);
+        leaverChild.once("exit", resolve);
       });
       const rows = await waitFor(
         () => readFixtureRows(fixtures.logPath),
@@ -318,7 +412,7 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
 
       const processRuntime = await import("openclaw/plugin-sdk/process-runtime");
       expect(typeof processRuntime.scheduleAdoptedDescendantReapAfterRootExit).toBe("function");
-      processRuntime.scheduleAdoptedDescendantReapAfterRootExit(leaver, [
+      processRuntime.scheduleAdoptedDescendantReapAfterRootExit(leaverChild, [
         { pid: orphanPid, startedAt: `${readBootId()}:${zombie.startTicks}` },
       ]);
       const stat = await waitFor(
@@ -328,6 +422,7 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
       );
       expect(stat, "exported scheduler did not reap the control zombie").toBeUndefined();
     } finally {
+      await teardownFixtureProcesses({ logPath: fixtures.logPath, tracked: [leaver] });
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
