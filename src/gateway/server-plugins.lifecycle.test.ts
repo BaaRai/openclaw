@@ -877,7 +877,8 @@ describe("gateway plugin instance bindings", () => {
           ),
           "restored original",
         );
-        const restoredProbe = await requestInstanceBindingProbe(restored.runtime);
+        // Recovery returns its runtime receipt before background config settlement.
+        const restoredProbe = await requestSettledInstanceBindingProbe(restored.runtime);
         expect(restoredProbe.registryId).not.toBe(initialProbe.registryId);
         expect(restoredProbe).toMatchObject({
           sessionsId: initialProbe.sessionsId,
