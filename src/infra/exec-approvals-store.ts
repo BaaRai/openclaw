@@ -7,6 +7,7 @@ import {
   AgentDeletionCommitUncertainError,
 } from "../agents/agent-lifecycle-registry.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
@@ -15,6 +16,7 @@ import {
   requireOpenClawStateDatabaseIdentity,
 } from "../state/openclaw-state-db-cache.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
+import { prepareOpenClawStateDirectReader } from "../state/openclaw-state-db-read-connection.js";
 import {
   executeExistingOpenClawStateRead,
   withExistingOpenClawStateDatabaseReadOnly,
@@ -71,25 +73,10 @@ class ExecApprovalsStoreUnavailableError extends Error {
   }
 }
 
-function readExecApprovalsSnapshotFromDatabaseReadOnly(
-  options: OpenClawStateDatabaseOptions,
-): ExecApprovalsSnapshot {
-  assertNoPendingLegacyExecApprovals({ env: options.env });
-  const displayPath = resolveExecApprovalsDisplayPath(options.env);
-  return (
-    withExistingOpenClawStateDatabaseReadOnly(
-      ({ db }) => snapshotFromExecApprovalsDatabase(db, displayPath),
-      options,
-    ) ?? snapshotFromExecApprovalsRow({ path: displayPath, row: undefined })
-  );
-}
-
-function readExecApprovalsSnapshotWithOptions(
-  options: OpenClawStateDatabaseOptions = {},
-): ExecApprovalsSnapshot {
+export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
   try {
     assertNoPendingLegacyExecApprovals();
-    return snapshotFromExecApprovalsDatabase(openOpenClawStateDatabase(options).db);
+    return snapshotFromExecApprovalsDatabase(openOpenClawStateDatabase().db);
   } catch (error) {
     if (error instanceof ExecApprovalsMigrationRequiredError) {
       throw error;
@@ -97,10 +84,6 @@ function readExecApprovalsSnapshotWithOptions(
     // A caller-selected state owner must fail closed instead of reading another database.
     throw new ExecApprovalsStoreUnavailableError(error);
   }
-}
-
-export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
-  return readExecApprovalsSnapshotWithOptions();
 }
 
 export async function readExecApprovalsSnapshotAsync(
@@ -143,11 +126,16 @@ export function loadExecApprovals(): ExecApprovalsFile {
   }
 }
 
-function loadExecApprovalsReadOnlyWithOptions(
-  options: Pick<OpenClawStateDatabaseOptions, "path" | "env">,
-): ExecApprovalsFile {
+/** Loads exec approvals without creating or migrating shared state. */
+export function loadExecApprovalsReadOnly(): ExecApprovalsFile {
   try {
-    return readExecApprovalsSnapshotFromDatabaseReadOnly(options).file;
+    assertNoPendingLegacyExecApprovals();
+    const displayPath = resolveExecApprovalsDisplayPath();
+    return (
+      withExistingOpenClawStateDatabaseReadOnly(({ db }) =>
+        snapshotFromExecApprovalsDatabase(db, displayPath),
+      ) ?? snapshotFromExecApprovalsRow({ path: displayPath })
+    ).file;
   } catch (error) {
     if (error instanceof ExecApprovalsMigrationRequiredError) {
       throw error;
@@ -157,20 +145,19 @@ function loadExecApprovalsReadOnlyWithOptions(
   }
 }
 
-/** Final synchronous authority checks retain the physical policy source selected before a yield. */
-export function loadExecApprovalsReadOnlyWithContext(
+/** Admit the final reader during preparation; every guard reads the current row directly. */
+export function prepareExecApprovalsCurrentRead(
   context: OpenClawStateWorkerContext,
-): ExecApprovalsFile {
+): () => ExecApprovalsFile {
   context.admission.assertCurrent();
-  return loadExecApprovalsReadOnlyWithOptions({
-    path: context.admission.databasePath,
-    env: context.environment,
-  });
-}
-
-/** Loads exec approvals without creating or migrating shared state. */
-export function loadExecApprovalsReadOnly(): ExecApprovalsFile {
-  return loadExecApprovalsReadOnlyWithOptions({});
+  assertNoPendingLegacyExecApprovals({ env: context.environment });
+  const reader = prepareOpenClawStateDirectReader(context);
+  const displayPath = resolveExecApprovalsDisplayPath(context.environment);
+  return () => {
+    context.admission.assertCurrent();
+    assertNoPendingLegacyExecApprovals({ env: context.environment });
+    return reader.read(({ db }) => snapshotFromExecApprovalsDatabase(db, displayPath).file);
+  };
 }
 
 /** Capture the policy owner before yielding; reads never initialize or migrate state. */
@@ -560,6 +547,7 @@ type CommittedExecAuthorization = {
 type PendingAuthorization = {
   input: ExecAuthorizationCommitInput;
   context: OpenClawStateWorkerContext;
+  signal: AbortSignal | undefined;
   resolve: (result: CommittedExecAuthorization) => void;
   reject: (error: unknown) => void;
   assertCurrent?: () => void;
@@ -588,6 +576,7 @@ function enqueueExecAuthorization(
   const request: PendingAuthorization = {
     input: structuredClone(input),
     context,
+    signal: getAsyncWorkSignal(),
     resolve: completion.resolve,
     reject: completion.reject,
     assertCurrent,
@@ -598,6 +587,7 @@ function enqueueExecAuthorization(
     // Independent request lifetimes cannot share an all-or-nothing transaction.
     if (
       batch[0].assertCurrent !== assertCurrent ||
+      batch[0].signal !== request.signal ||
       batch.length >= 64 ||
       owner.admission.identity.key !== context.admission.identity.key ||
       owner.maintenanceScope !== context.maintenanceScope ||
@@ -625,11 +615,31 @@ function enqueueExecAuthorization(
     });
     void runOpenClawStateWorkerOperation(
       context,
-      (scope) =>
-        scope.execute({
+      async (scope) => {
+        const results = await scope.execute({
           type: "execApprovals.commitAuthorizations",
           input: { items: pending.map((item) => item.input) },
-        }),
+        });
+        return pending.map((item, index) => {
+          const result = results[index];
+          try {
+            if (!result?.ok) {
+              throw new Error(result?.message ?? "Missing exec authorization result");
+            }
+            const readCurrent = prepareExecApprovalsCurrentRead(item.context);
+            return () =>
+              item.resolve({
+                snapshot: result.snapshot,
+                readCurrent: () => {
+                  item.assertCurrent?.();
+                  return readCurrent();
+                },
+              });
+          } catch (error) {
+            return () => item.reject(error);
+          }
+        });
+      },
       {
         assertCurrent: assertBatchCurrent,
         createAdmission: createSqliteWorkerWriteAdmission(assertBatchCurrent, [
@@ -637,22 +647,7 @@ function enqueueExecAuthorization(
         ]),
       },
     ).then(
-      (results) => {
-        for (const [index, item] of pending.entries()) {
-          const result = results[index];
-          if (!result?.ok) {
-            item.reject(new Error(result?.message ?? "Missing exec authorization result"));
-            continue;
-          }
-          item.resolve({
-            snapshot: result.snapshot,
-            readCurrent: () => {
-              item.assertCurrent?.();
-              return loadExecApprovalsReadOnlyWithContext(item.context);
-            },
-          });
-        }
-      },
+      (settlements) => settlements.forEach((settle) => settle()),
       (error: unknown) => pending.forEach((item) => item.reject(error)),
     );
   } else {

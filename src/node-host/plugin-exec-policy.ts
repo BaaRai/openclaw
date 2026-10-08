@@ -1,6 +1,6 @@
 import { getRuntimeConfig } from "../config/config.js";
 import { assertCurrentUsageAuthorization } from "../infra/exec-approvals-authorization.kernel.js";
-import { loadExecApprovalsReadOnlyWithContext } from "../infra/exec-approvals-store.js";
+import { prepareExecApprovalsCurrentRead } from "../infra/exec-approvals-store.js";
 import { createExecApprovalPolicySnapshot, loadExecApprovals } from "../infra/exec-approvals.js";
 import type { OpenClawPluginNodeHostCommandContext } from "../plugins/types.node-host.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -26,6 +26,7 @@ export function preparePluginExecAuthorization(params: {
   const policy = resolvePolicy();
   const approvals = loadExecApprovals();
   const policyContext = captureOpenClawStateWorkerContext();
+  const readCurrent = prepareExecApprovalsCurrentRead(policyContext);
   const policySnapshot = createExecApprovalPolicySnapshot({ file: approvals, agentId });
   const assertCurrent = () => {
     params.assertActive();
@@ -41,7 +42,7 @@ export function preparePluginExecAuthorization(params: {
     }
     // The released synchronous launch guard must observe foreign policy commits.
     assertCurrentUsageAuthorization({
-      file: loadExecApprovalsReadOnlyWithContext(policyContext),
+      file: readCurrent(),
       agentId,
       command: params.command,
       matchKeys: new Set(),

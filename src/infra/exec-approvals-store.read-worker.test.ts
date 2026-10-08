@@ -4,7 +4,9 @@ import { performance } from "node:perf_hooks";
 import { isMainThread } from "node:worker_threads";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
+import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import {
@@ -28,6 +30,7 @@ import {
   loadExecApprovalsReadOnlyAsync,
   readExecApprovalsPolicyReadOnlyAsync,
   prepareCronExecHostPolicyUse,
+  prepareExecApprovalsCurrentRead,
   readExecApprovalsSnapshot,
   restoreExecApprovalsSnapshotLocked,
   updateExecApprovalsForMaintenance,
@@ -97,6 +100,7 @@ function watchNativeSql() {
 it("commits unchanged authorization without main-thread SQLite and keeps its captured policy owner", async () => {
   const { root, env } = fixture();
   seed(env);
+  prepareExecApprovalsCurrentRead(captureOpenClawStateWorkerContext({ env }));
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const calls = watchNativeSql();
   const authorized = commitExecAuthorizationLocked({
@@ -115,12 +119,26 @@ it("commits unchanged authorization without main-thread SQLite and keeps its cap
   const assertCurrent = await authorized;
   expect(calls.count()).toBe(0);
   vi.restoreAllMocks();
-  expect(assertCurrent).not.toThrow();
-  writeExecApprovalsConfigRow({
-    db: openOpenClawStateDatabase({ env }).db,
-    file: { version: 1, defaults: { security: "deny" } },
-  });
-  expect(assertCurrent).toThrow("Exec approval changed before execution");
+  const sql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
+  const peer = new (requireNodeSqlite().DatabaseSync)(path.join(root, "state", "openclaw.sqlite"));
+  try {
+    expect(assertCurrent).not.toThrow();
+    expect(sql.queries).toEqual([
+      'select "raw_json" from "exec_approvals_config" where "config_key" = ?',
+    ]);
+    writeExecApprovalsConfigRow({
+      db: peer,
+      file: { version: 1, defaults: { security: "deny" } },
+    });
+    sql.queries.length = 0;
+    expect(assertCurrent).toThrow("Exec approval changed before execution");
+    expect(sql.queries).toEqual([
+      'select "raw_json" from "exec_approvals_config" where "config_key" = ?',
+    ]);
+  } finally {
+    sql.restore();
+    peer.close();
+  }
   expect(fs.existsSync(foreign.databasePath)).toBe(false);
 });
 
@@ -132,6 +150,7 @@ it("settles batched usage commits in order while isolating refused authorization
     db: source.db,
     file: { version: 1, agents: { main: { allowlist: [entry] } } },
   });
+  prepareExecApprovalsCurrentRead(captureOpenClawStateWorkerContext({ env }));
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const input = {
     agentId: "main",
@@ -165,6 +184,34 @@ it("settles batched usage commits in order while isolating refused authorization
     if (result.status === "fulfilled") {
       expect(result.value).not.toThrow();
     }
+  }
+});
+
+it("keeps independent authorization scopes isolated after settlement", async () => {
+  const { root, env } = fixture();
+  seed(env);
+  vi.stubEnv("OPENCLAW_STATE_DIR", root);
+  const first = new AsyncWorkScope();
+  const second = new AsyncWorkScope();
+  const prepare = () =>
+    commitExecAuthorizationLocked({
+      agentId: "main",
+      matches: [],
+      command: "echo synthetic",
+      authorization: {
+        source: "current-policy",
+        security: "allowlist",
+        ask: "on-miss",
+        allowlistSatisfied: true,
+      },
+    });
+  try {
+    const [firstGuard, secondGuard] = await Promise.all([first.run(prepare), second.run(prepare)]);
+    first.beginClose(new Error("first authorization retired"));
+    expect(firstGuard).toThrow("first authorization retired");
+    expect(secondGuard).not.toThrow();
+  } finally {
+    await Promise.all([first.drain(), second.drain()]);
   }
 });
 
@@ -437,6 +484,7 @@ it("keeps cron policy uses current through real worker grant and usage writes wi
   seed(env);
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const initial = readExecApprovalsSnapshot().file;
+  prepareExecApprovalsCurrentRead(captureOpenClawStateWorkerContext({ env }));
   const sql = watchNativeSql();
   sql.calibrate();
   const use = await prepareCronPolicy(env);

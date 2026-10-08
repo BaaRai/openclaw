@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import { saveExecApprovals } from "../infra/exec-approvals-store.test-support.js";
 import type { ExecAsk, ExecSecurity } from "../infra/exec-approvals.js";
+import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
@@ -31,7 +33,11 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function launch(source: "session-full" | "human-approved", whilePreparing: () => void = () => {}) {
+function launch(
+  source: "session-full" | "human-approved",
+  whilePreparing: () => void = () => {},
+  observeGuard?: () => () => void,
+) {
   const spawn = vi.fn();
   const controller = new AbortController();
   const registry = createEmptyPluginRegistry();
@@ -55,7 +61,12 @@ function launch(source: "session-full" | "human-approved", whilePreparing: () =>
         const assertAuthorized = context!.prepareExecAuthorization!(source);
         await Promise.resolve();
         whilePreparing();
-        assertAuthorized();
+        const stopObserving = observeGuard?.();
+        try {
+          assertAuthorized();
+        } finally {
+          stopObserving?.();
+        }
         spawn();
         return "{}";
       },
@@ -92,6 +103,24 @@ function setPolicy(
 }
 
 describe("plugin node execution authorization", () => {
+  it("checks a foreign policy change with one indexed read immediately before spawn", async () => {
+    let queries: string[] = [];
+    const { result, spawn } = launch(
+      "session-full",
+      () => setPolicy("foreign-approvals", "deny", "off"),
+      () => {
+        const observation = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
+        queries = observation.queries;
+        return observation.restore;
+      },
+    );
+    await expect(result).rejects.toThrow();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(queries).toEqual([
+      'select "raw_json" from "exec_approvals_config" where "config_key" = ?',
+    ]);
+  });
+
   it.each(["config", "approvals"] as const)(
     "keeps %s restrictions for Full and explicit human decisions",
     async (owner) => {

@@ -27,6 +27,11 @@ grant awaits settlement. Failed or uncertain writes cannot revive revoked uses.
 The final pre-spawn policy authority read remains synchronous and T1. It observes
 direct native and foreign-connection policy changes after preparation and before
 each launch or retry; published or cached policy facts cannot replace it.
+Preparation admits a live read-only connection through the existing reader pool.
+The final guard uses one indexed policy-row SELECT on that handle, without a
+freshness/schema PRAGMA or transaction envelope: it consumes current rows, not
+cached facts. Physical identity, source lifetime, integrity, and transaction
+exclusion are still checked. A retired reader requires new preparation.
 The released v2026.9.8 `prepareExecAuthorization` contract returns a synchronous
 guard for immediate use before spawn, and `plugin-sdk/exec-approvals-runtime`
 exports synchronous policy readers. Retirement requires the next Plugin SDK
