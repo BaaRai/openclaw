@@ -39,6 +39,7 @@ import {
   SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION,
   SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION,
 } from "../completion/subagent-completion-instructions.js";
+import { SUBAGENT_ENDED_REASON_KILLED } from "../registry/subagent-lifecycle-events.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
   countPendingDescendantRuns,
@@ -48,6 +49,7 @@ import {
   resolveRequesterForChildSession,
   shouldIgnorePostCompletionAnnounceForSession,
 } from "../registry/subagent-registry-read.js";
+import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { deleteSubagentSessionForCleanup } from "../registry/subagent-session-cleanup.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
@@ -74,6 +76,7 @@ import {
   readSubagentTimeoutProgress,
 } from "./subagent-announce-output.js";
 import type { PreparedAnnounceResult } from "./subagent-announce-result.js";
+import { describeChildrenEndedWithoutResult } from "./subagent-announce.requester-settle-message.js";
 import {
   callSubagentLifecycleGateway,
   dispatchGatewayMethodInProcess,
@@ -174,6 +177,8 @@ type SubagentAnnounceFlowParams = {
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   onBeforeDeleteChildSession?: () => boolean | Promise<boolean>;
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
+  /** A killed child produces no further output, so its notice never waits for one. */
+  endedReason?: SubagentRunRecord["endedReason"];
 };
 
 export async function runSubagentAnnounceFlow(
@@ -245,8 +250,9 @@ async function runSubagentAnnounceFlowBound(
     }
 
     const failedTerminalOutcome = outcome.status === "error";
+    const killed = params.endedReason === SUBAGENT_ENDED_REASON_KILLED;
     const allowFailedOutputCapture =
-      !failedTerminalOutcome || (!params.roundOneReply && !params.fallbackReply);
+      !killed && (!failedTerminalOutcome || (!params.roundOneReply && !params.fallbackReply));
     if (failedTerminalOutcome && !params.terminalReply) {
       reply = undefined;
     }
@@ -453,8 +459,10 @@ async function runSubagentAnnounceFlowBound(
       }
     }
 
-    const statusLabel =
-      outcome.status === "ok"
+    const taskLabel = params.label || params.task || "task";
+    const statusLabel = killed
+      ? describeChildrenEndedWithoutResult([taskLabel])
+      : outcome.status === "ok"
         ? "completed; ready for parent review"
         : outcome.status === "timeout"
           ? outcome.error
@@ -464,7 +472,6 @@ async function runSubagentAnnounceFlowBound(
             ? `failed: ${outcome.error || "unknown error"}`
             : "finished with unknown status";
 
-    const taskLabel = params.label || params.task || "task";
     const announceSessionId =
       childSessionCurrent && childSessionEffectsAllowed() ? childSessionId || "unknown" : "unknown";
     // Descendant findings are wake input; only this child's own answer travels onward.

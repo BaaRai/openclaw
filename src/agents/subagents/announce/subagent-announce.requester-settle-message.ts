@@ -88,6 +88,11 @@ export function buildRequesterSettleWakeMessage(params: {
   ].join("\n");
 }
 
+/** The one wording for children that were stopped, killed, or deleted before finishing. */
+export function describeChildrenEndedWithoutResult(labels: readonly string[]): string {
+  return `ended without a result: ${labels.length} stopped, killed, or deleted before finishing (${labels.join("; ")})`;
+}
+
 // A cohort whose every member was stopped, killed, or deleted resolves with no result to review.
 function describeSettledBatch(children: readonly SubagentRunRecord[]): string {
   if (children.length === 0 || !children.every(isSubagentObligationRetired)) {
@@ -96,5 +101,5 @@ function describeSettledBatch(children: readonly SubagentRunRecord[]): string {
   const labels = children.map(
     (child) => child.label?.trim() || child.taskName?.trim() || child.task.trim() || child.runId,
   );
-  return `[Subagent Context] Every child in this batch ended without a result: ${children.length} stopped, killed, or deleted before finishing (${labels.join("; ")}).`;
+  return `[Subagent Context] Every child in this batch ${describeChildrenEndedWithoutResult(labels)}.`;
 }

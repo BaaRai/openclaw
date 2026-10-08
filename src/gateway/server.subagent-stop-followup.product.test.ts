@@ -2,13 +2,14 @@
 import { X509Certificate } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   writeOpenAiResponsesSse,
   writeOpenAiResponsesText,
 } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
+import * as announceOutput from "../agents/subagents/announce/subagent-announce-output.js";
 import { subscribeSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import {
   getSubagentRunByRunId,
@@ -25,6 +26,8 @@ import {
   subagentStopProxyHeaders,
 } from "./server.subagent-stop-settlement.product.test-support.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
+
+vi.mock("../agents/subagents/announce/subagent-announce-output.js", { spy: true });
 
 const parentPrompt = "Run the exact Stop then kept-child follow-up proof.";
 const stoppedTask = "Hold this first child execution until it is stopped.";
@@ -817,10 +820,14 @@ it("tells a parent once when the user stops the awaited child of its finished tu
     expect(getSubagentRunByRunId(child.runId)?.requesterSettleWake?.requesterYieldBatch).not.toBe(
       true,
     );
+    const outputPolls = vi.mocked(announceOutput.readLatestSubagentOutputWithRetry);
+    outputPolls.mockClear();
     await expect(
       gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
     ).resolves.toMatchObject({ ok: true, status: "aborted" });
     await script.notified;
+    // A killed child has no further output: its notice is sent without polling for any.
+    expect(outputPolls).not.toHaveBeenCalled();
     await waitForRunOrRemoval(
       child.runId,
       (row) =>
@@ -831,7 +838,9 @@ it("tells a parent once when the user stops the awaited child of its finished tu
     const notices = script.notices();
     expect(notices).toHaveLength(1);
     // The notice reports the stopped outcome; the task text alone is already in the history.
-    expect(notices[0]).toContain("failed: subagent run terminated");
+    expect(notices[0]).toContain(
+      `ended without a result: 1 stopped, killed, or deleted before finishing (${awaitedChildTask})`,
+    );
     expect(notices[0]).toContain("(no output)");
     expect(owedControllerInputs(child.runId), "the stopped child owes nothing").toEqual([]);
   } finally {

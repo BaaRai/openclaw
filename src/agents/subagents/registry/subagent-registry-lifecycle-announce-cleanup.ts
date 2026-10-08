@@ -426,6 +426,7 @@ export const startSubagentAnnounceCleanupFlow = (
     endedAt: pendingPayload.endedAt,
     label: pendingPayload.label,
     outcome: pendingPayload.outcome,
+    endedReason: entry.endedReason,
     spawnMode: pendingPayload.spawnMode,
     expectsCompletionMessage: pendingPayload.expectsCompletionMessage,
     completionTarget: pendingPayload.completionTarget,
