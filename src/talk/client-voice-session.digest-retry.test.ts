@@ -1,9 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import {
   loadSessionEntry,
@@ -11,19 +9,10 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
-import * as sessionEvents from "../config/sessions/session-accessor.sqlite-events.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
-import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
-import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
-import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
-import { resetClientVoiceConfirmationStateForTest } from "./client-voice-confirmation.test-support.js";
 import {
   captureClientVoiceSessionSettlement,
   prepareClientVoiceSessionClose,
@@ -35,7 +24,6 @@ import {
   seedSession,
 } from "./client-voice-session.fixture.test-support.js";
 import {
-  appendClientVoiceTranscript,
   appendRelayVoiceTranscript,
   closeClientVoiceSession,
   closeStaleClientVoiceSessions,
@@ -48,95 +36,18 @@ import {
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 import { VoiceTranscriptOperationRegistry } from "./voice-transcript.js";
 
-const { sendDurableMessageBatch } = vi.hoisted(() => ({
-  sendDurableMessageBatch: vi.fn(async () => ({ status: "sent" })),
-}));
-
-vi.mock("../channels/message/runtime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../channels/message/runtime.js")>();
-  return { ...actual, sendDurableMessageBatchCore: sendDurableMessageBatch };
-});
-
-const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
-let tempDir: string;
+// Install digest mocks before the persistence graph loads.
+const { useClientVoiceDigestHarness } = await vi.hoisted(
+  () => import("./client-voice-session.digest-harness.test-support.js"),
+);
 
 describe("client voice session lifecycle", () => {
-  beforeEach(async () => {
-    tempDir = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-voice-digest-retry-")),
-    );
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    sendDurableMessageBatch.mockReset().mockResolvedValue({ status: "sent" });
-  });
+  const harness = useClientVoiceDigestHarness();
+  const { sendDurableMessageBatch } = harness;
 
-  afterEach(async () => {
-    clientVoiceSessionTesting.reset();
-    resetClientVoiceConfirmationStateForTest();
-    await cleanupSessionStateForTest({ stateDir: tempDir });
-    envSnapshot.restore();
-    await fs.rm(tempDir, { recursive: true, force: true });
-  });
-
-  it.for([false, true])(
-    "preserves a displaced metadata file and confirmed send through marker retry (replacement=%s)",
-    async (replacement, { signal }) => {
-      const sessionKey = "agent:main:main";
-      await seedSession(sessionKey, { channel: "discord", to: "channel:marker-retry" });
-      const voiceSessionId = createOrResumeClientVoiceSession({
-        agentId: "main",
-        sessionKey,
-        origin: "client",
-      });
-      recordMutation(voiceSessionId);
-      await completeRun(`run-${voiceSessionId}`);
-      const metadataPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-      const savedPath = `${metadataPath}.displaced`;
-      const sending = createDeferred();
-      const finishSend = createDeferred();
-      sendDurableMessageBatch.mockImplementationOnce(async () => {
-        sending.resolve();
-        await finishSend.promise;
-        return { status: "sent" };
-      });
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
-        await withinTest(sending.promise, signal);
-        // Context replacement while send is active must share its later committed delivery fact.
-        await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
-        await closeOpenClawAgentDatabasesAsync(tempDir);
-        await fs.rename(metadataPath, savedPath);
-        if (replacement) {
-          await fs.writeFile(metadataPath, new Uint8Array());
-        }
-        finishSend.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        const afterMarker = await fs.stat(metadataPath).catch((error: unknown) => {
-          expect(error).toMatchObject({ code: "ENOENT" });
-          return undefined;
-        });
-        const untouched = replacement ? afterMarker?.size === 0 : afterMarker === undefined;
-        await closeOpenClawAgentDatabasesAsync(tempDir);
-        await fs.rm(metadataPath, { force: true });
-        await fs.rename(savedPath, metadataPath);
-        await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
-        await vi.advanceTimersByTimeAsync(0);
-        expect({ untouched, sends: sendDurableMessageBatch.mock.calls.length }).toEqual({
-          untouched: true,
-          sends: 1,
-        });
-        expect(
-          clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
-        ).toEqual(expect.any(Number));
-      } finally {
-        finishSend.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("does not replay or mark a partially delivered digest after expiry and re-record", async () => {
+  it("does not replay or mark a partially delivered digest after expiry and re-record", async ({
+    signal,
+  }) => {
     const sessionKey = "agent:main:main";
     await seedSession(sessionKey, { channel: "discord", to: "channel:partial-digest" });
     const voiceSessionId = createOrResumeClientVoiceSession({
@@ -146,16 +57,21 @@ describe("client voice session lifecycle", () => {
     });
     recordMutation(voiceSessionId);
     await completeRun(`run-${voiceSessionId}`);
-    sendDurableMessageBatch.mockImplementationOnce(async () => ({
-      status: "partial_failed",
-      results: [],
-      sentBeforeError: true,
-      receipt: { platformMessageIds: ["partial-message"], parts: [], sentAt: 123 },
-      error: new Error("partial delivery"),
-    }));
+    const sent = createDeferred();
+    sendDurableMessageBatch.mockImplementationOnce(async () => {
+      sent.resolve();
+      return {
+        status: "partial_failed",
+        results: [],
+        sentBeforeError: true,
+        receipt: { platformMessageIds: ["partial-message"], parts: [], sentAt: 123 },
+        error: new Error("partial delivery"),
+      };
+    });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
+      await withinTest(sent.promise, signal);
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(
         clientVoiceSessionTesting.digestDeliveryPolicy.failureRetentionMs + 1,
@@ -278,7 +194,7 @@ describe("client voice session lifecycle", () => {
         origin: "client",
       });
       recordMutation(voiceSessionId);
-      const successorStateDir = path.join(tempDir, "successor");
+      const successorStateDir = path.join(harness.stateDir, "successor");
       const sending = createDeferred();
       const releaseSend = createDeferred();
       const failed = createDeferred<never>();
@@ -331,7 +247,7 @@ describe("client voice session lifecycle", () => {
 
         releaseSend.resolve();
         await withinTest(Promise.race([Promise.all(drains), failed.promise]), signal);
-        setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+        setTestEnvValue("OPENCLAW_STATE_DIR", harness.stateDir);
         expect(sendDurableMessageBatch).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ to: "channel:original-voice" }),
         );
@@ -340,7 +256,7 @@ describe("client voice session lifecycle", () => {
         ).toEqual(expect.any(Number));
       } finally {
         releaseSend.resolve();
-        setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+        setTestEnvValue("OPENCLAW_STATE_DIR", harness.stateDir);
         await Promise.allSettled([closeOriginal.drain(), closeSuccessor?.drain(), ...drains]);
         warning.mockRestore();
         await cleanupSessionStateForTest({ stateDir: successorStateDir });
@@ -474,161 +390,6 @@ describe("client voice session lifecycle", () => {
     expect(sendDurableMessageBatch).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["different path", "same path replacement"] as const)(
-    "isolates retained digests while recovering another physical store (%s)",
-    async (replacement) => {
-      const sessionKey = "agent:main:main";
-      await seedSession(sessionKey, { channel: "discord", to: "channel:original-store" });
-      const voiceSessionId = createOrResumeClientVoiceSession({
-        agentId: "main",
-        sessionKey,
-        origin: "client",
-      });
-      recordMutation(voiceSessionId);
-      await completeRun(`run-${voiceSessionId}`);
-      const originalPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-      const archivedPath = path.join(tempDir, "original-agent.sqlite");
-      const otherState =
-        replacement === "different path" ? path.join(tempDir, "other-state") : tempDir;
-      const env = captureEnv(["OPENCLAW_STATE_DIR"]);
-      sendDurableMessageBatch.mockRejectedValueOnce(new Error("original channel offline"));
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      try {
-        await closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
-          active: 0,
-          retained: 1,
-        });
-        if (replacement === "same path replacement") {
-          await closeOpenClawAgentDatabasesAsync(tempDir);
-          await fs.rename(originalPath, archivedPath);
-        } else {
-          setTestEnvValue("OPENCLAW_STATE_DIR", otherState);
-        }
-        await seedSession(sessionKey);
-        const stale = createOrResumeClientVoiceSession({
-          agentId: "main",
-          sessionKey,
-          origin: "client",
-          now: 1,
-        });
-        expect(
-          await closeStaleClientVoiceSessions({
-            agentId: "main",
-            config: {},
-            now: 6 * 60 * 60_000 + 2,
-          }),
-        ).toBe(1);
-        await vi.advanceTimersByTimeAsync(0);
-        expect(clientVoiceSessionTesting.readRecord("main", stale)?.status).toBe("closed");
-        expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
-          active: 0,
-          retained: 1,
-        });
-        expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
-
-        createOrResumeClientVoiceSession({
-          agentId: "main",
-          sessionKey,
-          origin: "client",
-          voiceSessionId,
-        });
-        await expect(
-          closeClientVoiceSession({ agentId: "main", sessionKey, voiceSessionId, config: {} }),
-        ).rejects.toThrow("physical source");
-        expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
-
-        if (replacement === "same path replacement") {
-          await closeOpenClawAgentDatabasesAsync(tempDir);
-          await fs.rename(originalPath, path.join(tempDir, "replacement-agent.sqlite"));
-          await fs.rename(archivedPath, originalPath);
-        }
-        env.restore();
-        await closeStaleClientVoiceSessions({ agentId: "main", config: {} });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(sendDurableMessageBatch).toHaveBeenCalledTimes(2);
-        expect(sendDurableMessageBatch).toHaveBeenLastCalledWith(
-          expect.objectContaining({ to: "channel:original-store" }),
-        );
-        expect(
-          clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
-        ).toEqual(expect.any(Number));
-      } finally {
-        vi.useRealTimers();
-        env.restore();
-        if (otherState !== tempDir) {
-          await cleanupSessionStateForTest({ stateDir: otherState });
-        }
-      }
-    },
-  );
-
-  it("recovers current stale calls after shared storage retires a failed digest context", async ({
-    signal,
-  }) => {
-    const target = { agentId: "main", sessionKey: "agent:main:main" };
-    await seedSession(target.sessionKey, { channel: "discord", to: "channel:retired-digest" });
-    const retired = createOrResumeClientVoiceSession({ ...target, origin: "client", now: 1 });
-    recordMutation(retired);
-    await completeRun(`run-${retired}`);
-    sendDurableMessageBatch.mockRejectedValueOnce(new Error("channel offline"));
-    const failed = createDeferred();
-    const warning = vi.spyOn(console, "warn").mockImplementation((message) => {
-      if (String(message).includes("channel offline")) {
-        failed.resolve();
-      }
-    });
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      await closeClientVoiceSession({ ...target, voiceSessionId: retired, config: {} });
-      await withinTest(failed.promise, signal);
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
-        pending: 0,
-        retained: 1,
-      });
-      expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
-      const agentPath = resolveOpenClawAgentSqlitePath(target);
-      const identity = readDatabasePathIdentitySync(agentPath);
-
-      // Retain the digest owner and agent file while replacing only shared-store admission.
-      await closeOpenClawStateDatabaseAsync();
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
-        active: 0,
-        retained: 1,
-      });
-      openOpenClawStateDatabase();
-      const stale = createOrResumeClientVoiceSession({ ...target, origin: "client", now: 1 });
-      expect(readDatabasePathIdentitySync(agentPath)).toEqual(identity);
-      await expect(
-        closeStaleClientVoiceSessions({
-          agentId: target.agentId,
-          config: {},
-          now: 6 * 60 * 60_000 + 2,
-        }),
-      ).resolves.toBe(1);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(clientVoiceSessionTesting.readRecord(target.agentId, stale)?.status).toBe("closed");
-      expect(
-        clientVoiceSessionTesting.readRecord(target.agentId, retired)?.digestDeliveredAt,
-      ).toBeUndefined();
-      expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
-        active: 0,
-        pending: 0,
-        retained: 1,
-      });
-      await vi.advanceTimersByTimeAsync(
-        clientVoiceSessionTesting.digestDeliveryPolicy.failureRetentionMs + 1,
-      );
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot().retained).toBe(0);
-      expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
-    } finally {
-      warning.mockRestore();
-      vi.useRealTimers();
-    }
-  });
-
   it("keeps a failed digest while a late consult owns the retry", async () => {
     await seedSession("agent:main:main", {
       channel: "discord",
@@ -759,83 +520,6 @@ describe("client voice session lifecycle", () => {
     }
     expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1);
   });
-  it.each([
-    { phase: "recovery", replacement: false },
-    { phase: "recovery", replacement: true },
-    { phase: "publication", replacement: false },
-    { phase: "publication", replacement: true },
-  ])(
-    "does not open a displaced metadata file after $phase (replacement=$replacement)",
-    async ({ phase, replacement }) => {
-      const target = { agentId: "main", sessionKey: "agent:main:main" };
-      await seedSession(target.sessionKey);
-      const voiceSessionId = createOrResumeClientVoiceSession({
-        ...target,
-        origin: "client",
-        now: 1,
-      });
-      const metadataPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-      const displace = async () => {
-        await closeOpenClawAgentDatabasesAsync(tempDir);
-        await fs.rename(metadataPath, `${metadataPath}.displaced`);
-        if (replacement) {
-          await fs.writeFile(metadataPath, new Uint8Array());
-        }
-      };
-      const lookup = voiceSessionReads.lookupClientVoiceSessions;
-      const publish = sessionEvents.publishTranscriptUpdate;
-      const boundary =
-        phase === "recovery"
-          ? vi
-              .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
-              .mockImplementationOnce(async (...args) => {
-                const candidates = await lookup(...args);
-                await displace();
-                return candidates;
-              })
-          : vi
-              .spyOn(sessionEvents, "publishTranscriptUpdate")
-              .mockImplementationOnce(async (...args) => {
-                const result = await publish(...args);
-                await displace();
-                return result;
-              });
-      try {
-        if (phase === "recovery") {
-          const warn = vi.fn();
-          expect(
-            await closeStaleClientVoiceSessions({
-              agentId: "main",
-              config: {},
-              now: 6 * 60 * 60_000 + 2,
-              warn,
-            }),
-          ).toBe(0);
-          expect(warn).toHaveBeenCalledOnce();
-        } else {
-          await expect(
-            appendClientVoiceTranscript({
-              ...target,
-              sessionTarget: { sessionKey: target.sessionKey },
-              voiceSessionId,
-              entryId: "before-replacement",
-              role: "user",
-              text: "persisted before replacement",
-            }),
-          ).rejects.toThrow(/identity|ENOENT/);
-        }
-        expect(boundary).toHaveBeenCalledOnce();
-        if (replacement) {
-          expect(await fs.readFile(metadataPath)).toHaveLength(0);
-        } else {
-          await expect(fs.stat(metadataPath)).rejects.toMatchObject({ code: "ENOENT" });
-        }
-      } finally {
-        boundary.mockRestore();
-      }
-    },
-  );
-
   describe("stale recovery", () => {
     it.each(["original", "successor"] as const)(
       "keeps stale recovery in its original admission when %s closes after lookup",
@@ -849,7 +533,7 @@ describe("client voice session lifecycle", () => {
         const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
         const originalClose = prepareClientVoiceSessionClose();
         let successorClose: ReturnType<typeof prepareClientVoiceSessionClose> | undefined;
-        const successor = path.join(tempDir, "successor");
+        const successor = path.join(harness.stateDir, "successor");
         const env = captureEnv(["OPENCLAW_STATE_DIR"]);
         const lookup = voiceSessionReads.lookupClientVoiceSessions;
         const read = vi
@@ -989,7 +673,7 @@ describe("client voice session lifecycle", () => {
       const canonicalKey = "global";
       const sessionTarget = {
         sessionKey: canonicalKey,
-        storePath: path.join(tempDir, "configured", "sessions.sqlite"),
+        storePath: path.join(harness.stateDir, "configured", "sessions.sqlite"),
       };
       const storage = { agentId: "main", ...sessionTarget };
       const sessionId = await ensureClientVoiceAgentSessionEntry(storage);
