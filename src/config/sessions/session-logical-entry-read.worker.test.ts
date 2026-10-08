@@ -39,7 +39,6 @@ import {
 import { loadSessionEntryForAdmission } from "./session-accessor.sqlite-entry-admission.js";
 import {
   loadSessionEntry,
-  patchSessionEntryCore,
   patchSessionEntryTarget,
   replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
