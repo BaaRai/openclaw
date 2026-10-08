@@ -140,12 +140,22 @@ it.each(["uid", "writable-parent", "socket-mode", "symlink", "inaccessible"])(
   (kind) => {
     const original = lstat.getMockImplementation()!;
     lstat.mockImplementation((file: string) => {
-      if (kind === "inaccessible") throw Object.assign(new Error(), { code: "EACCES" });
+      if (kind === "inaccessible") {
+        throw Object.assign(new Error(), { code: "EACCES" });
+      }
       const value = original(file);
-      if (kind === "uid") value.uid = 999n;
-      if (kind === "writable-parent" && file !== socket) value.mode = 0o40777n;
-      if (kind === "socket-mode" && file === socket) value.mode = 0o140666n;
-      if (kind === "symlink") value.isDirectory = value.isSocket = () => false;
+      if (kind === "uid") {
+        value.uid = 999n;
+      }
+      if (kind === "writable-parent" && file !== socket) {
+        value.mode = 0o40777n;
+      }
+      if (kind === "socket-mode" && file === socket) {
+        value.mode = 0o140666n;
+      }
+      if (kind === "symlink") {
+        value.isDirectory = value.isSocket = () => false;
+      }
       return value;
     });
     expect(readProviderProcessWorkingDirectory(42, target, Date.now() + 10_000)).toBeUndefined();
@@ -174,23 +184,50 @@ it.each([
   spawn.mockImplementation((...args) => {
     const result = original(...args);
     const response = JSON.parse(result.stdout);
-    if (kind === "error") result.error = new Error("timeout");
-    if (kind === "exit") result.status = 1;
-    if (kind === "signal") result.signal = "SIGKILL";
-    if (kind === "stderr") result.stderr = "unexpected";
-    if (kind === "nonce") response.nonce = "other";
-    if (kind === "pid") response.target.pid = 43;
-    if (kind === "birth") response.target.startTicks = "322";
-    if (kind === "uid") response.target.uids[2] = 0;
-    if (kind === "gid") response.target.gids[2] = 0;
-    if (kind === "relative") response.cwd = "relative";
-    if (kind === "deleted") response.cwd = "/safe/runtime (deleted)";
-    if (kind === "oversize") response.cwd = "/" + "x".repeat(4096);
-    if (kind === "socket-drift")
+    if (kind === "error") {
+      result.error = new Error("timeout");
+    }
+    if (kind === "exit") {
+      result.status = 1;
+    }
+    if (kind === "signal") {
+      result.signal = "SIGKILL";
+    }
+    if (kind === "stderr") {
+      result.stderr = "unexpected";
+    }
+    if (kind === "nonce") {
+      response.nonce = "other";
+    }
+    if (kind === "pid") {
+      response.target.pid = 43;
+    }
+    if (kind === "birth") {
+      response.target.startTicks = "322";
+    }
+    if (kind === "uid") {
+      response.target.uids[2] = 0;
+    }
+    if (kind === "gid") {
+      response.target.gids[2] = 0;
+    }
+    if (kind === "relative") {
+      response.cwd = "relative";
+    }
+    if (kind === "deleted") {
+      response.cwd = "/safe/runtime (deleted)";
+    }
+    if (kind === "oversize") {
+      response.cwd = "/" + "x".repeat(4096);
+    }
+    if (kind === "socket-drift") {
       lstat.mockImplementation(() => {
         throw new Error("gone");
       });
-    if (kind === "consumer-drift") generation.mockReturnValue({ ...self, startTicks: "124" });
+    }
+    if (kind === "consumer-drift") {
+      generation.mockReturnValue({ ...self, startTicks: "124" });
+    }
     result.stdout = kind === "json" ? "{" : JSON.stringify(response);
     return result;
   });

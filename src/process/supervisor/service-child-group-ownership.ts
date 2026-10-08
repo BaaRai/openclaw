@@ -94,13 +94,13 @@ export function linuxProcessGenerationMatches(
   left: LinuxProcessGeneration | undefined,
   right: LinuxProcessGeneration | undefined,
 ): boolean {
-  return (
-    !!left &&
-    !!right &&
+  return Boolean(
+    left &&
+    right &&
     left.startTicks === right.startTicks &&
     left.ppid === right.ppid &&
     left.uids.every((value, index) => value === right.uids[index]) &&
-    left.gids.every((value, index) => value === right.gids[index])
+    left.gids.every((value, index) => value === right.gids[index]),
   );
 }
 

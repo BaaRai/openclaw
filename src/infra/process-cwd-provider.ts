@@ -62,7 +62,7 @@ function socketIdentity(socket: string): string | undefined {
 
 export function hasProcessCwdProvider(): boolean {
   const socket = process.env[LOCATOR];
-  return process.platform === "linux" && !!socket && socketIdentity(socket) !== undefined;
+  return Boolean(process.platform === "linux" && socket && socketIdentity(socket) !== undefined);
 }
 
 /** The locator grants nothing: root ownership and the provider's unit admission do. */

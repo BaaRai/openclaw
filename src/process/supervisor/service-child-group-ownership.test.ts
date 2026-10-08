@@ -295,12 +295,15 @@ it.each([
   ["missing gids", generationStat(owner), "Uid:\t1000\t1000\t1000\t1000\n"],
   ["duplicate uids", generationStat(owner), `${generationStatus}Uid:\t1000\t1000\t1000\t1000\n`],
   ["overflow uid", generationStat(owner), generationStatus.replace("1000", "4294967296")],
-] as const)("leaves %s generation unavailable and closes opened files", (_label, stat, status) => {
-  rows.set(owner, stat);
-  identities.set(owner, status);
-  expect(readLinuxProcessGeneration(owner)).toBeUndefined();
-  expect(closeProc).toHaveBeenCalledTimes(openProc.mock.calls.length);
-});
+] as const)(
+  "leaves %s generation unavailable and closes opened files",
+  (_label, statText, status) => {
+    rows.set(owner, statText);
+    identities.set(owner, status);
+    expect(readLinuxProcessGeneration(owner)).toBeUndefined();
+    expect(closeProc).toHaveBeenCalledTimes(openProc.mock.calls.length);
+  },
+);
 
 it.each(["birth", "parent", "uid", "gid", "gone"] as const)(
   "does not attach a generation after %s drift",
