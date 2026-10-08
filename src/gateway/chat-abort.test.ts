@@ -192,6 +192,52 @@ describe("registerChatAbortController", () => {
     expect(registration.entry?.expiresAtMs).toBe(executionExpiresAtMs);
   });
 
+  it.each(["queued", "late", "started", "cleaned", "replaced"] as const)(
+    "owns the queued deadline until execution or release: %s",
+    (state) => {
+      vi.useFakeTimers();
+      const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
+      const onQueueTimeout = vi.fn((entry: ChatAbortControllerEntry) => {
+        const ops = createOps({ runId: "queued", entry });
+        ops.chatAbortControllers = chatAbortControllers;
+        abortChatRunById(ops, {
+          runId: "queued",
+          sessionKey: "main",
+          stopReason: "timeout",
+        });
+      });
+      const registration = registerChatAbortController({
+        chatAbortControllers,
+        runId: "queued",
+        sessionId: "sess-1",
+        sessionKey: "main",
+        timeoutMs: 2_000,
+        kind: "agent",
+        onQueueTimeout,
+      });
+      vi.advanceTimersByTime(1_999);
+      expect(onQueueTimeout).not.toHaveBeenCalled();
+      if (state === "started") {
+        registration.markExecutionStarted();
+      } else if (state === "cleaned") {
+        registration.cleanup();
+      } else if (state === "replaced") {
+        chatAbortControllers.set("queued", createActiveEntry("main"));
+      } else if (state === "late") {
+        vi.setSystemTime(Date.now() + 1);
+        expect(registration.markExecutionStarted()).toBe(false);
+      }
+      vi.advanceTimersByTime(1);
+      const expired = state === "queued" || state === "late";
+      expect(onQueueTimeout).toHaveBeenCalledTimes(expired ? 1 : 0);
+      expect(registration.controller.signal.aborted).toBe(expired);
+      if (expired) {
+        expect(registration.controller.signal.reason).toMatchObject({ name: "TimeoutError" });
+      }
+      registration.cleanup();
+    },
+  );
+
   it("does not re-arm an agent after its unswept queue deadline", () => {
     vi.useFakeTimers();
     for (const [runId, offsetMs] of [

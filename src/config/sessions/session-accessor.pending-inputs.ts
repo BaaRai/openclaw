@@ -72,6 +72,14 @@ export type SessionPendingInputReceipt = {
   settled?: () => Promise<void>;
 };
 const receiptOwners = new WeakMap<SessionPendingInputReceipt, SessionPendingInputOwner>();
+const withdrawnOwners = new WeakSet<SessionPendingInputOwner>();
+
+export function readWithdrawnSessionPendingInputId(
+  receipt: SessionPendingInputReceipt | undefined,
+): string | undefined {
+  const owner = receipt && receiptOwners.get(receipt);
+  return owner && withdrawnOwners.has(owner) ? owner.inputId : undefined;
+}
 
 function ownerReceipt(owner: SessionPendingInputOwner): SessionPendingInputReceipt {
   const receipt: SessionPendingInputReceipt = {
@@ -394,10 +402,13 @@ async function stagePreparedPendingInput(
       // Prompt authority ends now; history custody lasts through terminal settlement.
       const settleDisposition = async () => {
         if (owner && !owner.consumed) {
-          await store.mutate(
+          const receipt = await store.mutate(
             { ...settlementIdentity(), kind: "finish", inputId: owner.inputId, disposition },
             () => assertRegisteredSessionPendingInputOwner(owner!),
           );
+          if (receipt.withdrawnInputId === owner.inputId) {
+            withdrawnOwners.add(owner);
+          }
         }
       };
       const ending = completion
