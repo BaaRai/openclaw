@@ -4,7 +4,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import chokidar from "chokidar";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { markGatewayRestartHandled } from "../infra/restart.js";
@@ -59,6 +59,21 @@ async function prepareInstanceBindingTest(
 }
 
 installInstanceBindingConfigIo();
+
+function controlRpcOwnedConfigWatcher(configPath: string) {
+  const watch = chokidar.watch;
+  const configWatcher = vi.spyOn(chokidar, "watch").mockImplementation((paths, options) => {
+    const watchedPaths = typeof paths === "string" ? [paths] : paths;
+    if (!watchedPaths.includes(configPath)) {
+      return watch(paths, options);
+    }
+    // Explicit config writes own these cases; filesystem echoes can race the next RPC.
+    const watcher = new chokidar.FSWatcher(options);
+    queueMicrotask(() => watcher.emit("ready"));
+    return watcher;
+  });
+  onTestFinished(() => configWatcher.mockRestore());
+}
 
 describe("gateway plugin instance bindings", () => {
   const started: Array<Awaited<ReturnType<typeof startTestGatewayServer>>> = [];
@@ -683,20 +698,9 @@ describe("gateway plugin instance bindings", () => {
   it(
     "retains unchanged channel runtimes and renews them only when their plugin reloads",
     { timeout: 600_000 },
-    async ({ onTestFinished }) => {
+    async () => {
       const { coordinator, configPath } = await prepareInstanceBindingTest({ channels: true });
-      const watch = chokidar.watch;
-      const configWatcher = vi.spyOn(chokidar, "watch").mockImplementation((paths, options) => {
-        const watchedPaths = typeof paths === "string" ? [paths] : paths;
-        if (!watchedPaths.includes(configPath)) {
-          return watch(paths, options);
-        }
-        // Explicit config writes own this case; filesystem echoes can race the next RPC.
-        const watcher = new chokidar.FSWatcher(options);
-        queueMicrotask(() => watcher.emit("ready"));
-        return watcher;
-      });
-      onTestFinished(() => configWatcher.mockRestore());
+      controlRpcOwnedConfigWatcher(configPath);
       const proof = coordinator.channelProof;
       if (!proof) {
         throw new Error("channel binding fixture was not installed");
@@ -911,7 +915,11 @@ describe("gateway plugin instance bindings", () => {
     "refuses replacement during %s cleanup while keeping the Gateway available",
     { timeout: 600_000 },
     async (serviceStopFailure) => {
-      const { coordinator, bundledRoot } = await prepareInstanceBindingTest({ serviceStopFailure });
+      const { coordinator, configPath, bundledRoot } = await prepareInstanceBindingTest({
+        serviceStopFailure,
+      });
+      coordinator.reportReloadSettlement = true;
+      controlRpcOwnedConfigWatcher(configPath);
       finishServiceStops.push(coordinator.serviceStopCompletion.resolve);
       const hotReloadRecovery = vi.fn(() => {
         // No run loop consumes this synthetic emission, so release its signal-admission lease.
@@ -952,7 +960,7 @@ describe("gateway plugin instance bindings", () => {
         coordinator.runtimes.slice(0, initialRegistrationCount),
         "initial",
       );
-      const initialProbe = await requestInstanceBindingProbe(initialRuntime);
+      const initialProbe = await requestSettledInstanceBindingProbe(initialRuntime);
 
       const socket = await connectWebchatClient({ port: claim.port, scopes: ["operator.admin"] });
       sockets.push(socket);
@@ -994,7 +1002,8 @@ describe("gateway plugin instance bindings", () => {
           ),
           "restored original",
         );
-        const restoredProbe = await requestInstanceBindingProbe(restored.runtime);
+        // Recovery returns its runtime receipt before background config settlement.
+        const restoredProbe = await requestSettledInstanceBindingProbe(restored.runtime);
         expect(restoredProbe.registryId).not.toBe(initialProbe.registryId);
         expect(restoredProbe).toMatchObject({
           sessionsId: initialProbe.sessionsId,
