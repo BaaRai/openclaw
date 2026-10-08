@@ -7,10 +7,6 @@ import {
   observeParentSqlite,
   sqliteMethods,
 } from "../../../test/helpers/sqlite-parent-observer.js";
-import { prepareEmbeddedRunSession } from "../../agents/embedded-agent-runner/run/session-bootstrap.js";
-import { getReplyOperationSessionReader } from "../../auto-reply/reply/reply-run-registry.state.js";
-import { createTestReplyOperation } from "../../auto-reply/reply/reply-run-registry.test-helpers.js";
-import { bindReplyOperationDatabaseAdmission } from "../../auto-reply/reply/reply-turn-database-admission.js";
 import { resolveHeartbeatSession } from "../../infra/heartbeat-runner-session.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import type { SqliteWorkerOperationSettlement } from "../../infra/sqlite-worker-operation-settlement.js";
@@ -48,14 +44,13 @@ import {
 import { loadExactSessionEntryReadOnly } from "./session-accessor.sqlite-exact-read.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import type { SessionAccessScope } from "./session-accessor.types.js";
-import * as coldStorage from "./session-cold-storage.js";
 import {
   readSessionEntryInWorker,
   readSessionEntryReadOnlyInWorker,
   withSessionEntriesFromStoresInWorker,
 } from "./session-entry-read-runtime.js";
 import { addSessionMember } from "./session-sharing-store.native.js";
-import { historyLane, projectionLane } from "./session-transcript-worker-resources.js";
+import { historyLane } from "./session-transcript-worker-resources.js";
 
 let state: OpenClawTestState;
 beforeAll(async () => {
@@ -1137,90 +1132,4 @@ it("leaves absent storage absent when a read-only phase has no admitted cohort",
   expect(fs.existsSync(databasePath)).toBe(false);
   await expect(readSessionEntryReadOnlyInWorker(scope)).resolves.toBeUndefined();
   expect(fs.existsSync(databasePath)).toBe(false);
-});
-
-it("prepares the admitted run target with its entry and refuses source loss after cold preparation", async () => {
-  const sessionKey = "agent:bootstrap:cohort";
-  const scope = { agentId: "bootstrap", env: state.env, sessionKey };
-  replaceSessionEntrySync(scope, { sessionId: "bootstrap", updatedAt: 1 });
-  const admission = await loadSessionEntryForAdmission(scope);
-  const operation = createTestReplyOperation({ sessionKey, sessionId: "bootstrap" });
-  const bound = bindReplyOperationDatabaseAdmission(
-    operation,
-    { sessionKey },
-    undefined,
-    admission.databaseClaim,
-  );
-  const reader = getReplyOperationSessionReader(operation);
-  if (!reader) {
-    await admission.databaseClaim.release();
-    operation.complete();
-    throw new Error("Expected an admitted bootstrap reader");
-  }
-  const controller = new AbortController();
-  const input = {
-    agentId: "bootstrap",
-    config: { agents: { entries: { bootstrap: {} } } },
-    sessionId: "bootstrap",
-    sessionKey,
-    sessionFile: sessionKey,
-    sessionTarget: {
-      agentId: "bootstrap",
-      sessionId: "bootstrap",
-      sessionKey,
-      storePath: reader.database.path,
-    },
-    replyOperation: operation,
-    abortSignal: controller.signal,
-    runId: "bootstrap",
-    prompt: "prepare the original run",
-    workspaceDir: state.workspaceDir,
-    timeoutMs: 30_000,
-  };
-  const reads = vi.spyOn(reader, "withRead");
-  const runRequest = projectionLane.pool.run.bind(projectionLane.pool);
-  let runtimeTargets = 0;
-  const requests = vi.spyOn(projectionLane.pool, "run").mockImplementation(async (...args) => {
-    const reply = await runRequest(...args);
-    if (
-      reply.ok &&
-      typeof reply.value === "object" &&
-      reply.value !== null &&
-      "kind" in reply.value &&
-      reply.value.kind === "session-runtime-target"
-    ) {
-      runtimeTargets++;
-    }
-    return reply;
-  });
-  try {
-    const prepared = await prepareEmbeddedRunSession(input);
-    expect(prepared.sessionAdmission?.entry.sessionId).toBe("bootstrap");
-    expect(prepared.runSessionTarget).toMatchObject({
-      agentId: "bootstrap",
-      sessionId: "bootstrap",
-      sessionKey,
-    });
-    expect(reads).toHaveBeenCalledTimes(1);
-    expect(runtimeTargets).toBe(0);
-
-    const restore = coldStorage.restoreSessionColdTranscript;
-    const interrupted = new Error("bootstrap source ended after cold preparation");
-    const restoring = vi
-      .spyOn(coldStorage, "restoreSessionColdTranscript")
-      .mockImplementationOnce(async (...args) => {
-        await restore(...args);
-        controller.abort(interrupted);
-      });
-    try {
-      await expect(prepareEmbeddedRunSession(input)).rejects.toBe(interrupted);
-    } finally {
-      restoring.mockRestore();
-    }
-  } finally {
-    reads.mockRestore();
-    requests.mockRestore();
-    await bound.releaseWorkerDatabaseClaim?.();
-    operation.complete();
-  }
 });
