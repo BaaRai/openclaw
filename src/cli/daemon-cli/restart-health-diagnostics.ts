@@ -23,6 +23,10 @@ function formatGatewayStillStarting(snapshot: GatewayRestartSnapshot): string {
 
 export function renderGatewayPortHealthDiagnostics(snapshot: GatewayPortHealthSnapshot): string[] {
   const lines: string[] = [];
+  const readiness = formatGatewayHealthReadinessLine(snapshot);
+  if (readiness) {
+    lines.push(readiness);
+  }
   if (snapshot.portUsage.status === "busy") {
     lines.push(...formatPortDiagnostics(snapshot.portUsage));
   } else {
@@ -39,10 +43,6 @@ export function renderGatewayPortHealthDiagnostics(snapshot: GatewayPortHealthSn
 
 export function renderRestartDiagnostics(snapshot: GatewayRestartSnapshot): string[] {
   const lines: string[] = [];
-  const readiness = formatGatewayHealthReadinessLine(snapshot);
-  if (readiness) {
-    lines.push(readiness);
-  }
   const refusal = snapshot.runtime?.systemd?.startRefusal;
   if (refusal) {
     lines.push(`SERVICE-DEFINITION: ${refusal.message}`);

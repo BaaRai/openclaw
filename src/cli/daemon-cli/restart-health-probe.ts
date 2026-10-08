@@ -9,8 +9,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveReadOnlyLocalGatewayAuth } from "../../gateway/call-device-auth.js";
 import { callGateway } from "../../gateway/call.js";
 import { isGatewayProtocolResponseError } from "../../gateway/client.js";
-import type { GatewayHealthReadiness } from "../../gateway/health/readiness.js";
-import type { PluginHealthErrorSummary } from "../../gateway/health/types.js";
+import type {
+  GatewayHealthReadiness,
+  PluginHealthErrorSummary,
+} from "../../gateway/health/types.js";
 import {
   createConfiguredGatewayLocalProbe,
   type ConfiguredGatewayLocalProbe,
@@ -26,8 +28,10 @@ import { inspectPortUsage } from "../../infra/ports-inspect.js";
 import { LOOPBACK_PORT_PROBE_HOSTS } from "../../infra/ports-probe.js";
 import type { PortUsage } from "../../infra/ports-types.js";
 import { sleep } from "../../utils.js";
+import { acceptsGatewayReadiness } from "./restart-health-snapshot.js";
 import type {
   GatewayPortHealthSnapshot,
+  GatewayRestartHealthPurpose,
   UnavailablePluginHealthSummary,
 } from "./restart-health.types.js";
 import { allListenersOwnedByRuntimePid } from "./restart-port-ownership.js";
@@ -423,6 +427,8 @@ export async function inspectGatewayPortHealth(params: {
   config?: OpenClawConfig;
   configuredProbe?: ConfiguredGatewayLocalProbe;
   expectedListenerPid?: number;
+  purpose?: GatewayRestartHealthPurpose;
+  env?: NodeJS.ProcessEnv;
 }): Promise<GatewayPortHealthSnapshot> {
   let portUsage: PortUsage;
   try {
@@ -451,12 +457,12 @@ export async function inspectGatewayPortHealth(params: {
     auth: params.auth,
     ...(params.config ? { config: params.config } : {}),
     ...(params.configuredProbe ? { configuredProbe: params.configuredProbe } : {}),
-    env: process.env,
+    env: params.env,
     allowDeviceIdentityRequired: listenerOwnershipVerified,
   });
   return {
     portUsage,
-    healthy: reachable && (!readiness || readiness.state === "ready"),
+    healthy: reachable && acceptsGatewayReadiness(readiness, params),
     ...(readiness ? { readiness } : {}),
     ...(probeError ? { probeError } : {}),
   };

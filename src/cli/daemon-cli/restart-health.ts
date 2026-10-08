@@ -27,6 +27,7 @@ import {
   DEFAULT_RESTART_HEALTH_DELAY_MS,
 } from "./restart-health.constants.js";
 import type {
+  GatewayRestartHealthPurpose,
   GatewayRestartResult,
   GatewayRestartSnapshot,
   GatewayRestartWaitOutcome,
@@ -93,8 +94,7 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
-  /** Diagnostics need the snapshot, not operational recovery certification. */
-  waitForOperationalReadiness?: boolean;
+  purpose?: GatewayRestartHealthPurpose;
   /** Diagnostics can report absence immediately; start/restart callers wait for installation. */
   waitForMissingService?: boolean;
   supervisorKeepsAlive?: boolean;
@@ -277,6 +277,7 @@ export async function waitForGatewayHealthyRestart(
         expectedVersion: params.expectedVersion,
         expectedBuildId: params.expectedBuildId,
         requirePluginHealth: params.requirePluginHealth,
+        purpose: params.purpose,
         probeContext,
         configuredProbe,
         probeHosts,
@@ -317,7 +318,9 @@ export async function waitForGatewayHealthyRestart(
       snapshot.startupPhase =
         reportedStartupPhase ??
         (healthy
-          ? "settling healthy Gateway"
+          ? params.purpose === "lifecycle" && snapshot.readiness?.state !== "ready"
+            ? "settling Gateway liveness"
+            : "settling healthy Gateway"
           : snapshot.runtime.status !== "running"
             ? "waiting for managed service"
             : snapshot.portUsage.status === "free"
@@ -332,11 +335,11 @@ export async function waitForGatewayHealthyRestart(
         );
       }
       if (
-        params.waitForOperationalReadiness === false &&
+        params.purpose === "diagnostic" &&
         snapshot.readiness &&
         snapshot.readiness.state !== "ready"
       ) {
-        return withWaitContext(snapshot, "gateway-not-ready", elapsedMs);
+        return withWaitContext({ ...snapshot, healthy: false }, "gateway-not-ready", elapsedMs);
       }
       if (boundedDeadlineMs !== undefined && elapsedMs > boundedDeadlineMs + settleDurationMs) {
         return withWaitContext(

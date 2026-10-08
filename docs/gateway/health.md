@@ -246,12 +246,20 @@ when returning health. In particular, HTTP `/readyz` can tolerate a connecting
 channel or report admission ready during CPU degradation while the more detailed
 operational projection reports `starting` or `degraded`.
 
-Current restart/update verification consumes this projection separately from
-transport reachability. A PID, open port, successful RPC, or HTTP liveness response
-alone cannot establish operational recovery. Older Gateways without the projection
+Update and repair verification consume this projection separately from transport
+reachability. A PID, open port, successful RPC, or HTTP liveness response alone
+cannot establish operational recovery. Older Gateways without the projection
 retain their existing separate identity, plugin, channel and HTTP checks. Internal
-maintenance callers that explicitly defer plugin verification retain that narrower
-acceptance policy; the overall projection still reports the plugin degradation.
+maintenance callers that explicitly defer plugin verification retain only that
+narrower exception; other operational problems remain unverified.
+
+Ordinary standalone start/restart commands retain their lifecycle acceptance
+contract. A correlated authentication or pairing rejection can prove that the
+Gateway is responding without proving operational readiness. The command retains
+its action result and reports an observed non-ready state as a warning, not a full
+recovery certificate. An updater invoking the candidate CLI is different: the
+existing `OPENCLAW_UPDATE_IN_PROGRESS` marker selects operational verification,
+including for published updaters that cannot pass a new option.
 
 ### Queue warnings
 

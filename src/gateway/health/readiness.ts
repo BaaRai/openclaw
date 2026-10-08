@@ -6,9 +6,7 @@ import {
 } from "../channel-health-policy.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import type { ReadinessChecker, StartupChecker } from "../server/readiness.js";
-import type { HealthSummary, PluginHealthErrorSummary } from "./types.js";
-
-export type GatewayHealthReadiness = NonNullable<HealthSummary["readiness"]>;
+import type { GatewayHealthReadiness, HealthSummary, PluginHealthErrorSummary } from "./types.js";
 
 /** Failed loading can precede activation; retain the configured activation intent. */
 export function isRequiredPluginHealthError(plugin: PluginHealthErrorSummary): boolean {

@@ -3,7 +3,10 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import type { ChannelAccountSnapshot } from "../channels/plugins/types.public.js";
-import { waitForGatewayHealthyRestart } from "../cli/daemon-cli/restart-health.js";
+import {
+  inspectGatewayRestart,
+  waitForGatewayHealthyRestart,
+} from "../cli/daemon-cli/restart-health.js";
 import { createMockGatewayService } from "../daemon/service.test-helpers.js";
 import type { HealthSummary } from "../gateway/health/types.js";
 import {
@@ -37,6 +40,7 @@ it("uses the health RPC's operational facts for restart acceptance and recovery"
         OPENCLAW_GATEWAY_URL: undefined,
         OPENCLAW_UPDATE_RUN_ID: undefined,
         OPENCLAW_UPDATE_RUN_HANDOFF: undefined,
+        OPENCLAW_UPDATE_IN_PROGRESS: undefined,
       },
     },
     async (state) => {
@@ -54,6 +58,7 @@ it("uses the health RPC's operational facts for restart acceptance and recovery"
       let runtimeUnavailable = false;
       let suppressed = false;
       let skipChannels = false;
+      let connectError: string | undefined;
       let snapshot: HealthSummary & { eventLoop?: GatewayEventLoopHealth };
       const channelManager = {
         getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: { telegram: accounts } }),
@@ -98,6 +103,17 @@ it("uses the health RPC's operational facts for restart acceptance and recovery"
             return;
           }
           if (request.method === "connect") {
+            if (connectError) {
+              socket.send(
+                JSON.stringify({
+                  type: "res",
+                  id: request.id,
+                  ok: false,
+                  error: { code: "FORBIDDEN", message: connectError },
+                }),
+              );
+              return;
+            }
             const hello = buildMinimalGatewayHelloOkPayload();
             sendMinimalGatewayResponse(socket, request.id, {
               ...hello,
@@ -136,20 +152,55 @@ it("uses the health RPC's operational facts for restart acceptance and recovery"
         readRuntime: async () => ({ status: "running", pid: process.pid }),
       });
       const child = vi.spyOn(childRuntime, "readChildRuntimeViability");
-      const verify = (requirePluginHealth = true, waitForOperationalReadiness = true) =>
+      const verify = (requirePluginHealth = true, operational = true) =>
         waitForGatewayHealthyRestart({
           service,
           port,
           expectedVersion: "test",
+          signal,
           env: state.env,
           probeContext: { config, auth: undefined },
           probeHosts: ["127.0.0.1"],
           attempts: 0,
           delayMs: 1,
           requirePluginHealth,
-          waitForOperationalReadiness,
+          purpose: operational ? "verification" : "diagnostic",
         });
       try {
+        const authProbe = {
+          signal,
+          service,
+          port,
+          env: state.env,
+          probeContext: { config, auth: undefined },
+          probeHosts: ["127.0.0.1"],
+          attempts: 0,
+          delayMs: 1,
+          requirePluginHealth: false,
+        };
+        connectError = "pairing required";
+        for (const purpose of ["lifecycle", "verification"] as const) {
+          expect(await waitForGatewayHealthyRestart({ ...authProbe, purpose })).toMatchObject({
+            healthy: purpose === "lifecycle",
+            readiness: { state: "reachable", reasons: ["health-unavailable"] },
+          });
+        }
+        expect(
+          // Observe the marker policy once; do not run its five-minute startup watchdog.
+          await inspectGatewayRestart({
+            ...authProbe,
+            purpose: "lifecycle",
+            env: { ...state.env, OPENCLAW_UPDATE_IN_PROGRESS: "1" },
+          }),
+        ).toMatchObject({ healthy: false, readiness: { state: "reachable" } });
+        connectError = "unrecognized fixture rejection";
+        expect(
+          await waitForGatewayHealthyRestart({
+            ...authProbe,
+            purpose: "lifecycle",
+          }),
+        ).toMatchObject({ healthy: false });
+        connectError = undefined;
         for (const scenario of [
           "event-loop",
           "ready",
@@ -323,6 +374,21 @@ it("uses the health RPC's operational facts for restart acceptance and recovery"
                     : "degraded",
           );
           expect(payloads.at(-1)).toMatchObject({ ok: true, readiness: result.readiness });
+          if (scenario === "event-loop" || scenario === "ready" || scenario === "recovered") {
+            for (const updateMarker of [undefined, "1"]) {
+              expect(
+                await inspectGatewayRestart({
+                  ...authProbe,
+                  expectedVersion: "test",
+                  purpose: "lifecycle",
+                  env: { ...state.env, OPENCLAW_UPDATE_IN_PROGRESS: updateMarker },
+                }),
+              ).toMatchObject({
+                healthy: updateMarker ? ready : true,
+                readiness: result.readiness,
+              });
+            }
+          }
           if (scenario === "missing-account" || scenario === "missing-account-cached-ready") {
             expect(result.readiness?.reasons).toEqual([
               "channel:telegram:default:observation-unavailable",

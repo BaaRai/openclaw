@@ -18,7 +18,10 @@ import {
   type GatewayRestartProbeContext,
 } from "./restart-health-probe.js";
 import { finalizeGatewayRestartSnapshot } from "./restart-health-snapshot.js";
-import type { GatewayRestartSnapshot } from "./restart-health.types.js";
+import type {
+  GatewayRestartHealthPurpose,
+  GatewayRestartSnapshot,
+} from "./restart-health.types.js";
 import { hasListenerAttributionGap, listenerOwnedByRuntimePid } from "./restart-port-ownership.js";
 
 export async function inspectGatewayRestart(params: {
@@ -29,6 +32,7 @@ export async function inspectGatewayRestart(params: {
   expectedBuildId?: string | null;
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission;
   requirePluginHealth?: boolean;
+  purpose?: GatewayRestartHealthPurpose;
   probeContext?: GatewayRestartProbeContext;
   configuredProbe?: ConfiguredGatewayLocalProbe;
   probeHosts?: readonly string[];
@@ -170,9 +174,13 @@ export async function inspectGatewayRestart(params: {
             ? { channelProbeTimeouts: reachable.channelProbeTimeouts }
             : {}),
         },
-        expectedVersion,
-        expectedBuildId,
-        params.requirePluginHealth !== false,
+        {
+          expectedVersion,
+          expectedBuildId,
+          requirePluginHealth: params.requirePluginHealth !== false,
+          purpose: params.purpose,
+          env,
+        },
       );
     }
   }
@@ -253,8 +261,12 @@ export async function inspectGatewayRestart(params: {
       ...(channelProbeErrors?.length ? { channelProbeErrors } : {}),
       ...(channelProbeTimeouts?.length ? { channelProbeTimeouts } : {}),
     },
-    expectedVersion,
-    expectedBuildId,
-    params.requirePluginHealth !== false,
+    {
+      expectedVersion,
+      expectedBuildId,
+      requirePluginHealth: params.requirePluginHealth !== false,
+      purpose: params.purpose,
+      env,
+    },
   );
 }

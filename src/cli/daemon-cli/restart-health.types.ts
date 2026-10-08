@@ -1,8 +1,13 @@
 import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
-import type { GatewayHealthReadiness } from "../../gateway/health/readiness.js";
-import type { PluginHealthErrorSummary } from "../../gateway/health/types.js";
+import type {
+  GatewayHealthReadiness,
+  PluginHealthErrorSummary,
+} from "../../gateway/health/types.js";
 import type { GatewayStaleConnectionReason } from "../../gateway/stale-install.js";
 import type { PortUsage } from "../../infra/ports.js";
+
+/** Lifecycle acknowledgments are not update/repair recovery certificates. */
+export type GatewayRestartHealthPurpose = "lifecycle" | "verification" | "diagnostic";
 
 export const GATEWAY_RESTART_WAIT_OUTCOMES = [
   "healthy",
