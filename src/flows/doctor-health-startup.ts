@@ -39,5 +39,17 @@ export async function prepareDoctorHealthFlow(
       await import("../config/config-write-guard.js");
     assertConfigWriteAllowedInCurrentMode();
   }
+  // Source-only config reads avoid database admission and plugin validation: show
+  // configured startup dependencies before offline maintenance and repair prompts.
+  const [{ readSourceConfigBestEffort }, { inspectDoctorTailscalePrerequisite }] =
+    await Promise.all([
+      import("../config/io.runtime.js"),
+      import("../commands/doctor-tailscale.js"),
+    ]);
+  const prerequisite = await inspectDoctorTailscalePrerequisite(await readSourceConfigBestEffort());
+  if (prerequisite) {
+    const { note } = await import("../../packages/terminal-core/src/note.js");
+    note(prerequisite, "Gateway startup prerequisite");
+  }
   return { effectiveRuntime, repairRuntime, stateDirExistedAtStart, root };
 }
