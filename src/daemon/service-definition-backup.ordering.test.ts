@@ -24,7 +24,7 @@ import {
   withGatewayServiceRebindCapture,
 } from "./service-rebind.js";
 import { reconcileGatewayServiceDefinition } from "./service-reconciliation.js";
-import { readServiceFileState } from "./service-stage.js";
+import { publishServiceFile, readServiceFileState } from "./service-stage.js";
 import {
   assertGatewayServiceUpdateCurrent,
   GatewayServiceAuthorityError,
@@ -521,6 +521,59 @@ it("preserves typed pre-publication authority failure during central inspection"
   expect(await readServiceFileState(f.sourcePath)).toEqual(before);
   expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
 });
+
+it.each([false, true])(
+  "retains recovery-pending when final verification rejects native recovery (changed=%s)",
+  async (changed) => {
+    const f = await fixture("win32");
+    const warnings: string[] = [];
+    const operatorEdit = "\r\noperator changed the restored definition\r\n";
+    const recover = vi.fn(async (restoreDefinition: () => Promise<boolean>) => {
+      const restored = await restoreDefinition();
+      expect(restored).toBe(changed);
+      await fs.appendFile(f.sourcePath, operatorEdit);
+      return restored;
+    });
+    await expect(
+      reconcileGatewayServiceDefinition({
+        env: f.env,
+        root: "/old",
+        command: f.command,
+        expectedCommand: f.command,
+        install: async (hooks) => {
+          hooks.registerNativeRecovery?.(recover);
+          if (changed) {
+            await publishServiceFile({
+              filePath: f.sourcePath,
+              contents: "candidate service definition\r\n",
+              mode: 0o600,
+              definitionTransaction: hooks,
+            });
+          }
+          throw new Error("fixture activation failure");
+        },
+        warn: (message) => warnings.push(message),
+      }),
+    ).rejects.toMatchObject({
+      code: "service-authority-revoked",
+      outcome: "recovery-pending",
+      message: expect.stringContaining("Service definition changed"),
+    });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(warnings).toContainEqual(expect.stringContaining("backups retained"));
+    expect(warnings.join("\n")).not.toMatch(/previous definition was (?:restored|left unchanged)/u);
+    expect(await fs.readFile(f.sourcePath)).toEqual(
+      Buffer.concat([f.original, Buffer.from(operatorEdit)]),
+    );
+    const retained = (await fs.readdir(path.dirname(f.sourcePath)))
+      .filter((file) => file.endsWith(".receipt.bak"))
+      .map((file) => path.join(path.dirname(f.sourcePath), file))
+      .filter((file) => !f.capture.backupPaths.includes(file));
+    expect(retained).toHaveLength(1);
+    const receipt = await readRetainedReceipt(retained);
+    expect(await fs.readFile(`${f.sourcePath}.reconcile-${receipt.id}.bak`)).toEqual(f.original);
+  },
+);
 
 it.each(
   ["\n", "\r\n", "\r\r\n"].flatMap((newline) => [

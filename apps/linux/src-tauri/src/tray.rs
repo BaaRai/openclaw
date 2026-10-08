@@ -499,7 +499,7 @@ fn confirm_runtime_action(app: &AppHandle) {
             }
         };
         let elevation = match action.observation.requires_elevation() {
-            Ok(true) => "\n\nWindows administrator approval is required to verify and change this service. Only the OpenClaw CLI will run as administrator. Cancelling approval leaves this action without any service changes.",
+            Ok(true) => "\n\nWindows administrator approval is required to update this Gateway's Scheduled Task registration. Only the OpenClaw CLI will run as administrator. Cancelling approval leaves this action without any service changes.",
             Ok(false) => "",
             Err(error) => {
                 show_runtime_error(&current_app, &error);

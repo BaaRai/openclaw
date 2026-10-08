@@ -205,26 +205,35 @@ impl Observation {
     pub(crate) fn requires_elevation(&self) -> Result<bool, String> {
         #[cfg(windows)]
         {
-            // Both registration kinds share the Scheduled Task status label.
-            if self
+            self.requires_elevation_with(crate::windows_elevation::is_elevated)
+        }
+        #[cfg(not(windows))]
+        Ok(false)
+    }
+
+    #[cfg(windows)]
+    fn requires_elevation_with(
+        &self,
+        is_elevated: impl FnOnce() -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        if self.text("/service/label") == Some("Scheduled Task")
+            && self.flag("/service/loaded") == Some(true)
+            && self.text("/service/definitionMutation") == Some("writable")
+            && self.text("/service/targetRole") == Some("target")
+            && self.command().is_some()
+            && !self
                 .0
                 .pointer("/service/command/startupEntryPaths")
                 .and_then(Value::as_array)
                 .is_some_and(|paths| !paths.is_empty())
-            {
-                return Ok(false);
-            }
-            if self.protected_running_task() {
-                return Ok(true);
-            }
-            if self.text("/service/label") == Some("Scheduled Task")
-                && self.text("/service/runtime/status") == Some("running")
-            {
-                if let Some(pid) = self.number("/service/runtime/pid") {
-                    let pid = u32::try_from(pid).map_err(|_| "Invalid Gateway process ID.")?;
-                    return crate::windows_elevation::needs_process_elevation(pid);
-                }
-            }
+            && (matches!(
+                self.text("/service/runtime/status"),
+                Some("running" | "stopped")
+            ) || self.protected_running_task())
+        {
+            // The admitted Gateway task is republished with a boot trigger, even
+            // when its LeastPrivilege process is accessible to an ordinary token.
+            return is_elevated().map(|elevated| !elevated);
         }
         Ok(false)
     }
@@ -925,17 +934,64 @@ mod windows_tests {
     #[test]
     fn windows_startup_registration_never_requests_elevation() {
         let mut observed = protected_task();
-        assert_eq!(observed.requires_elevation(), Ok(true));
+        assert_eq!(observed.requires_elevation_with(|| Ok(false)), Ok(true));
         observed.0["service"]["command"]["startupEntryPaths"] = serde_json::json!([]);
-        assert_eq!(observed.requires_elevation(), Ok(true));
+        assert_eq!(observed.requires_elevation_with(|| Ok(false)), Ok(true));
         observed.0["service"]["command"]["startupEntryPaths"] =
             serde_json::json!([r"C:\Users\fixture\Startup\OpenClaw Gateway.vbs"]);
-        assert_eq!(observed.requires_elevation(), Ok(false));
+        assert_eq!(
+            observed.requires_elevation_with(|| panic!("Startup does not need elevation")),
+            Ok(false)
+        );
         observed.0["service"]["runtime"] =
-            serde_json::json!({"status": "running", "pid": u64::MAX});
+            serde_json::json!({"status": "running", "pid": std::process::id()});
         assert!(observed.admit(false).is_ok());
-        // An invalid PID would fail before OpenProcess if Startup reached that path.
-        assert_eq!(observed.requires_elevation(), Ok(false));
+        assert_eq!(
+            observed.requires_elevation_with(|| panic!("Startup does not need elevation")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn windows_task_registration_needs_elevation_independently_of_its_process() {
+        for state in ["running", "stopped"] {
+            let mut observed = protected_task();
+            // The current process is accessible; a stopped task has no process at all.
+            observed.0["service"]["runtime"] = if state == "running" {
+                serde_json::json!({"status": state, "pid": std::process::id()})
+            } else {
+                serde_json::json!({"status": state})
+            };
+            assert_eq!(observed.requires_elevation_with(|| Ok(false)), Ok(true));
+            assert_eq!(observed.requires_elevation_with(|| Ok(true)), Ok(false));
+            if state == "stopped" {
+                assert_eq!(observed.admit_for(false, true), Err(PAUSED.into()));
+            }
+        }
+        let protected = protected_task();
+        assert_eq!(protected.requires_elevation_with(|| Ok(false)), Ok(true));
+        assert_eq!(protected.requires_elevation_with(|| Ok(true)), Ok(false));
+    }
+
+    #[test]
+    fn windows_task_elevation_requires_known_registration() {
+        for (pointer, value) in [
+            ("/service/loaded", Value::Null),
+            ("/service/loaded", Value::Bool(false)),
+            ("/service/command", Value::Null),
+            ("/service/definitionMutation", "unknown".into()),
+            ("/service/definitionMutation", "sealed".into()),
+            ("/service/targetRole", "diagnostic-only".into()),
+            ("/service/runtime/state", "Queued".into()),
+        ] {
+            let mut observed = protected_task();
+            *observed.0.pointer_mut(pointer).unwrap() = value;
+            assert_eq!(
+                observed.requires_elevation_with(|| panic!("Unknown task cannot request UAC")),
+                Ok(false),
+                "{pointer}"
+            );
+        }
     }
 
     #[test]

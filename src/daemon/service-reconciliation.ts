@@ -187,14 +187,15 @@ export async function reconcileGatewayServiceDefinition(params: {
           },
           async () => {
             try {
-              recoveryResult = await (nativeRecovery
+              const recovered = await (nativeRecovery
                 ? nativeRecovery(() => transaction.compensate())
                 : transaction.compensate());
               if (nativeRecovery) {
                 // Native recovery restores enablement after definition compensation.
                 await transaction.finish();
               }
-              return recoveryResult;
+              recoveryResult = recovered;
+              return recovered;
             } catch (error) {
               recoveryError = error;
               throw error;

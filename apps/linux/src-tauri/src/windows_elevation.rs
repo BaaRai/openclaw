@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANCELLED, ERROR_INVALID_PARAMETER, HANDLE,
-    RPC_E_CHANGED_MODE, WAIT_OBJECT_0,
+    CloseHandle, ERROR_CANCELLED, HANDLE, RPC_E_CHANGED_MODE, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::{
     GetTokenInformation, TokenElevation, TokenElevationType, TokenElevationTypeLimited,
@@ -20,8 +19,7 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, WaitForSingleObject,
-    INFINITE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_Profile, SHGetKnownFolderPath, ShellExecuteExW, KF_FLAG_DEFAULT, SEE_MASK_FLAG_NO_UI,
@@ -48,37 +46,17 @@ impl Drop for Handle {
     }
 }
 
-/// Probe permissions only; the canonical owner checks the live process again before stopping it.
-pub(crate) fn needs_process_elevation(pid: u32) -> Result<bool, String> {
-    match unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-            false,
-            pid,
-        )
-    } {
-        Ok(process) => {
-            drop(Handle(process));
-            Ok(false)
-        }
-        Err(error) => process_access_error(error),
-    }
-}
-
-fn process_access_error(error: windows::core::Error) -> Result<bool, String> {
-    if error.code() == windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0) {
-        Ok(true)
-    } else if error.code() == windows::core::HRESULT::from_win32(ERROR_INVALID_PARAMETER.0) {
-        Ok(false)
-    } else {
-        Err(format!(
-            "Could not check Gateway process permissions: {error}"
-        ))
-    }
+pub(crate) fn is_elevated() -> Result<bool, String> {
+    read_elevation().map(|(_, elevated)| elevated)
 }
 
 /// Reject credential elevation into a different account before displaying UAC.
 pub(crate) fn can_elevate() -> Result<bool, String> {
+    let (kind, elevated) = read_elevation()?;
+    Ok(kind == TokenElevationTypeLimited || elevated)
+}
+
+fn read_elevation() -> Result<(TOKEN_ELEVATION_TYPE, bool), String> {
     let mut raw = HANDLE::default();
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) }
         .map_err(|error| error.to_string())?;
@@ -104,7 +82,7 @@ pub(crate) fn can_elevate() -> Result<bool, String> {
         )
     }
     .map_err(|error: windows::core::Error| error.to_string())?;
-    Ok(kind == TokenElevationTypeLimited || elevated.TokenIsElevated != 0)
+    Ok((kind, elevated.TokenIsElevated != 0))
 }
 
 struct Invocation {
@@ -410,16 +388,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
-    }
-
-    #[test]
-    fn windows_process_permission_probe_distinguishes_denial_from_an_exited_process() {
-        assert_eq!(needs_process_elevation(std::process::id()), Ok(false));
-        let error =
-            |code| windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code));
-        assert_eq!(process_access_error(error(5)), Ok(true));
-        assert_eq!(process_access_error(error(87)), Ok(false));
-        assert!(process_access_error(error(6)).is_err());
     }
 
     #[test]
