@@ -27,12 +27,12 @@ const captureInFlight = resolveGlobalMap<string, Promise<InternalSessionEntry>>(
 
 const captureScope = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionDiffBaselineCaptureScope"),
-  () => new AsyncLocalStorage<{ ready?: Promise<InternalSessionEntry> }>(),
+  () => new AsyncLocalStorage<{ ready?: Promise<InternalSessionEntry>; settled?: boolean }>(),
 );
 
-/** Inference can overlap capture; tools and native before-tool policy retain its dependency. */
+/** Host-gated inference can overlap capture; reply settlement retains capture failures. */
 export async function withSessionDiffBaselineCapture<T>(run: () => Promise<T>): Promise<T> {
-  const scope: { ready?: Promise<InternalSessionEntry> } = {};
+  const scope: { ready?: Promise<InternalSessionEntry>; settled?: boolean } = {};
   return captureScope.run(scope, async () => {
     try {
       return await run();
@@ -44,6 +44,15 @@ export async function withSessionDiffBaselineCapture<T>(run: () => Promise<T>): 
 
 export function getSessionDiffBaselineCapture(): Promise<InternalSessionEntry> | undefined {
   return captureScope.getStore()?.ready;
+}
+
+export function bindSessionDiffBaselineCaptureAssertion(): () => void {
+  const scope = captureScope.getStore();
+  return () => {
+    if (scope?.ready && !scope.settled) {
+      throw new Error("Session diff baseline capture must settle before native tool execution");
+    }
+  };
 }
 
 /** Read-only clients join an active capture; they never start or retry one. */
@@ -290,8 +299,14 @@ export async function ensureSessionDiffBaseline(params: {
       throw new Error("Deferred session diff capture requires a reply scope");
     }
     scope.ready = ready;
-    // The scoped tool barrier and reply settlement both consume this rejection.
-    void ready.catch(() => undefined);
+    scope.settled = false;
+    // Failed capture admission remains closed even for tools bound after settlement.
+    void ready.then(
+      () => {
+        scope.settled = true;
+      },
+      () => undefined,
+    );
     return entry;
   }
   return await ready;

@@ -12,6 +12,7 @@ import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import {
   expandBundleCommandPromptTemplate,
@@ -515,6 +516,7 @@ export async function handleInlineActions(
   let didSendInlineStatus = false;
   let queueModeOverride: QueueMode | undefined;
   if (handleInlineStatus) {
+    await getSessionDiffBaselineCapture();
     const { buildStatusReply } = await commandsRuntimeLoader.load();
     const inlineStatusReply = await buildStatusReply({
       ...commandParams,

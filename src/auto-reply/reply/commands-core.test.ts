@@ -1,6 +1,9 @@
 // Tests core command dispatch, reset hooks, authorization, and send policy.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { HookRunner } from "../../plugins/hooks.js";
+import * as baselineCapture from "../../sessions/session-diff-baseline.js";
 import type {
   CommandDispatchParams,
   CommandHandler,
@@ -86,6 +89,23 @@ describe("emitResetCommandHooks", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("joins capture before reset hooks execute outside command dispatch", async () => {
+    const capture = createDeferred<InternalSessionEntry>();
+    const joined = createDeferred();
+    vi.spyOn(baselineCapture, "getSessionDiffBaselineCapture").mockImplementation(() => {
+      joined.resolve();
+      return capture.promise;
+    });
+    const operation = runBeforeResetContext("agent:main:main");
+    try {
+      await awaitGateBeforeSettlement(joined.promise, operation, "Reset hooks bypassed capture");
+      expect(hookRunnerMocks.runBeforeReset).not.toHaveBeenCalled();
+    } finally {
+      capture.resolve({ sessionId: "reset-capture", updatedAt: 1 });
+      await operation;
+    }
   });
 
   it("passes the bound agent id to before_reset hooks for multi-agent session keys", async () => {

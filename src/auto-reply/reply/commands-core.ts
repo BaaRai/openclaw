@@ -1,5 +1,13 @@
 import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  createPluginCommandRuntime,
+  matchPluginCommandInvocation,
+  PLUGIN_COMMAND_DISPATCH,
+  type PluginCommandExecutionReplyOptions,
+} from "../../plugins/plugin-command-runtime.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import { isControlCommandMessage } from "../command-detection.js";
 import { shouldHandleTextCommands } from "../commands-registry.js";
 import { copyReplyPayloadMetadata } from "../reply-payload.js";
 import { maybeHandleResetCommand } from "./commands-reset.js";
@@ -31,6 +39,31 @@ export async function handleCommands(params: CommandDispatchParams): Promise<Com
   if (params.ctx.CommandInterpretationSuppressed === true) {
     return { shouldContinue: true };
   }
+  const allowTextCommands = shouldHandleTextCommands({
+    cfg: params.cfg,
+    surface: params.command.surface,
+    commandSource: params.ctx.CommandSource,
+  });
+  const body = params.command.commandBodyNormalized;
+  const planned = (params.opts as PluginCommandExecutionReplyOptions | undefined)?.[
+    PLUGIN_COMMAND_DISPATCH
+  ];
+  const pluginCommand =
+    planned ??
+    (allowTextCommands && body.trim().startsWith("/")
+      ? (matchPluginCommandInvocation(createPluginCommandRuntime(), body, {
+          channel: params.command.channel,
+        })?.dispatch ?? { kind: "non-plugin" as const })
+      : undefined);
+  if (
+    /^\/(new|reset)(?:\s|$)/i.test(body) ||
+    (allowTextCommands &&
+      (isControlCommandMessage(body, params.cfg) ||
+        body.startsWith("!") ||
+        pluginCommand?.kind === "plugin"))
+  ) {
+    await getSessionDiffBaselineCapture();
+  }
   const allowCreateSessionEntry = params.allowCreateSessionEntry === true;
   const initialSessionEntry =
     params.initialSessionEntry ??
@@ -48,6 +81,9 @@ export async function handleCommands(params: CommandDispatchParams): Promise<Com
   const { resolveModelLevels, ...dispatchParams } = params;
   const commandParams = {
     ...dispatchParams,
+    ...(pluginCommand
+      ? { opts: { ...params.opts, [PLUGIN_COMMAND_DISPATCH]: pluginCommand } }
+      : {}),
     agentId,
     agentDir: agentId === params.agentId ? params.agentDir : resolveAgentDir(params.cfg, agentId),
     initialSessionEntry,
@@ -63,11 +99,6 @@ export async function handleCommands(params: CommandDispatchParams): Promise<Com
     ...(await resolveModelLevels()),
   };
   const handlers = await commandHandlersRuntimeLoader.load();
-  const allowTextCommands = shouldHandleTextCommands({
-    cfg: params.cfg,
-    surface: params.command.surface,
-    commandSource: params.ctx.CommandSource,
-  });
 
   for (const handler of handlers) {
     const result = await handler(handlerParams, allowTextCommands);

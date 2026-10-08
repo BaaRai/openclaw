@@ -8,7 +8,6 @@ import { hasGlobalHooks } from "../../plugins/hook-runner-global.js";
 import { getToolHookMatcherScope } from "../../plugins/hooks.js";
 import { mergePluginToolMatcherScopes } from "../../plugins/tool-hook-matcher.js";
 import { getTrustedToolPolicyMatcherScope } from "../../plugins/trusted-tool-policy.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import {
   cancelDeferredPluginToolApproval,
   hasBeforeToolCallPolicy,
@@ -98,7 +97,7 @@ export function nativeHookRelayEventToolMatcher(
   event: NativeHookRelayEvent,
 ): readonly string[] | undefined {
   if (event === "pre_tool_use") {
-    if (getSessionDiffBaselineCapture() || nativePreToolUseMayRunLoopDetection(registration)) {
+    if (nativePreToolUseMayRunLoopDetection(registration)) {
       return undefined;
     }
     // Relay selection and policy execution must read the same scoped/root registry.

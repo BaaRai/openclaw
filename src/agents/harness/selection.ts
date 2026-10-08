@@ -12,6 +12,7 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-store.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import {
   assertOperatorModelAllowed,
   bindOperatorModelExecution,
@@ -211,6 +212,10 @@ export async function runAgentHarnessAttempt(
         }
       : selectPreparedAgentHarness(params);
   const harness = selection.harness;
+  if (!selection.builtIn) {
+    // Native tool hooks have fixed deadlines; capture must finish before backend dispatch.
+    await getSessionDiffBaselineCapture();
+  }
   const nativeOwnsModel = nativeSessionRuntime?.auth === "native";
   const nativeModelPolicySupported = harness.nativeModelPolicySupport === "exact";
   assertHarnessModelPolicySupport(harness, params);

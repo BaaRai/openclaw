@@ -1,3 +1,4 @@
+import { resolveAcpSessionCwd } from "@openclaw/acp-core/runtime/session-identifiers";
 import {
   isSessionIdentityPending,
   resolveSessionIdentityFromMeta,
@@ -47,6 +48,7 @@ import {
   type ExtractedFileImage,
 } from "../../media-understanding/extracted-file-images.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { ensureSessionDiffBaseline } from "../../sessions/session-diff-baseline.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
 import { classifySessionStateActor } from "../../sessions/session-state-events.js";
@@ -612,6 +614,18 @@ export async function tryDispatchAcpReplyCore(
       return { queuedFinal: false, counts };
     }
 
+    if (acpResolution.entry) {
+      await ensureSessionDiffBaseline({
+        agentId: acpAgentId,
+        sessionKey: canonicalSessionKey,
+        storePath: participantTarget.storePath,
+        entry: acpResolution.entry,
+        cwd:
+          resolveAcpSessionCwd(acpResolution.meta) ??
+          resolveAgentWorkspaceDir(params.cfg, acpAgentId),
+        isNewSession: false,
+      });
+    }
     emitAuditStart();
     try {
       await delivery.startReplyLifecycle();

@@ -1,5 +1,6 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { getAcpSessionManager, testing } from "../../acp/control-plane/manager.js";
 import { disposeAcpSessionManagerInstance } from "../../acp/control-plane/manager.lifecycle.js";
 import {
@@ -8,12 +9,15 @@ import {
 } from "../../acp/runtime/registry.js";
 import * as embeddedAgent from "../../agents/embedded-agent.js";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
+import { SessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import {
   listSessionPendingInputs,
   loadSessionEntryReadOnly,
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { createSessionDiffBaselineCaptureClaim } from "../../config/sessions/session-diff-baseline-capture.js";
+import type { SessionDiffBaseline } from "../../config/sessions/types.js";
 import {
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
@@ -38,12 +42,14 @@ import {
 } from "../../plugin-sdk/plugin-test-runtime.js";
 import { createReplyDispatcher, dispatchInboundMessage } from "../../plugin-sdk/reply-runtime.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import * as sessionDiff from "../../sessions/session-diff.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { tryDispatchAcpReplyCore } from "./dispatch-acp.js";
+import { runDispatch } from "./dispatch-acp.test-support.js";
 import * as processedOutcome from "./dispatch-processed-outcome.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import { claimInboundDedupe, resetInboundDedupe } from "./inbound-dedupe.js";
@@ -689,3 +695,114 @@ it.each(["acp", "ordinary"] as const)("resets the explicit %s target", async (ta
     },
   );
 });
+
+it.each(["captured", "unavailable", "invalidated", "legacy"] as const)(
+  "settles a direct ACP turn's armed workspace baseline before dispatch (%s)",
+  async (outcome) => {
+    await withOpenClawTestState({ label: "acp-first-turn-baseline" }, async (state) => {
+      const agentId = "main";
+      const sessionKey = "agent:main:acp:baseline";
+      const backendId = "synthetic-baseline";
+      const cwd = state.path("runtime-workspace");
+      const cfg = {
+        agents: { defaults: { workspace: state.workspaceDir } },
+        acp: { enabled: true, dispatch: { enabled: true }, backend: backendId },
+        plugins: { enabled: false },
+      };
+      await state.writeConfig(cfg);
+      const dispatched = createDeferred();
+      const capturing = createDeferred();
+      const capture = createDeferred<SessionDiffBaseline>();
+      const captureBaseline = vi
+        .spyOn(sessionDiff, "captureSessionDiffBaseline")
+        .mockImplementation(() => {
+          capturing.resolve();
+          return capture.promise;
+        });
+      let turns = 0;
+      registerAcpRuntimeBackend({
+        id: backendId,
+        runtime: {
+          ownerAwareSessions: 1,
+          async ensureSession(input) {
+            return { ...input, backend: backendId, runtimeSessionName: input.sessionKey };
+          },
+          async *runTurn() {
+            turns += 1;
+            dispatched.resolve();
+            yield { type: "done" };
+          },
+          async cancel() {},
+          async close() {},
+        },
+      });
+      testing.resetAcpSessionManagerForTests();
+      const manager = getAcpSessionManager();
+      let operation: ReturnType<typeof runDispatch> | undefined;
+      try {
+        await manager.initializeSession({
+          cfg,
+          sessionKey,
+          agentId,
+          agent: "fixture",
+          mode: "persistent",
+          cwd,
+        });
+        const entry = loadSessionEntryReadOnly({ agentId, sessionKey });
+        if (!entry) {
+          throw new Error("ACP fixture did not create its canonical session");
+        }
+        if (outcome !== "legacy") {
+          await replaceSessionEntry(
+            { agentId, sessionKey },
+            {
+              ...entry,
+              sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+            },
+          );
+        }
+        operation = runDispatch({
+          cfg,
+          sessionKeyOverride: sessionKey,
+          bodyForAgent: "write a file",
+        });
+        if (outcome === "legacy") {
+          await operation;
+          expect(captureBaseline).not.toHaveBeenCalled();
+          expect(turns).toBe(1);
+          return;
+        }
+        await awaitGateBeforeSettlement(
+          capturing.promise,
+          Promise.race([dispatched.promise, operation]),
+          "ACP backend dispatched before starting its armed workspace capture",
+        );
+        expect(turns).toBe(0);
+        expect(captureBaseline).toHaveBeenCalledWith({ cwd, sessionId: entry.sessionId });
+        if (outcome === "captured") {
+          capture.resolve({ version: 1, sessionId: entry.sessionId, root: cwd, files: [] });
+        } else {
+          capture.reject(
+            outcome === "invalidated"
+              ? new SessionWorkStartInvalidatedError("ACP baseline generation changed")
+              : new Error("Workspace capture unavailable"),
+          );
+        }
+        await operation;
+        expect(turns).toBe(outcome === "invalidated" ? 0 : 1);
+        if (outcome === "captured") {
+          expect(loadSessionEntryReadOnly({ agentId, sessionKey })).toMatchObject({
+            sessionDiffBaseline: { sessionId: entry.sessionId, root: cwd },
+          });
+        }
+      } finally {
+        capture.resolve({ version: 1, sessionId: "cleanup", root: cwd, files: [] });
+        await operation;
+        captureBaseline.mockRestore();
+        await disposeAcpSessionManagerInstance(manager, "test-complete");
+        testing.resetAcpSessionManagerForTests();
+        unregisterAcpRuntimeBackend(backendId);
+      }
+    });
+  },
+);

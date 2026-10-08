@@ -21,7 +21,6 @@ import type {
   PluginHookToolInputKind,
   PluginHookToolKind,
 } from "../plugins/types.js";
-import { getSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
 import { resolveSkillWorkshopToolApproval } from "../skills/workshop/policy.js";
 import {
   checkClientVoiceToolConfirmationPolicy,
@@ -79,11 +78,7 @@ export function getBeforeToolCallPolicyDiagnosticState(): BeforeToolCallPolicyDi
 
 export function hasBeforeToolCallPolicy(): boolean {
   const state = getBeforeToolCallPolicyDiagnosticState();
-  return (
-    Boolean(getSessionDiffBaselineCapture()) ||
-    state.hasBeforeToolCallHook ||
-    state.trustedToolPolicies.length > 0
-  );
+  return state.hasBeforeToolCallHook || state.trustedToolPolicies.length > 0;
 }
 
 /** Consume voice approval only after tool-owned finalization produces execution params. */

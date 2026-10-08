@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
@@ -10,7 +11,10 @@ import {
   loadSessionEntry,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { createSessionDiffBaselineCaptureClaim } from "../../config/sessions/session-diff-baseline-capture.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import * as baselineCapture from "../../sessions/session-diff-baseline.js";
+import * as sessionDiff from "../../sessions/session-diff.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markCompleteReplyConfig } from "./get-reply-fast-path.test-support.js";
 import * as sessionPersistence from "./session-entry-persistence.js";
@@ -191,6 +195,48 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
 
     return { result, typing, storePath: resolvedConfig.session?.store };
   }
+
+  it("starts and joins first-turn capture before native fast command dispatch", async () => {
+    const storePath = path.join(tempDirs.make("native-baseline-"), "sessions.json");
+    const sessionKey = "agent:main:telegram:123";
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      {
+        sessionId: "native-command-capture",
+        createdVia: "operator",
+        updatedAt: Date.now(),
+        sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+      },
+    );
+    const capture =
+      createDeferred<Awaited<ReturnType<typeof sessionDiff.captureSessionDiffBaseline>>>();
+    const joined = createDeferred();
+    const readCapture = baselineCapture.getSessionDiffBaselineCapture;
+    vi.spyOn(sessionDiff, "captureSessionDiffBaseline").mockReturnValue(capture.promise);
+    vi.spyOn(baselineCapture, "getSessionDiffBaselineCapture").mockImplementation(() => {
+      const ready = readCapture();
+      if (ready) {
+        joined.resolve();
+      }
+      return ready;
+    });
+    const operation = baselineCapture.withSessionDiffBaselineCapture(() =>
+      resolveNativeDirectiveCommand("/status", { session: { store: storePath } }),
+    );
+    try {
+      await awaitGateBeforeSettlement(
+        joined.promise,
+        operation,
+        "Native fast command completed without joining capture",
+      );
+      expect(buildStatusReplyMock).not.toHaveBeenCalled();
+    } finally {
+      // An unavailable baseline preserves command execution without attribution filtering.
+      capture.resolve(undefined);
+      await operation;
+    }
+    expect(buildStatusReplyMock).toHaveBeenCalledOnce();
+  });
 
   it("persists a native exec node selection before model dispatch", async () => {
     const { result, storePath } = await resolveNativeDirectiveCommand(

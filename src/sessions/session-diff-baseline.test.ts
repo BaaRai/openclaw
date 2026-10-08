@@ -7,10 +7,7 @@ import {
 import { hasBeforeToolCallPolicy } from "../agents/agent-tools.before-tool-call.policy.js";
 import { wrapToolWithBeforeToolCallHook } from "../agents/agent-tools.before-tool-call.wrapper.js";
 import { createAdmittedHostCapabilityTestFixture } from "../agents/harness/host-capability.test-support.js";
-import {
-  nativeHookRelayEventHasLocalWork,
-  nativeHookRelayEventToolMatcher,
-} from "../agents/harness/native-hook-relay-events.js";
+import { buildNativeHookRelayCommandPlan } from "../agents/harness/native-hook-relay-plan.js";
 import { SessionWorkStartInvalidatedError } from "../config/sessions/lifecycle.js";
 import {
   deleteSessionEntryLifecycle,
@@ -51,6 +48,7 @@ vi.mock("./session-diff.js", async (importOriginal) => ({
 
 import {
   ensureSessionDiffBaseline,
+  getSessionDiffBaselineCapture,
   withSessionDiffBaselineCapture,
 } from "./session-diff-baseline.js";
 
@@ -155,14 +153,7 @@ describe("ensureSessionDiffBaseline", () => {
           isNewSession: false,
           deferCapture: true,
         });
-        expect(hasBeforeToolCallPolicy()).toBe(true);
-        const policy = {
-          sessionKey: target.sessionKey,
-          agentId: target.agentId,
-          preToolUseLoopDetection: false,
-        };
-        expect(nativeHookRelayEventHasLocalWork(policy, "pre_tool_use")).toBe(true);
-        expect(nativeHookRelayEventToolMatcher(policy, "pre_tool_use")).toBeUndefined();
+        expect(hasBeforeToolCallPolicy()).toBe(false);
         const host =
           runtime !== "embedded"
             ? await createAdmittedHostCapabilityTestFixture({
@@ -208,7 +199,12 @@ describe("ensureSessionDiffBaseline", () => {
         // Native HTTP callbacks and retained tools execute outside the preparation ALS scope.
         expect(hasBeforeToolCallPolicy()).toBe(false);
         const execution = invoke();
-        const refused = expect(execution).rejects.toBeInstanceOf(SessionWorkStartInvalidatedError);
+        const refused =
+          runtime === "native"
+            ? expect(execution).rejects.toThrow(
+                "Session diff baseline capture must settle before native tool execution",
+              )
+            : expect(execution).rejects.toBeInstanceOf(SessionWorkStartInvalidatedError);
         capture.reject(new SessionWorkStartInvalidatedError("baseline generation changed"));
         await refused;
         expect(mutate).not.toHaveBeenCalled();
@@ -219,6 +215,30 @@ describe("ensureSessionDiffBaseline", () => {
       }
     },
   );
+
+  it("does not enable a native relay solely for a settled workspace capture", async () => {
+    const entry = makeEntry("settled-native-relay", {
+      sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+    });
+    const target = await seedEntry({ entry });
+    captureMocks.capture.mockResolvedValueOnce(baseline(entry.sessionId));
+    await withSessionDiffBaselineCapture(async () => {
+      await ensureSessionDiffBaseline({
+        ...target,
+        cwd: "/workspace",
+        isNewSession: false,
+        deferCapture: true,
+      });
+      await getSessionDiffBaselineCapture();
+      const relay = buildNativeHookRelayCommandPlan({
+        provider: "codex",
+        relayId: "settled-baseline",
+        generation: "settled-generation",
+        preToolUseLoopDetection: false,
+      });
+      expect(relay.shouldRelayEvent("pre_tool_use")).toBe(false);
+    });
+  });
 
   it.each([false, true])(
     "keeps a global session baseline in its selected agent's custom store (new=%s)",

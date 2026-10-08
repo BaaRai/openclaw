@@ -11,6 +11,7 @@ import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
@@ -37,6 +38,7 @@ import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { stripStructuralPrefixes } from "./mentions.js";
 import { resolveContextTokens } from "./model-selection-context.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
+import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { persistReplySessionEntry } from "./session-entry-persistence.js";
 import { createSkillCommandLoaders } from "./skill-command-loaders.js";
 import type { createTypingController } from "./typing.js";
@@ -145,6 +147,13 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     sessionState.sessionEntryHandle.replaceCurrent(persistedInitialEntry);
     sessionState.sessionId = persistedInitialEntry.sessionId;
   }
+  if (params.commandAuthorized || sessionState.initialSessionEntry) {
+    await prepareReplySessionDiffBaseline({
+      agentId: params.agentId,
+      workspaceDir: params.workspaceDir,
+      sessionState,
+    });
+  }
   const command = buildCommandContext({
     ctx: params.ctx,
     cfg: params.cfg,
@@ -155,6 +164,7 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     commandAuthorized: params.commandAuthorized,
   });
   if (command.commandBodyNormalized === "/status") {
+    await getSessionDiffBaselineCapture();
     const targetSessionEntry =
       sessionState.sessionStore[sessionState.sessionKey] ?? sessionState.sessionEntry;
     const canApplyStoredModel =
