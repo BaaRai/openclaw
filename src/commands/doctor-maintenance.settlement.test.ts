@@ -239,6 +239,39 @@ it.each([false, true])(
   },
 );
 
+it.each([undefined, {}])(
+  "reports settled state-release failure without a managed Gateway (%j)",
+  async (config) => {
+    const failure = new Error("settled state release failed");
+    const maintenance = await beginDoctorMaintenance({
+      root: null,
+      options: { repair: true, nonInteractive: true },
+      runtime: { log: boundary.log, error: vi.fn(), exit: vi.fn() },
+    });
+    boundary.release.mockRejectedValueOnce(failure);
+    const result = await maintenance!.finish(config).catch((error: unknown) => error);
+    await expect(maintenance!.release()).rejects.toBe(failure);
+    expect(result).toBe(failure);
+    expect(boundary.close).toHaveBeenCalledOnce();
+    expect(boundary.restart).not.toHaveBeenCalled();
+  },
+);
+
+it("retains state custody when the resource scope cannot close", async () => {
+  const cleanupFailure = new Error("persistent resource cleanup failure");
+  boundary.close.mockRejectedValue(cleanupFailure);
+  const maintenance = await begin();
+
+  await expect(maintenance!.finish({})).rejects.toThrow(
+    "Doctor maintenance resource cleanup failed",
+  );
+  expect(boundary.close).toHaveBeenCalledTimes(2);
+  expect(boundary.release).not.toHaveBeenCalled();
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+  expect(maintenance!.databaseWrites).toBeUndefined();
+});
+
 it.each([false, true])(
   "checks same-installation policy before restoring Doctor's Gateway (repair activated=%s)",
   async (activated) => {

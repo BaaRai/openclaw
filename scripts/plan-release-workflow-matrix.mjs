@@ -17,10 +17,16 @@ const DOCKER_E2E_CHUNKS = [
   },
   {
     chunk_id: "package-update-openai",
-    label: "package/update OpenAI and recovery",
-    // Five weight-3 npm lanes serialize at limit 5: 30m + 30m + 20m + 25m + 43m.
-    // The 10m chat lane overlaps; add 10m for setup/artifacts => 158m, round to 160m.
-    timeout_minutes: 160,
+    label: "package/update OpenAI",
+    // Four weight-3 npm lanes serialize at limit 5: 105m + tool/setup/upload margin.
+    timeout_minutes: 135,
+    profiles: "beta minimum stable full",
+  },
+  {
+    chunk_id: "package-update-restart-auth",
+    label: "package/update restart auth",
+    // The admitted lane has a 62m budget; retain setup and upload headroom.
+    timeout_minutes: 75,
     profiles: "beta minimum stable full",
   },
   {
@@ -32,7 +38,11 @@ const DOCKER_E2E_CHUNKS = [
   {
     chunk_id: "package-update-migrations",
     label: "package/update migrations",
-    timeout_minutes: 60,
+    // Full candidates run four published-upgrade-survivor baselines plus
+    // update-channel-switch; all are weight-3 npm lanes, so they serialize at limit 5.
+    // Hosted passes measured 766-911s and 484-1632s per lane: 15m + 4 x 28m + 10m
+    // setup/artifacts = 137m, round to 150m. At 60m, 3 of 6 full candidates cancelled.
+    timeout_minutes: 150,
     profiles: "beta minimum stable full",
   },
   {
@@ -222,8 +232,10 @@ const LIVE_DOCKER_SUITES = [
     suite_id: "live-gateway-advisory-docker-opencode-openrouter",
     suite_group: "live-gateway-advisory-docker",
     label: "Docker live gateway OpenCode/OpenRouter",
+    // High-signal selection picks opencode-go/deepseek-v4-flash, a Global-region route the
+    // release workspace rejects with 400. Pin refs proven reachable by the native lanes.
     command:
-      'OPENCLAW_LIVE_GATEWAY_PROVIDERS=opencode-go,openrouter OPENCLAW_LIVE_GATEWAY_MAX_MODELS=2 OPENCLAW_LIVE_GATEWAY_STEP_TIMEOUT_MS=90000 OPENCLAW_LIVE_GATEWAY_MODEL_TIMEOUT_MS=180000 OPENCLAW_LIVE_DOCKER_REPO_ROOT="$GITHUB_WORKSPACE" timeout --foreground --kill-after=30s 35m bash .release-harness/scripts/test-live-gateway-models-docker.sh',
+      'OPENCLAW_LIVE_GATEWAY_PROVIDERS=opencode-go,openrouter OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/glm-5.3,openrouter/minimax/minimax-m2.7 OPENCLAW_LIVE_GATEWAY_MAX_MODELS=2 OPENCLAW_LIVE_GATEWAY_STEP_TIMEOUT_MS=90000 OPENCLAW_LIVE_GATEWAY_MODEL_TIMEOUT_MS=180000 OPENCLAW_LIVE_DOCKER_REPO_ROOT="$GITHUB_WORKSPACE" timeout --foreground --kill-after=30s 35m bash .release-harness/scripts/test-live-gateway-models-docker.sh',
     timeout_minutes: 40,
     profile_env_only: false,
     profiles: "full",

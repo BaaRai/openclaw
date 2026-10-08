@@ -380,7 +380,10 @@ describe("generate-dependency-release-evidence", () => {
         git(origin, "commit", "--quiet", "--allow-empty", "-m", "release target");
         const releaseSha = git(origin, "rev-parse", "HEAD");
         git(origin, "branch", "release-target");
-        git(origin, "commit", "--quiet", "--allow-empty", "-m", "later main release");
+        await writeFile(path.join(origin, "historical-only.txt"), "lazy dependency content\n");
+        git(origin, "add", "historical-only.txt");
+        git(origin, "commit", "--quiet", "-m", "later main release");
+        const laterTree = git(origin, "rev-parse", "HEAD^{tree}");
         git(origin, "tag", "--no-sign", "v2026.6.1");
         git(origin, "tag", "--no-sign", "release-tooling-unrelated");
         git(origin, "branch", "unrelated");
@@ -404,6 +407,16 @@ describe("generate-dependency-release-evidence", () => {
             "\n",
           ),
         ).toEqual(["refs/tags/v2026.5.1", "refs/tags/v2026.6.1"]);
+        const fetchedTree = execFileSync("git", ["cat-file", "--batch-check"], {
+          cwd: target,
+          encoding: "utf8",
+          env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+          input: `${laterTree}\n`,
+        }).trim();
+        expect(fetchedTree).toBe(`${laterTree} missing`);
+        expect(git(target, "show", "v2026.6.1:historical-only.txt")).toBe(
+          "lazy dependency content",
+        );
       } finally {
         await rm(dir, { force: true, recursive: true });
       }

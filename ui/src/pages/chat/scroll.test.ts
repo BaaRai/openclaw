@@ -375,6 +375,26 @@ describe("scheduleChatScroll", () => {
     expect(host.chatNewMessagesBelow).toBe(false);
   });
 
+  it("re-sticks unlocked content growth beyond the near-bottom threshold", async () => {
+    const { host, container } = createScrollHost({
+      scrollHeight: 2000,
+      scrollTop: 1600,
+      clientHeight: 400,
+    });
+    host.chatHasAutoScrolled = true;
+    host.chatUserNearBottom = false;
+    host.chatLastScrollHeight = 2000;
+    Object.defineProperty(container, "scrollHeight", { value: 3124 });
+
+    scheduleChatScroll(host, false, false, { contentChanged: true });
+    await host.updateComplete;
+
+    expect(container.scrollTop).toBe(container.scrollHeight);
+    expect(host.chatFollowLocked).toBe(false);
+    expect(host.chatUserNearBottom).toBe(true);
+    expect(host.chatNewMessagesBelow).toBe(false);
+  });
+
   it("shows new messages for content changes that do not increase thread height", async () => {
     const { host } = createScrollHost({
       scrollHeight: 2000,
@@ -475,7 +495,7 @@ describe("scheduleChatScroll", () => {
     expect(host.chatReadingHistory).toBe(false);
   });
 
-  it.each(["commit", "resize", "schedule", "remote-input"] as const)(
+  it.each(["commit", "resize", "schedule"] as const)(
     "preserves a pending manual jump across an automatic %s",
     (update) => {
       const frames = installAnimationFrameQueue();
@@ -485,9 +505,7 @@ describe("scheduleChatScroll", () => {
       host.chatUserNearBottom = false;
 
       scheduleChatScroll(host, true, false, { source: "manual" });
-      if (update === "remote-input") {
-        lockChatScroll(host, "remote-input");
-      } else if (update === "schedule") {
+      if (update === "schedule") {
         scheduleChatScroll(host);
       } else {
         scheduleCommittedChatScroll(host, false, false, {

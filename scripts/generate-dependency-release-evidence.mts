@@ -152,12 +152,13 @@ export function resolvePreviousReleaseTag({
       rootDir,
       execFileSyncImpl,
     );
-    // Describe needs complete target ancestry; unrelated branches and tooling tags do not.
+    // Describe needs complete commit ancestry, not historical trees. Dependency
+    // diffs hydrate their selected trees/blobs lazily from the promisor remote.
     runCommand(
       "git",
       [
         "fetch",
-        "--filter=blob:none",
+        "--filter=tree:0",
         "--no-tags",
         "--force",
         ...(shallow === "true" ? ["--unshallow"] : []),

@@ -9,7 +9,6 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { withTimeout } from "openclaw/plugin-sdk/security-runtime";
 import { withinTest } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { createIrcIngressMonitor } from "./irc-ingress.js";
@@ -247,7 +246,14 @@ function installPairingMonitorRuntime(
 describe("IRC automatic reply outcomes", () => {
   it("reports sanitized-empty replies without recording outbound delivery", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
+      const admitted = createDeferred<void>();
       const completed = observeIngressCompletion(ingressQueue);
+      const enqueue = ingressQueue.enqueue.bind(ingressQueue);
+      ingressQueue.enqueue = async (...args) => {
+        const result = await enqueue(...args);
+        admitted.resolve();
+        return result;
+      };
       const core = createPluginRuntimeMock();
       vi.mocked(core.channel.reply.dispatchReplyWithBufferedBlockDispatcher).mockImplementation(
         async ({ dispatcherOptions }) => {
@@ -283,6 +289,7 @@ describe("IRC automatic reply outcomes", () => {
           statusSink,
         });
         server.sendInbound("bot");
+        await withinTest(admitted.promise, signal);
         await withinTest(completed, signal);
 
         expect(runtime.error).toHaveBeenCalledWith(
@@ -436,7 +443,7 @@ describe("irc monitor reconnect", () => {
     }, "alpha");
   });
 
-  it("reconnects when an established IRC socket closes", async () => {
+  it("reconnects when an established IRC socket closes", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       installMonitorRuntime();
       const { statusSink, reconnected } = observeReconnect();
@@ -447,7 +454,7 @@ describe("irc monitor reconnect", () => {
       try {
         monitor = await monitorIrcProvider({ config, ingressQueue, statusSink });
         server.disconnectFirst();
-        await withTimeout(reconnected, 3000, "IRC recovery after a failed reconnect attempt");
+        await withinTest(reconnected, signal);
         expect(
           server.lines.filter((line) => line === "USER bot 0 * :OpenClaw").length,
         ).toBeGreaterThanOrEqual(3);
@@ -477,7 +484,7 @@ describe("irc monitor reconnect", () => {
     });
   });
 
-  it("does not send a delayed private reply through the reconnected client", async () => {
+  it("does not send a delayed private reply through the reconnected client", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       const pairingStarted = createDeferred<void>();
       const pairingResult = createDeferred<{ code: string; created: boolean }>();
@@ -497,13 +504,13 @@ describe("irc monitor reconnect", () => {
           statusSink,
         });
         server.sendInbound();
-        await withTimeout(pairingStarted.promise, 3000, "IRC pairing started");
+        await withinTest(pairingStarted.promise, signal);
         server.disconnectFirst();
-        await withTimeout(reconnected, 3000, "IRC replacement connection ready");
+        await withinTest(reconnected, signal);
         expect(server.connectionCount).toBeGreaterThanOrEqual(2);
         expect(server.linesByConnection[1]?.some((line) => line.startsWith("USER "))).toBe(true);
         pairingResult.resolve({ code: "CODE", created: true });
-        const completedId = await withTimeout(completed, 3000, "stale private reply completion");
+        const completedId = await withinTest(completed, signal);
         expect(enqueueSpy).toHaveBeenCalledOnce();
         expect(completedId).toBe(enqueueSpy.mock.calls[0]?.[0]);
         expect(await ingressQueue.listPending({ limit: "all" })).toEqual([]);
@@ -511,7 +518,7 @@ describe("irc monitor reconnect", () => {
         // Let the delayed send finish before shutdown can suppress it.
         // Peer-observed QUIT follows any reply bytes queued on the replacement socket.
         await monitor.stop();
-        await withTimeout(server.replacementQuitReceived, 3000, "replacement IRC QUIT");
+        await withinTest(server.replacementQuitReceived, signal);
         expect(
           server.linesByConnection[0]?.some((line) => line.startsWith("PRIVMSG alice :")),
         ).toBe(false);
@@ -531,7 +538,7 @@ describe("irc monitor reconnect", () => {
 });
 
 describe("irc monitor inbound target", () => {
-  it.each([
+  for (const { label, serverTarget, colonlessBody, expected } of [
     {
       label: "channel",
       serverTarget: "#openclaw",
@@ -548,9 +555,8 @@ describe("irc monitor inbound target", () => {
       colonlessBody: true,
       expected: { isGroup: true, target: "#openclaw", rawTarget: "#openclaw" },
     },
-  ])(
-    "maps $label targets through the monitor boundary",
-    async ({ serverTarget, colonlessBody, expected }) => {
+  ] as const) {
+    it(`maps ${label} targets through the monitor boundary`, async ({ signal }) => {
       await withIngressQueue(async (ingressQueue) => {
         installMonitorRuntime();
         const server = await startInboundIrcServer();
@@ -566,7 +572,7 @@ describe("irc monitor inbound target", () => {
             },
           });
           server.sendInbound(serverTarget, colonlessBody);
-          const completedId = await withTimeout(completed, 3000, "inbound IRC message completion");
+          const completedId = await withinTest(completed, signal);
           expect(messages).toHaveLength(1);
           expect(messages[0]).toMatchObject({
             messageId: completedId,
@@ -581,10 +587,10 @@ describe("irc monitor inbound target", () => {
           await server.close();
         }
       });
-    },
-  );
+    });
+  }
 
-  it("uses the receipt-time nickname when replaying a self echo", async () => {
+  it("uses the receipt-time nickname when replaying a self echo", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       installMonitorRuntime();
       const eventId = "local:previous-connection:000000000001";
@@ -611,7 +617,7 @@ describe("irc monitor inbound target", () => {
           ingressQueue,
           onMessage,
         });
-        expect(await withTimeout(completed, 3000, "replayed self echo completion")).toBe(eventId);
+        expect(await withinTest(completed, signal)).toBe(eventId);
         expect(await ingressQueue.listPending({ limit: "all" })).toEqual([]);
         expect(await ingressQueue.listClaims()).toEqual([]);
         expect(onMessage).not.toHaveBeenCalled();
@@ -624,7 +630,7 @@ describe("irc monitor inbound target", () => {
     });
   });
 
-  it("does not replay a DM after the accepting connection changed", async () => {
+  it("does not replay a DM after the accepting connection changed", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       installMonitorRuntime();
       const eventId = "local:previous-connection:000000000002";
@@ -651,7 +657,7 @@ describe("irc monitor inbound target", () => {
           ingressQueue,
           onMessage,
         });
-        expect(await withTimeout(completed, 3000, "replayed DM completion")).toBe(eventId);
+        expect(await withinTest(completed, signal)).toBe(eventId);
         expect(await ingressQueue.listPending({ limit: "all" })).toEqual([]);
         expect(await ingressQueue.listClaims()).toEqual([]);
         expect(onMessage).not.toHaveBeenCalled();
@@ -664,7 +670,7 @@ describe("irc monitor inbound target", () => {
     });
   });
 
-  it("does not record receipt-time self echoes as inbound activity", async () => {
+  it("does not record receipt-time self echoes as inbound activity", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       const activityRecord = installMonitorRuntime();
       const server = await startInboundIrcServer();
@@ -679,7 +685,7 @@ describe("irc monitor inbound target", () => {
           onMessage,
         });
         server.sendInbound("#openclaw", false, "bot");
-        const completedId = await withTimeout(completed, 3000, "receipt-time self echo completion");
+        const completedId = await withinTest(completed, signal);
         expect(enqueueSpy).toHaveBeenCalledOnce();
         await enqueueSpy.mock.results[0]?.value;
         expect(completedId).toBe(enqueueSpy.mock.calls[0]?.[0]);

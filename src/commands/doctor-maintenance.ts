@@ -8,7 +8,7 @@ import {
 } from "../daemon/service-inspection-error.js";
 import { GatewayServiceAuthorityError } from "../daemon/service-update-authority.js";
 import { acquireWithWait } from "../infra/acquire-with-wait.js";
-import { formatErrorMessage } from "../infra/errors.js";
+import { formatErrorMessage, toErrorObject } from "../infra/errors.js";
 import { assertLegacyGatewayStoppedForMaintenance } from "../infra/gateway-lock-legacy.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
@@ -130,9 +130,22 @@ export async function beginDoctorMaintenance(
     await state.release();
     repairStoresMayBeOpen = false;
   };
+  let deferredStateReleaseFailure: Error | undefined;
+  const throwDeferredStateReleaseFailure = () => {
+    if (deferredStateReleaseFailure !== undefined) {
+      throw deferredStateReleaseFailure;
+    }
+  };
   const release = async (assertCustody?: () => void) => {
     await settle(async () => {
-      await releaseState();
+      try {
+        await releaseState();
+      } catch (error) {
+        if (hasCommandProcessCleanupError(error) || state.hasOpenResources) {
+          throw error;
+        }
+        deferredStateReleaseFailure ??= toErrorObject(error, "Doctor state release failed.");
+      }
       const recovery = stopped?.windowsTaskAutoStartRecovery;
       try {
         assertCustody?.();
@@ -349,8 +362,10 @@ export async function beginDoctorMaintenance(
           undefined,
           assertStopCustody ?? assertUpdateAdmissionCurrent,
         );
+        throwDeferredStateReleaseFailure();
       } else {
         await release();
+        throwDeferredStateReleaseFailure();
       }
     } catch (restoreError) {
       throw new AggregateError([error, restoreError], `${String(error)} ${String(restoreError)}`, {
@@ -630,6 +645,7 @@ export async function beginDoctorMaintenance(
       custody = "released";
       try {
         await release();
+        throwDeferredStateReleaseFailure();
       } catch (error) {
         exit.release(true);
         throw error;
@@ -657,6 +673,7 @@ export async function beginDoctorMaintenance(
       try {
         if (!cfg && !stopped?.stopped) {
           await release(assertCustody);
+          throwDeferredStateReleaseFailure();
           return;
         }
         if (!cfg) {
@@ -676,6 +693,7 @@ export async function beginDoctorMaintenance(
           }
         }
         await finish(cfg, assertCustody, writeConfig);
+        throwDeferredStateReleaseFailure();
       } catch (restoreError) {
         failed = true;
         if (failure !== undefined) {

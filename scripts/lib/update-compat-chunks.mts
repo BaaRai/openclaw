@@ -3,6 +3,7 @@ import path from "node:path";
 import * as ts from "typescript/unstable/ast";
 import { createNativeTypeScriptParser } from "./native-typescript.mts";
 import { parseReleaseVersion } from "./release-version.mjs";
+import { standaloneRuntimeProcessBuildEntries } from "./runtime-process-core-build-entries.mts";
 import {
   isUpdateCompatibilityChunk,
   UPDATE_COMPATIBILITY_CHUNK_HEADER,
@@ -13,6 +14,9 @@ import { isUpdatePackageAssetImport } from "./update-compat-source-imports.mts";
 export { isUpdateCompatibilityChunk } from "./update-compat-contract.mjs";
 export const UPDATE_COMPATIBILITY_INVENTORY_FILE = "update-compat-inventory.json";
 const HASHED_CHUNK = /-[A-Za-z0-9_-]{8}\.m?js$/;
+const standaloneRuntimeProcessOutputs = new Set(
+  Object.keys(standaloneRuntimeProcessBuildEntries).map((name) => `${name}.js`),
+);
 const POST_SWAP_OWNER = /^src\/(?:cli\/update-cli\/|daemon\/|cli\/runtime-cleanup(?:-scope)?\.ts$)/;
 
 // These verified releases coalesced lifecycle declarations under the cache module's region.
@@ -458,10 +462,11 @@ export function writeUpdateCompatibilityChunks(params: {
   const candidates = new Map<string, Map<string, { file: string; exported: string }>>();
   for (const file of moduleFiles(distDir)) {
     const relative = portable(path.relative(distDir, file));
-    // Retained config repairs and the one-shot native hook relay are built
-    // separately from the updater's runtime graph; their copies of shared
-    // modules are not bridge candidates.
+    // Standalone processes, retained config repairs, and the one-shot hook relay
+    // have independent module instances; their shared-source annotations cannot
+    // authorize bridging to worker-only lifecycle or authority state.
     if (
+      standaloneRuntimeProcessOutputs.has(relative) ||
       relative.startsWith("extensions/") ||
       relative.startsWith("plugin-sdk/") ||
       relative.startsWith("config-doctor/") ||

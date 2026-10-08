@@ -574,8 +574,9 @@ jobs:
           set -euo pipefail
           RELEASE_SHA=$(git rev-parse HEAD)
           # Dependency evidence needs the previous reachable release, including
-          # HEAD's parents; other branch and tooling-tag histories are irrelevant.
-          timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags --filter=blob:none --unshallow origin \
+          # HEAD's parents. Describe needs commits/tags, not historical trees;
+          # later dependency diffs lazily fetch only the trees and blobs they read.
+          timeout --signal=TERM --kill-after=10s 120s git fetch --no-tags --filter=tree:0 --unshallow origin \
             "$RELEASE_SHA" "+refs/tags/v*:refs/tags/v*"
           RELEASE_BRANCH_REF="refs/remotes/origin/${WORKFLOW_REF_NAME}"
           export RELEASE_SHA RELEASE_BRANCH_REF

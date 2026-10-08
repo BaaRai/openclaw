@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,49 +25,16 @@ import {
   convertOpenClawToolToSdkToolForTest,
   createCopilotToolBridge,
   makeInvocation,
+  makeTool,
+  makeTools,
   runSdkTool,
+  sdkToolNamed,
   type CopilotCodingToolsOptions,
   type CopilotToolBridgeInput,
 } from "./tool-bridge.test-support.js";
 
-type FakeTool = AnyAgentTool & {
-  execute: ReturnType<typeof vi.fn>;
-  prepareArguments?: ReturnType<typeof vi.fn>;
-};
-
 function flushAsync() {
   return Promise.resolve().then(() => {});
-}
-
-function makeTool(
-  overrides: Partial<FakeTool> = {},
-  result: { content?: unknown; details: unknown } = {
-    content: [{ text: "done", type: "text" }],
-    details: null,
-  },
-): FakeTool {
-  return {
-    description: "A fake tool",
-    execute: vi.fn(async () => result),
-    label: "Fake Tool",
-    name: "tool-a",
-    parameters: {
-      properties: { value: { type: "string" } },
-      type: "object",
-    } as never,
-    ...overrides,
-  } as unknown as FakeTool;
-}
-
-function makeTools(...names: string[]) {
-  return names.map((name) => makeTool({ name }));
-}
-
-function sdkToolNamed(bridge: Awaited<ReturnType<typeof createCopilotToolBridge>>, name: string) {
-  return expectDefined(
-    bridge.promptToolPolicy.apply().tools.find((tool) => tool.name === name),
-    name,
-  );
 }
 
 function createTerminalTracker(runId: string) {
@@ -1029,6 +997,32 @@ describe("createCopilotToolBridge tool conversion", () => {
     await expect(Promise.all(runs.slice(1))).resolves.toEqual(
       [1, 2, 3, 4].map((index) => ({ resultType: "success", textResultForLlm: String(index) })),
     );
+  });
+
+  it("runs SDK-dispatched tools in the attempt's async context, not the pooled connection's", async () => {
+    const turn = new AsyncLocalStorage<string>();
+    let seen: string | undefined;
+    const bridge = await turn.run("turn-2", () =>
+      createCopilotToolBridge({
+        attemptParams: { config: { tools: { codeMode: false, toolSearch: false } } },
+        createOpenClawCodingTools: () => [
+          makeTool({
+            name: "probe",
+            execute: vi.fn(async () => {
+              seen = turn.getStore();
+              return { content: [], details: {} };
+            }),
+          }),
+        ],
+      }),
+    );
+    try {
+      // The pooled SDK connection was opened during turn 1 and dispatches from there.
+      await turn.run("turn-1", () => runSdkTool(sdkToolNamed(bridge, "probe"), {}));
+      expect(seen).toBe("turn-2");
+    } finally {
+      bridge.cleanup?.();
+    }
   });
 
   it("rechecks abort before a queued tool starts without blocking another attempt", async () => {

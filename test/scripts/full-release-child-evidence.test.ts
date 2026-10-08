@@ -87,7 +87,11 @@ if (endpoint === "repos/openclaw/openclaw/actions/runs/101") {
 } else if (endpoint.startsWith("repos/openclaw/openclaw/actions/runs/101/attempts/")) {
   const attempt = Number(endpoint.split("/").at(-2));
   const jobs = fixture.attempts[attempt - 1];
-  process.stdout.write(JSON.stringify([{total_count: jobs.length, jobs}]));
+  const pageSize = Number(new URL(endpoint, "https://example.invalid").searchParams.get("per_page"));
+  if (pageSize > 25) { console.error("HTTP 502: fixture rejects oversized job pages"); process.exit(1); }
+  const pages = [];
+  for (let offset = 0; offset < jobs.length; offset += pageSize) pages.push({ total_count: jobs.length, jobs: jobs.slice(offset, offset + pageSize) });
+  process.stdout.write(JSON.stringify(pages));
 } else {
   throw new Error("Unexpected evidence read: " + endpoint);
 }
@@ -278,11 +282,53 @@ describe("full release child evidence producer", () => {
     ]);
   });
 
+  it.each([2000, 2001])("preserves the 2000-job inventory bound at %s jobs", (count) => {
+    const data = fixture();
+    while (data.jobs.length < count) {
+      data.jobs.push({
+        ...data.jobs[0]!,
+        id: data.jobs.length + 1,
+        name: `workload ${data.jobs.length}`,
+      });
+    }
+    const { result, receipt } = seal(data);
+    if (count === 2000) {
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(receipt, "utf8")).jobs).toHaveLength(count - 1);
+    } else {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("job inventory is incomplete");
+    }
+  });
+
+  it("ignores populated runnerless queued copies of completed predecessor jobs", () => {
+    const data = fixture();
+    const completed = data.jobs[1]!;
+    const ghost = {
+      ...completed,
+      id: 4,
+      status: "queued",
+      conclusion: null,
+      runner_id: null,
+      runner_name: null,
+      steps: [{ name: "mirrored test", status: "completed", conclusion: "success" }],
+    };
+    data.jobs.push(ghost);
+    const { result, receipt } = seal(data);
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(readFileSync(receipt, "utf8"));
+    expect(evidence.workloadConclusion).toBe("success");
+    expect(
+      evidence.jobs.filter((entry: { name: string }) => entry.name === "node tests"),
+    ).toHaveLength(1);
+  });
+
   it.each([3])(
     "recovers publisher-only attempt %s while carrying earlier workload evidence",
     (runAttempt) => {
       const data = fixture();
       data.run.run_attempt = runAttempt;
+      data.run.status = "queued";
       data.run.triggering_actor.login = "release-maintainer";
       data.jobs[2]!.status = "completed";
       data.jobs[2]!.conclusion = "failure";
@@ -329,6 +375,13 @@ describe("full release child evidence producer", () => {
       name: "stale run attempt",
       mutate: (data: ReturnType<typeof fixture>) => {
         data.run.run_attempt = 2;
+      },
+      error: "current active workflow attempt",
+    },
+    {
+      name: "completed aggregate run with an active publisher",
+      mutate: (data: ReturnType<typeof fixture>) => {
+        data.run.status = "completed";
       },
       error: "current active workflow attempt",
     },

@@ -654,6 +654,7 @@ describe("native command adapter", () => {
     "native-build-only",
     "setup-code-timeout",
     "setup-code-rpc-timeout",
+    "setup-code-rpc-retry",
     "test-unjoined",
     "test-exit",
     "reader-failure",
@@ -719,6 +720,7 @@ describe("native command adapter", () => {
         ([options]) => options.configPath !== "/private/preflight/config.json",
       );
     let simulatorReady = false;
+    let setupCodeCalls = 0;
     let sourceChanged = false;
     let exitMock: (() => void) | undefined;
     let requestLog = "";
@@ -793,6 +795,15 @@ describe("native command adapter", () => {
       expect(options.method).toBe("device.pair.setupCode");
       expect(simulatorReady).toBe(scenario !== "gateway-only");
       lifecycle.push("setup-code");
+      setupCodeCalls += 1;
+      if (scenario === "setup-code-rpc-retry" && setupCodeCalls === 1) {
+        throw new GatewayTransportError({
+          kind: "timeout",
+          message: "private stalled RPC",
+          connectionDetails: { url: "ws://private", urlSource: "private", message: "private" },
+          timeoutMs: 30_000,
+        });
+      }
       if (scenario === "setup-code-timeout") {
         throw new Error("private fixture command failed", {
           cause: Object.assign(new Error("private setup code and path"), { code: "ETIMEDOUT" }),
@@ -1460,6 +1471,7 @@ describe("native command adapter", () => {
                 context:
                   scenario === "setup-status-timeout"
                     ? [
+                        "rpc-attempts:1",
                         "rpc-authenticated:true",
                         "rpc-dispatch-entered:true",
                         "rpc-request-dispatched:true",
@@ -1478,7 +1490,12 @@ describe("native command adapter", () => {
         expect(proof.fixtures).toEqual([
           expect.objectContaining({
             cleanupConfirmed: true,
-            setupStatusRpc: { authenticated: true, dispatchEntered: true, responseReceived: false },
+            setupStatusRpc: {
+              authenticated: true,
+              dispatchEntered: true,
+              responseReceived: false,
+              attempts: 1,
+            },
           }),
         ]);
         return;
@@ -1593,17 +1610,27 @@ describe("native command adapter", () => {
                 ...(scenario === "setup-code-timeout" ? { errorCode: "ETIMEDOUT" } : {}),
                 context:
                   scenario === "setup-code-rpc-timeout"
-                    ? ["rpc-authenticated:true", "rpc-dispatch-entered:true"]
+                    ? ["rpc-attempts:3", "rpc-authenticated:true", "rpc-dispatch-entered:true"]
                     : [],
               },
             ],
           });
         }
         expect(report.trials[0]?.tests).toEqual([]);
+        expect(
+          nativeMocks.rpc.mock.calls
+            .filter(([options]) => options.method === "device.pair.setupCode")
+            .map(([options]) => options.timeoutMs),
+        ).toEqual(scenario === "setup-code-rpc-timeout" ? [30_000, 60_000, 60_000] : [30_000]);
         expect(proof.fixtures).toEqual([
           expect.objectContaining({
             trial: 1,
-            setupRpc: { authenticated: true, dispatchEntered: true, responseReceived: false },
+            setupRpc: {
+              authenticated: true,
+              dispatchEntered: true,
+              responseReceived: false,
+              attempts: scenario === "setup-code-rpc-timeout" ? 3 : 1,
+            },
           }),
         ]);
         expect(
@@ -1670,7 +1697,8 @@ describe("native command adapter", () => {
       expect(created).toBe(1);
       expect(joinedMocks).toBe(1);
       for (const [index, instance] of instances.entries()) {
-        expect(fixtureRpcCalls()).toHaveLength(2);
+        const setupCodeAttempts = scenario === "setup-code-rpc-retry" ? 2 : 1;
+        expect(fixtureRpcCalls()).toHaveLength(1 + setupCodeAttempts);
         expect(fixtureRpcCalls()[0]?.[0]).toEqual(
           expect.objectContaining({
             method: "device.pair.setupStatus",
@@ -1683,7 +1711,7 @@ describe("native command adapter", () => {
             url: `ws://127.0.0.1:${20001 + index}`,
           }),
         );
-        expect(fixtureRpcCalls()[1]?.[0]).toEqual({
+        expect(fixtureRpcCalls()[setupCodeAttempts]?.[0]).toEqual({
           config: {},
           configPath: `/private/fixture-${index + 1}/config.json`,
           url: `ws://127.0.0.1:${20001 + index}`,
@@ -1693,7 +1721,7 @@ describe("native command adapter", () => {
           sharedStateMode: "read-only",
           method: "device.pair.setupCode",
           params: { publicUrl: `ws://127.0.0.1:${20001 + index}`, includeQr: false },
-          timeoutMs: 30_000,
+          timeoutMs: setupCodeAttempts === 1 ? 30_000 : 60_000,
           signal: expect.any(AbortSignal),
           onHelloOk: expect.any(Function),
           assertDispatchCurrent: expect.any(Function),
@@ -1704,8 +1732,18 @@ describe("native command adapter", () => {
         expect.objectContaining({
           trial: 1,
           cleanupConfirmed: true,
-          setupStatusRpc: { authenticated: true, dispatchEntered: true, responseReceived: true },
-          setupRpc: { authenticated: true, dispatchEntered: true, responseReceived: true },
+          setupStatusRpc: {
+            authenticated: true,
+            dispatchEntered: true,
+            responseReceived: true,
+            attempts: 1,
+          },
+          setupRpc: {
+            authenticated: true,
+            dispatchEntered: true,
+            responseReceived: true,
+            attempts: scenario === "setup-code-rpc-retry" ? 2 : 1,
+          },
           providerMessages: [
             { stage: "first", received: true },
             { stage: "second", received: true },

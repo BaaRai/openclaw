@@ -622,6 +622,15 @@ describe("scripts/lib/docker-e2e-plan", () => {
     expect(complete.lanes.filter((lane) => packageNames.has(lane.name))).toEqual(lanes);
   });
 
+  it("keeps restart auth exactly once in the legacy package/update aggregate", () => {
+    const aggregate = planFor({
+      profile: RELEASE_PATH_PROFILE,
+      releaseChunk: "package-update",
+    });
+
+    expect(aggregate.lanes.filter((lane) => lane.name === "update-restart-auth")).toHaveLength(1);
+  });
+
   it("includes OpenWebUI exactly once in each legacy plugin aggregate", () => {
     for (const releaseChunk of [
       "plugins-runtime-core",
@@ -665,9 +674,9 @@ describe("scripts/lib/docker-e2e-plan", () => {
 
   it("retains the measured restart-auth update budgets", () => {
     const lane = requireFirstLane(planFor({ selectedLaneNames: ["update-restart-auth"] }));
-    expect(lane.timeoutMs).toBe(2_580_000);
+    expect(lane.timeoutMs).toBe(3_720_000);
     expect(lane.command).toContain("OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT=1500s");
-    expect(lane.command).toContain("OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-2280s");
+    expect(lane.command).toContain("OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-3420s");
   });
 
   it("rejects pre-June baselines before scheduling against the target", () => {

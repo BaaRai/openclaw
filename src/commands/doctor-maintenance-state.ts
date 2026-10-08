@@ -8,6 +8,7 @@ import {
   createUpdateDoctorDatabaseWriteCapture,
   DoctorMaintenanceRefusalError,
 } from "../infra/update-doctor-result.js";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import {
   createOpenClawDatabaseMaintenanceScope,
   getOpenClawDatabaseMaintenanceScope,
@@ -52,23 +53,75 @@ export function createDoctorMaintenanceState(options: {
       agentRoot === null
         ? undefined
         : (agentRoot ?? (resourcesParent ? undefined : resolveStateDir(selectedEnv)));
-    await resources?.close(
-      drainRoot === undefined
-        ? undefined
-        : async () => {
-            const { closeOpenClawAgentDatabasesAsync } =
-              await import("../state/openclaw-agent-db-lifecycle.js");
-            await closeOpenClawAgentDatabasesAsync(drainRoot);
-          },
+    const failures: unknown[] = [];
+    const closeScope = async (close: () => Promise<void>, clear: () => void) => {
+      try {
+        await close();
+        clear();
+      } catch (error) {
+        // A disposer can fail after retiring only part of its owned batch. Retry
+        // that same sealed scope once before restoring the managed Gateway.
+        try {
+          await close();
+          clear();
+          failures.push(error);
+        } catch (retryError) {
+          failures.push(
+            new AggregateError([error, retryError], "Doctor maintenance resource cleanup failed.", {
+              cause: retryError,
+            }),
+          );
+        }
+      }
+    };
+    const currentResources = resources;
+    let resourcesClosed = currentResources === undefined;
+    if (currentResources) {
+      await closeScope(
+        () =>
+          currentResources.close(
+            drainRoot === undefined
+              ? undefined
+              : async () => {
+                  const { closeOpenClawAgentDatabasesAsync } =
+                    await import("../state/openclaw-agent-db-lifecycle.js");
+                  await closeOpenClawAgentDatabasesAsync(drainRoot);
+                },
+          ),
+        () => {
+          resourcesClosed = true;
+        },
+      );
+    }
+    if (inspections) {
+      const current = inspections;
+      await closeScope(
+        () => current.close(),
+        () => {
+          inspections = undefined;
+        },
+      );
+    }
+    await closeScope(
+      async () => {
+        // Auth readers drain after their inspection callers, separately from canonical handles.
+        const { closeAuthProfileReadPool } =
+          await import("../agents/auth-profiles/sqlite-read-pool.js");
+        closeAuthProfileReadPool({ kind: "root", rootPath: resolveStateDir(selectedEnv) });
+      },
+      () => {
+        if (resourcesClosed) {
+          resources = undefined;
+          resourcesParent = undefined;
+        }
+      },
     );
-    await inspections?.close();
-    // Auth inspection readers are pooled separately from canonical agent handles.
-    const { closeAuthProfileReadPool } =
-      await import("../agents/auth-profiles/sqlite-read-pool.js");
-    closeAuthProfileReadPool({ kind: "root", rootPath: resolveStateDir(selectedEnv) });
-    resources = undefined;
-    resourcesParent = undefined;
-    inspections = undefined;
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Doctor maintenance resource cleanup failed.");
+    }
   };
   const settleCapture = async () => {
     if (owner && capture && captureAdmitted) {
@@ -118,6 +171,9 @@ export function createDoctorMaintenanceState(options: {
     },
     get resources() {
       return resources;
+    },
+    get hasOpenResources() {
+      return Boolean(resources || inspections);
     },
     get receipt() {
       return owner ? undefined : capture?.receipt;
@@ -330,10 +386,37 @@ export function createDoctorMaintenanceState(options: {
       }
     },
     async release() {
-      await closeResources();
-      await settleCapture();
-      await owner?.release();
-      owner = undefined;
+      const failures: unknown[] = [];
+      try {
+        await closeResources();
+      } catch (error) {
+        // An uncertain command process or a scope that still owns resources can
+        // continue writing. Retain process ownership and do not publish a receipt.
+        if (hasCommandProcessCleanupError(error) || state.hasOpenResources) {
+          throw error;
+        }
+        failures.push(error);
+      }
+      try {
+        await settleCapture();
+      } catch (error) {
+        if (hasCommandProcessCleanupError(error)) {
+          throw error;
+        }
+        failures.push(error);
+      }
+      try {
+        await owner?.release();
+        owner = undefined;
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) {
+        throw failures[0];
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Doctor maintenance state cleanup failed.");
+      }
     },
   };
   return state;

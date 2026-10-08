@@ -6,6 +6,7 @@ import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 export class TranscriptEndAnchor {
   private offset: number | null = null;
   private frame: number | null = null;
+  private rowModelFrame: number | null = null;
 
   isResizeAnchor(element: HTMLDivElement | null): boolean {
     const max = maxTranscriptScrollOffset(element);
@@ -45,9 +46,25 @@ export class TranscriptEndAnchor {
     }
   }
 
+  scheduleRowModelReconcile(reconcile: () => void): void {
+    if (this.rowModelFrame !== null) {
+      return;
+    }
+    this.rowModelFrame = requestAnimationFrame(() => {
+      this.rowModelFrame = requestAnimationFrame(() => {
+        this.rowModelFrame = null;
+        reconcile();
+      });
+    });
+  }
+
   disconnect(): void {
     this.cancelComposerResize();
     this.cancelReconcile();
+    if (this.rowModelFrame !== null) {
+      cancelAnimationFrame(this.rowModelFrame);
+      this.rowModelFrame = null;
+    }
   }
 
   private maxOffset: number | null = null;

@@ -112,6 +112,7 @@ const WORKFLOW_CALL_ONLY_INPUTS = new Set([
 
 const PACKAGE_UPDATE_CHUNKS = [
   "package-update-openai",
+  "package-update-restart-auth",
   "package-update-onboarding",
   "package-update-migrations",
 ];
@@ -621,7 +622,17 @@ describe("scripts/plan-release-workflow-matrix.mjs", () => {
         plan.dockerE2e.matrix.include.find(
           (entry: MatrixEntry) => entry.chunk_id === "package-update-openai",
         ),
-      ).toMatchObject({ timeout_minutes: 160 });
+      ).toMatchObject({ timeout_minutes: 135 });
+      expect(
+        plan.dockerE2e.matrix.include.find(
+          (entry: MatrixEntry) => entry.chunk_id === "package-update-restart-auth",
+        ),
+      ).toMatchObject({ timeout_minutes: 75 });
+      expect(
+        plan.dockerE2e.matrix.include.find(
+          (entry: MatrixEntry) => entry.chunk_id === "package-update-migrations",
+        ),
+      ).toMatchObject({ timeout_minutes: 150 });
       expect(plan.liveModels.matrix.include.map((entry: MatrixEntry) => entry.providers)).toEqual(
         liveModelProviders,
       );

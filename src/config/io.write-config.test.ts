@@ -41,8 +41,11 @@ import {
 import { hashConfigRaw } from "./io.read-helpers.js";
 import { createConfigIoWorkerFixture } from "./io.worker.test-support.js";
 import {
+  configPathForHome,
   createConfigWriteHomeFixture,
   defaultedDemoPluginRegistry,
+  formatConfig,
+  writeConfigFixture,
 } from "./io.write-config.test-support.js";
 import { registerConfigWritePreflightTests } from "./io.write-preflight.test-support.js";
 import { replaceConfigFile, transformConfigFile, transformConfigFileWithRetry } from "./mutate.js";
@@ -189,11 +192,6 @@ describe("config io write", () => {
     expect(warnMessages(warn).join("\n")).toContain(expected);
   };
 
-  const configPathForHome = (home: string, fileName = "openclaw.json") =>
-    path.join(home, ".openclaw", fileName);
-
-  const formatConfig = (config: unknown) => `${JSON.stringify(config, null, 2)}\n`;
-
   it.each(["changed-input", "revoked-requester"] as const)(
     "refuses Doctor promotion at the native writer (%s)",
     async (failure) => {
@@ -332,13 +330,6 @@ describe("config io write", () => {
 
   const writeConfigJson = async (configPath: string, config: unknown) => {
     await fs.writeFile(configPath, formatConfig(config), "utf-8");
-  };
-
-  const writeConfigFixture = async (home: string, config: unknown) => {
-    const configPath = configPathForHome(home);
-    await fs.mkdir(path.dirname(configPath), { recursive: true });
-    await writeConfigJson(configPath, config);
-    return { configPath, raw: formatConfig(config) };
   };
 
   const createHomeConfigIO = (home: string, options: ConfigIoOptions = {}) =>
@@ -566,6 +557,8 @@ describe("config io write", () => {
       const staleConfig = {
         plugins: { entries: { demo: { enabled: true } } },
       };
+      // An existing file keeps first-write catalog opt-outs out of these literal rewrites.
+      await writeConfigFixture(home, {});
 
       await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });
       await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });

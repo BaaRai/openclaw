@@ -34,13 +34,13 @@ describe("FRV protected gh evidence reads", () => {
     [
       "getAttemptJobs",
       ["101", 2],
-      "actions/runs/101/attempts/2/jobs?per_page=100",
+      "actions/runs/101/attempts/2/jobs?per_page=25",
       [{ id: 1 }, { id: 2 }],
     ],
     [
       "getParentJobs",
       ["77"],
-      "actions/runs/77/jobs?filter=all&per_page=100",
+      "actions/runs/77/jobs?filter=all&per_page=25",
       [{ id: 1 }, { id: 2 }],
     ],
     ["getJobLog", [1], "actions/jobs/1/logs", "job evidence"],
@@ -59,7 +59,7 @@ describe("FRV protected gh evidence reads", () => {
           ? ["101", { operationDeadline: 15_000 }]
           : ["101", 2, { operationDeadline: 15_000 }];
       const endpoint =
-        method === "getRun" ? "actions/runs/101" : "actions/runs/101/attempts/2/jobs?per_page=100";
+        method === "getRun" ? "actions/runs/101" : "actions/runs/101/attempts/2/jobs?per_page=25";
       const result = runProtectedFrv(method, args, endpoint, "transient-deadline");
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("FRV operation timed out");
@@ -452,7 +452,7 @@ if (legacy && args[0] === "run" && args[1] === "download" && args[2] === "77" &&
 if (args[0] !== "api" || (!legacy && (!args.includes("GET") || !args.includes("github.com"))) || !args.includes("Cache-Control: max-age=0")) reject();
 if (args.includes("--include") || (!legacy && args.includes("--paginate"))) reject();
 let path = args.find(a => a.startsWith("repos/"));
-if (legacy && path.endsWith("/jobs?per_page=100")) path += "&page=1";
+if (legacy && path.endsWith("/jobs?per_page=25")) path = path.replace("per_page=25", "per_page=100&page=1");
 const table = JSON.parse(fs.readFileSync("responses.json", "utf8"));
 if (!Object.hasOwn(table, path)) reject();
 let value = table[path];

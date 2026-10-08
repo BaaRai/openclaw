@@ -99,3 +99,37 @@ it.each([
     }),
   ).toThrow("Cannot trace surface-abcdefgh.mjs export external to its release source");
 });
+
+it.each(["present", "missing"] as const)(
+  "excludes standalone worker instances when the primary updater implementation is %s",
+  async (runtime) => {
+    const root = createTempDir("update-compat-standalone-worker-");
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    writeUpdateCompatibilityBuildFixture(root);
+    const origin = chunk.exports[0]!.origin;
+    const dist = path.join(root, "dist");
+    const primary = fs
+      .readdirSync(dist)
+      .find(
+        (name) =>
+          name.startsWith("candidate-") &&
+          fs.readFileSync(path.join(dist, name), "utf8").includes(`function ${origin.symbol}()`),
+      );
+    expect(primary).toBeDefined();
+    const primaryPath = path.join(dist, primary!);
+    fs.mkdirSync(path.join(dist, "state"), { recursive: true });
+    fs.copyFileSync(primaryPath, path.join(dist, "state/openclaw-state-read.worker.js"));
+    const options = { distDir: dist, sourceDir: root, inventory: previousReleaseInventory };
+    if (runtime === "missing") {
+      fs.unlinkSync(primaryPath);
+      expect(() => writeUpdateCompatibilityChunks(options)).toThrow(/no equivalent current export/);
+      expect(fs.existsSync(path.join(dist, chunk.path))).toBe(false);
+      return;
+    }
+    writeUpdateCompatibilityChunks(options);
+    const bridge = await import(pathToFileURL(path.join(dist, chunk.path)).href);
+    const declaration = await import(pathToFileURL(primaryPath).href);
+    expect(Object.values(declaration)).toContain(bridge[chunk.exports[0]!.exported]);
+    expect(bridge[chunk.exports[0]!.exported]()).toBe(origin.symbol);
+  },
+);

@@ -700,7 +700,7 @@ describe("chat transcript controller", () => {
         // Native idle can beat the queued frame; they are separate schedulers.
         vi.advanceTimersByTime(150);
         expect(container.scrollTop, "stale idle must not restore its old offset").toBe(before);
-        // A remote receipt cancels following after the UI considers the command settled.
+        // Reader takeover cancels following after the UI considers the command settled.
         transcript.cancelScroll();
         transcriptDomState.measuredRowHeight = 120;
         const next: TestContentRow[] = [
@@ -962,56 +962,6 @@ describe("chat transcript controller", () => {
       transcript.hostDisconnected();
     }
   });
-
-  it.each([
-    { distance: 0, followEnabled: true },
-    { distance: 8, followEnabled: true },
-    { distance: 50, followEnabled: true },
-    { distance: 0, followEnabled: false },
-    { distance: 8, followEnabled: false },
-  ])(
-    "does not follow another person’s typing ($distance, $followEnabled)",
-    async ({ distance, followEnabled }) => {
-      const rows = numberedContentRows(12);
-      const { container, renderRows, transcript } = await mountTestTranscript(
-        `typing-distance-${distance}`,
-        rows,
-        new ChatTranscriptController(
-          {
-            addController: () => undefined,
-            removeController: () => undefined,
-            requestUpdate: () => undefined,
-            updateComplete: Promise.resolve(true),
-          },
-          () => `typing-distance-${distance}-${followEnabled}`,
-          { canFollowEnd: () => followEnabled },
-        ),
-      );
-      try {
-        const total = transcriptSize(container);
-        Object.defineProperties(container, {
-          clientHeight: { configurable: true, value: 600 },
-          scrollHeight: { configurable: true, value: total + 84 },
-        });
-        for (const observer of resizeObservers) {
-          observer.emitTarget(container, 800, 600);
-        }
-        container.scrollTop = container.scrollHeight - container.clientHeight - distance;
-        container.dispatchEvent(new Event("scroll"));
-        const readerOffset = container.scrollTop;
-        const scrollTo = vi.fn();
-        container.scrollTo = scrollTo;
-        renderRows([
-          ...rows,
-          { kind: "content", key: "presence:typing", content: html`<div>Typing</div>` },
-        ]);
-        expect(scrollTo).not.toHaveBeenCalled();
-        expect(container.scrollTop).toBe(readerOffset);
-      } finally {
-        transcript.hostDisconnected();
-      }
-    },
-  );
 
   it("does not introduce a typing command while native reader movement is pending", async () => {
     const flushFrames = stubAnimationFrames();

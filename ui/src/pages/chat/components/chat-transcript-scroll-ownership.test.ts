@@ -340,7 +340,7 @@ describe("chat transcript scroll ownership", () => {
       }
     },
   );
-  it("cancels the active native target when a remote input locks following", async () => {
+  it("cancels the active native target when the reader locks following", async () => {
     const flushFrames = stubAnimationFrames();
     const policy = makeChatHost({ chatHasAutoScrolled: true });
     const transcript = new ChatTranscriptController(
@@ -355,7 +355,6 @@ describe("chat transcript scroll ownership", () => {
     );
     Object.assign(policy, {
       chatCancelScroll: () => transcript.cancelScroll(),
-      chatIsManualScroll: () => transcript.isManualScroll,
     });
     const content: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
       kind: "content",
@@ -393,7 +392,7 @@ describe("chat transcript scroll ownership", () => {
     try {
       transcript.scrollToEnd({ source: "auto", behavior: "auto" });
       container.dispatchEvent(new Event("scroll"));
-      lockChatScroll(policy, "remote-input");
+      lockChatScroll(policy);
       expect(policy.chatFollowLocked).toBe(true);
       const before = container.scrollTop;
       transcriptDomState.measuredRowHeight = 120;

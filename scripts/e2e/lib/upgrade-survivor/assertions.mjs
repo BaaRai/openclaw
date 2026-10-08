@@ -1126,11 +1126,45 @@ function assertSessionMetadataMigrated(stateDir, stage) {
   assert(direct?.sessionId === LEGACY_SESSION_DIRECT_ID, "direct legacy session row missing");
   assert(group?.sessionId === LEGACY_SESSION_GROUP_ID, "channel legacy session row missing");
   if (getScenario() === "acpx-openclaw-tools-bridge") {
-    assertStrict.deepEqual(
-      group.acp,
-      LEGACY_ACP_META,
-      "saved ACP session or model selection changed",
-    );
+    let acp;
+    if (stage === "baseline") {
+      acp = group.acp;
+    } else {
+      const db = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        const rows = db
+          .prepare(
+            `SELECT backend, agent, runtime_session_name, identity_json, mode,
+                    runtime_options_json, cwd, state, last_activity_at, last_error
+             FROM acp_sessions
+             WHERE session_id = ?`,
+          )
+          .all(LEGACY_SESSION_GROUP_ID);
+        assert(rows.length <= 1, "saved ACP session binding is ambiguous");
+        const row = rows[0];
+        if (row) {
+          acp = {
+            backend: row.backend,
+            agent: row.agent,
+            runtimeSessionName: row.runtime_session_name,
+            ...(row.identity_json ? { identity: JSON.parse(row.identity_json) } : {}),
+            mode: row.mode === "oneshot" ? "oneshot" : "persistent",
+            ...(row.runtime_options_json
+              ? { runtimeOptions: JSON.parse(row.runtime_options_json) }
+              : {}),
+            ...(row.cwd != null ? { cwd: row.cwd } : {}),
+            state: row.state === "running" || row.state === "error" ? row.state : "idle",
+            lastActivityAt: row.last_activity_at,
+            ...(row.last_error != null ? { lastError: row.last_error } : {}),
+          };
+        }
+      } finally {
+        db.close();
+      }
+    }
+    assertStrict.deepEqual(acp, LEGACY_ACP_META, "saved ACP session or model selection changed");
   }
   const migratedSessions = [
     [LEGACY_SESSION_MAIN_ID, main],

@@ -44,8 +44,8 @@ self-upgrade job gives first-hop lanes weight two at npm limit five, admitting a
 most two concurrently. It allows 210 minutes for three waves of six source versions,
 the survivor, and setup.
 Authenticated update restart uses a 2,280-second container budget, a 43-minute lane
-budget, and a lane-specific 1,500-second command timeout. Its OpenAI/recovery chunk
-allows 160 minutes for the npm-serialized lanes plus setup; see
+budget, and a lane-specific 1,500-second command timeout. Its dedicated recovery
+chunk allows 55 minutes; the remaining OpenAI package chunk allows 60 minutes. See
 [release-path chunks](/ci/release-validation/install-smoke-and-docker-e2e#release-path-chunks).
 
 For the published-upgrade regression gate, see [selection and routing](/ci/scope-and-routing#scope-and-routing), [runner budgets](/ci/capacity#runner-registration-budget), and [Package Acceptance baselines](/ci/release-validation#suite-profiles). Weekly validation is listed under [Update Migration](/ci/scheduled-workflows#update-migration).
@@ -59,6 +59,8 @@ Hourly iOS retains `ios-build (tests)` with Rust, voice, native Access, and focu
 Current iOS builds restore three independent input caches: verified Mermaid assets, SwiftPM source packages and binary artifacts, and the Watch RTC Cargo registry and compiled simulator library. Only trusted `main` push and scheduled runs save them; PRs restore only. Frozen targets retain their original cold path. Mermaid validates source and output hashes before copying resources. Its key covers the renderer's complete locked dependency graph, including workspace sources and optional build dependencies, so unrelated root dependency upgrades reuse the assets. SwiftPM keys cover Xcode, package manifests, and available `Package.resolved` files; automatic resolution remains enabled (the generated iOS project currently has no tracked lockfile). Watch keys cover Xcode, architecture, target mappings, the pinned Rust toolchain, lockfile, crate sources, and iOS build settings; the build phase verifies the library checksum and input fingerprint before reuse, and otherwise runs the locked Cargo build. Caching the finished slice avoids rebuilding the Rust standard library when a fresh runner installs `rust-src` with new timestamps. The hourly Watch engine test shares registry downloads, while its host Debug products stay out of the simulator Release cache.
 
 Current iOS Debug builds log CPU count, memory, machine model, booted simulators, and timestamps immediately around Xcode execution. The read-only hardware and simulator probes each have a five-second limit; unavailable diagnostics do not block the build. These markers distinguish simulator-query delays from Xcode startup, package resolution, and compilation.
+
+Shared OpenClawKit Periphery scans restore the same verified Watch RTC libraries published by trusted main CI, without saving caches. iOS builds its complete fresh run-owned index in a separate timed step with streamed output retained as `build.log` in the consumer artifact; Periphery analyzes that exact index without rebuilding. macOS lets Periphery own its clean SwiftPM build and index. Scan scope and the shared dead-code intersection stay unchanged. Cache misses retain the locked Cargo build.
 
 iOS screenshot shards, release qualification, Store Release, and its screenshot-only operation use [larger hosted capacity](/ci/runners). Screenshot capture uses stock simulators and creates and cleans up one at a time; the screenshot-only operation can validate a selected branch without signing or uploading a release. The pairing, chat, and native Overview tests retain their existing assertions and deadlines.
 
@@ -102,6 +104,16 @@ are unchanged.
 Core lint discovers separate source and UI TypeScript projects, retaining shared ambient declarations and imported dependencies. The source project also includes `src/**/*.test-support.cjs`; unrelated JavaScript files are not added as roots. See [local checks](/ci/local-proof#local-equivalents).
 
 Runtime topology checks inherit the existing [Go memory defaults](/ci/local-proof#local-equivalents), with caller overrides and the full architecture check sequence retained.
+
+Full Release Validation's Docker seed child uses the 16-class Blacksmith runner
+when no release runner group is configured, prepares the existing smoke package,
+and retains serial weighted lane admission. Hosted outage overrides and retries
+keep their recovery route. Ordinary manual dispatches retain hosted
+serial execution. All six lanes remain selected. The three long, unfitted hosted
+test rows (`core-runtime-config`, `agentic-cli-process`, and
+`agentic-control-plane-agent-chat`) have a 90-minute job cap until complete timing
+observations allow the release planner to split them. The targeted
+`update-restart-auth` lane has a 62-minute budget and a 75-minute job cap.
 
 Android native resource preparation uses the Mermaid renderer's filtered dependency install, including optional build tooling. Pnpm retains root dependencies but omits unrelated plugin packages; Gradle still builds the assets and runs the selected native tests and lint. Historical targets keep their compatibility path.
 
