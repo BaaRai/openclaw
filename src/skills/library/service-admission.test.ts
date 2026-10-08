@@ -1,25 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureProfileForEmail } from "../../state/user-profiles.js";
-import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import { listSkillLibrary, readSkillLibrary, saveSkillLibrary } from "./service.js";
+import { useSkillLibraryFixture } from "./service.test-support.js";
 import type { SkillLibraryAuthority } from "./store.js";
 
-const tempDirs = useStateDatabaseTempDirs();
+const { fixture } = useSkillLibraryFixture();
 const content = "---\nname: guide\ndescription: A reusable test procedure\n---\n# Guide\n";
-function fixture() {
-  const stateDir = tempDirs.make("skill-library-admission-");
-  const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
-  const profile = ensureProfileForEmail("author@example.test", options);
-  const alice: SkillLibraryAuthority = {
-    profileId: profile.id,
-    scopes: ["operator.read", "operator.write"],
-    getConfig: () => ({}),
-    assertCurrent() {},
-  };
-  return { alice, options, stateDir };
-}
 
 describe("skill library admission", () => {
   it("publishes subprocess instructions and an environment-token API support file", async () => {
@@ -77,7 +64,7 @@ describe("skill library admission", () => {
           options,
         ),
       ).rejects.toThrow("contains a recognized literal credential");
-      expect(listSkillLibrary(alice, {}, options).entries).toEqual([]);
+      expect((await listSkillLibrary(alice, {}, options)).entries).toEqual([]);
       await expect(fs.access(path.join(stateDir, "skill-library"))).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -96,7 +83,7 @@ describe("skill library admission", () => {
       code: "POLICY_BLOCKED",
       message: expect.stringContaining("installPolicy.exec is not configured"),
     });
-    expect(listSkillLibrary(alice, {}, options).entries).toEqual([]);
+    expect((await listSkillLibrary(alice, {}, options)).entries).toEqual([]);
     const artifacts = await fs.readdir(path.join(stateDir, "skill-library"), {
       recursive: true,
       withFileTypes: true,
