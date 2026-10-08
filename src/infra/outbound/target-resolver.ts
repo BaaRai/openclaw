@@ -179,25 +179,6 @@ function applyOutboundTargetPolicy(params: {
   };
 }
 
-function buildRewrittenNormalizedTarget(params: {
-  channel: ChannelId;
-  raw: string;
-  normalized: string;
-  kind: TargetResolveKind;
-  plugin?: ChannelPlugin;
-}): ResolvedMessagingTarget {
-  return buildNormalizedResolveResult({
-    normalized: params.normalized,
-    kind: classifyRewrittenTarget({
-      channel: params.channel,
-      originalTo: params.raw,
-      originalKind: params.kind,
-      resolvedTo: params.normalized,
-      plugin: params.plugin,
-    }),
-  }).target;
-}
-
 function normalizeDirectoryEntryId(
   channel: ChannelId,
   entry: ChannelDirectoryEntry,
@@ -361,6 +342,27 @@ export async function resolveChannelTarget(params: {
   const normalizedInput = resolveNormalizedTargetInput(params.channel, raw, plugin);
   const normalized = normalizedInput?.normalized ?? raw;
   const reservedLiteral = resolveReservedTargetLiteral({ raw, plugin });
+  const applyPolicy = (target: ResolvedMessagingTarget) =>
+    applyOutboundTargetPolicy({
+      cfg: params.cfg,
+      channel: params.channel,
+      target,
+      mode: params.nativeTargetMode,
+      allowFrom: params.allowFrom,
+      accountId: params.accountId,
+      plugin,
+    });
+  const buildNormalizedTarget = () =>
+    buildNormalizedResolveResult({
+      normalized,
+      kind: classifyRewrittenTarget({
+        channel: params.channel,
+        originalTo: raw,
+        originalKind: kind,
+        resolvedTo: normalized,
+        plugin,
+      }),
+    }).target;
   const targetLooksLikeId = Boolean(
     normalizedInput &&
     looksLikeTargetId({
@@ -396,34 +398,12 @@ export async function resolveChannelTarget(params: {
       requireIdLike: true,
     });
     if (resolvedIdLikeTarget) {
-      return applyOutboundTargetPolicy({
-        cfg: params.cfg,
-        channel: params.channel,
-        target: resolvedIdLikeTarget,
-        mode: params.nativeTargetMode,
-        allowFrom: params.allowFrom,
-        accountId: params.accountId,
-        plugin,
-      });
+      return applyPolicy(resolvedIdLikeTarget);
     }
     if (channelNamespace && plugin?.messaging?.targetResolver?.resolveTarget) {
       nativeNamespaceResolverMissed = true;
     } else {
-      return applyOutboundTargetPolicy({
-        cfg: params.cfg,
-        channel: params.channel,
-        target: buildRewrittenNormalizedTarget({
-          channel: params.channel,
-          raw,
-          normalized,
-          kind,
-          plugin,
-        }),
-        mode: params.nativeTargetMode,
-        allowFrom: params.allowFrom,
-        accountId: params.accountId,
-        plugin,
-      });
+      return applyPolicy(buildNormalizedTarget());
     }
   }
   const query = stripTargetPrefixes(raw, params.channel, plugin);
@@ -461,22 +441,12 @@ export async function resolveChannelTarget(params: {
     if (!entry) {
       throw new Error("Single directory match is missing its entry");
     }
-    const directoryTarget = normalizeDirectoryEntryId(params.channel, entry, plugin);
-    return applyOutboundTargetPolicy({
-      cfg: params.cfg,
-      channel: params.channel,
-      target: {
-        to: directoryTarget,
-        kind: entry.kind,
-        display:
-          entry.name ?? entry.handle ?? stripTargetPrefixes(entry.id, params.channel, plugin),
-        source: "directory",
-        resolutionSource: "directory",
-      },
-      mode: params.nativeTargetMode,
-      allowFrom: params.allowFrom,
-      accountId: params.accountId,
-      plugin,
+    return applyPolicy({
+      to: normalizeDirectoryEntryId(params.channel, entry, plugin),
+      kind: entry.kind,
+      display: entry.name ?? entry.handle ?? stripTargetPrefixes(entry.id, params.channel, plugin),
+      source: "directory",
+      resolutionSource: "directory",
     });
   }
   if (match.kind === "ambiguous") {
@@ -498,15 +468,7 @@ export async function resolveChannelTarget(params: {
         requireIdLike: true,
       });
       if (resolvedNativeTarget) {
-        return applyOutboundTargetPolicy({
-          cfg: params.cfg,
-          channel: params.channel,
-          target: resolvedNativeTarget,
-          mode: params.nativeTargetMode,
-          allowFrom: params.allowFrom,
-          accountId: params.accountId,
-          plugin,
-        });
+        return applyPolicy(resolvedNativeTarget);
       }
     }
     const hasConcreteMessagingResolver = Boolean(plugin?.messaging?.targetResolver?.resolveTarget);
@@ -534,21 +496,7 @@ export async function resolveChannelTarget(params: {
       }
     }
     if (pluginAcceptsNamespaceAsNativeTarget && !hasConcreteMessagingResolver) {
-      return applyOutboundTargetPolicy({
-        cfg: params.cfg,
-        channel: params.channel,
-        target: buildRewrittenNormalizedTarget({
-          channel: params.channel,
-          raw,
-          normalized,
-          kind,
-          plugin,
-        }),
-        mode: params.nativeTargetMode,
-        allowFrom: params.allowFrom,
-        accountId: params.accountId,
-        plugin,
-      });
+      return applyPolicy(buildNormalizedTarget());
     }
     return {
       ok: false,
@@ -573,33 +521,11 @@ export async function resolveChannelTarget(params: {
     plugin,
   });
   if (resolvedFallbackTarget) {
-    return applyOutboundTargetPolicy({
-      cfg: params.cfg,
-      channel: params.channel,
-      target: resolvedFallbackTarget,
-      mode: params.nativeTargetMode,
-      allowFrom: params.allowFrom,
-      accountId: params.accountId,
-      plugin,
-    });
+    return applyPolicy(resolvedFallbackTarget);
   }
 
   if (params.unknownTargetMode === "normalized") {
-    return applyOutboundTargetPolicy({
-      cfg: params.cfg,
-      channel: params.channel,
-      target: buildRewrittenNormalizedTarget({
-        channel: params.channel,
-        raw,
-        normalized,
-        kind,
-        plugin,
-      }),
-      mode: params.nativeTargetMode,
-      allowFrom: params.allowFrom,
-      accountId: params.accountId,
-      plugin,
-    });
+    return applyPolicy(buildNormalizedTarget());
   }
 
   return {
