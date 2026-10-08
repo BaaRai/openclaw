@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import { resolveIsNixMode, resolveStateDir } from "../config/paths.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../runtime.js";
@@ -40,4 +41,48 @@ export async function prepareDoctorHealthFlow(
     assertConfigWriteAllowedInCurrentMode();
   }
   return { effectiveRuntime, repairRuntime, stateDirExistedAtStart, root };
+}
+
+export async function prepareDoctorInteractiveMaintenance(params: {
+  runtime: RuntimeEnv;
+  options: DoctorOptions;
+  databasePreflight: DoctorDatabasePreflight | undefined;
+  root: string | null;
+  outro: (message: string) => void;
+}): Promise<"handled" | "accepted" | "declined"> {
+  const { createDoctorPrompter } = await import("../commands/doctor-prompter.js");
+  const { prepareDoctorDatabasePreflight } =
+    await import("../commands/doctor-database-preflight.js");
+  const prompter = createDoctorPrompter({ runtime: params.runtime, options: params.options });
+  // Preserve the installed Doctor's update escape hatch before taking service
+  // custody. A newer state schema refuses before any prompt or native effect.
+  if (!params.databasePreflight) {
+    await prepareDoctorDatabasePreflight({ scope: "state" });
+  }
+  const { maybeOfferUpdateBeforeDoctor } = await import("../commands/doctor-update.js");
+  const offeredUpdate = await maybeOfferUpdateBeforeDoctor({
+    options: params.options,
+    root: params.root,
+    confirm: (p) => prompter.confirm(p),
+    outro: params.outro,
+  });
+  if (offeredUpdate.handled) {
+    return "handled";
+  }
+  if (!params.databasePreflight) {
+    // Refuse incompatible agent schemas before consent can pause the service.
+    // Maintenance still rediscovers current facts after excluding publishers.
+    await prepareDoctorDatabasePreflight();
+  }
+  const accepted = await prompter.confirmRuntimeRepair({
+    message:
+      "Pause the managed Gateway while you review repairs? Doctor restores its prior service state when finished.",
+    initialValue: true,
+    requiresInteractiveConfirmation: true,
+  });
+  if (!accepted) {
+    params.outro("Doctor repairs cancelled. Run openclaw doctor --lint for read-only diagnosis.");
+    return "declined";
+  }
+  return "accepted";
 }

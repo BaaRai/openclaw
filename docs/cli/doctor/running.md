@@ -38,8 +38,9 @@ Use `openclaw doctor --json` when an operator or script wants the advisory Docto
 
 For read-only diagnosis, use `--lint` or bare `--json`. Ordinary `doctor`, including `doctor --non-interactive`, can copy legacy config and migrate state even without `--fix`. `--non-interactive` suppresses prompts, not writes.
 
-Interactive `doctor` first asks to pause the matching managed Gateway while you
-review repairs. Accepting takes maintenance custody, keeps individual repair
+Interactive `doctor` first checks shared schema compatibility and can offer a
+source update. If the update does not take over, Doctor checks all database
+schemas before asking to pause the matching managed Gateway while you review repairs. Accepting takes maintenance custody, keeps individual repair
 prompts, and restores the service's prior state after database handles close.
 Declining ends the repair flow without changing the service or state; use
 `openclaw doctor --lint` for read-only diagnosis. Externally supervised or
@@ -137,7 +138,8 @@ checks still run during the update. Project-clone inspection, SQLite database-si
 advice, and workspace backup and memory suggestions retain their standalone scope.
 
 This maintenance window also applies when repair ultimately finds no changes.
-Runs without `--fix`, `--repair`, or `--yes` do not enter maintenance.
+Non-interactive runs without `--fix`, `--repair`, or `--yes` do not enter
+maintenance. Ordinary interactive runs enter only after custody consent.
 Custom state directories remain runtime-only and do not adopt a native service.
 
 `--force` alone does not select repair mode: `openclaw doctor --force` remains

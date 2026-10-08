@@ -116,7 +116,8 @@ async function runDoctorHealthFlowWithResult(
   resumeCapture?: () => void,
   preCaptureRehearsalRoot?: string,
 ) {
-  const { prepareDoctorHealthFlow } = await import("./doctor-health-startup.js");
+  const { prepareDoctorHealthFlow, prepareDoctorInteractiveMaintenance } =
+    await import("./doctor-health-startup.js");
   const { effectiveRuntime, repairRuntime, stateDirExistedAtStart, root } =
     await prepareDoctorHealthFlow(runtime, options, intro);
   let maintenance: Awaited<
@@ -155,21 +156,20 @@ async function runDoctorHealthFlowWithResult(
   };
   const repairMode = resolveDoctorRepairMode(options);
   let interactiveRepair = false;
+  let updateAdmissionComplete = false;
   if (repairMode.canPrompt && !repairMode.shouldRepair) {
-    const { createDoctorPrompter } = await import("../commands/doctor-prompter.js");
-    interactiveRepair = await createDoctorPrompter({
+    const admission = await prepareDoctorInteractiveMaintenance({
       runtime: effectiveRuntime,
       options,
-    }).confirmRuntimeRepair({
-      message:
-        "Pause the managed Gateway while you review repairs? Doctor restores its prior service state when finished.",
-      initialValue: true,
-      requiresInteractiveConfirmation: true,
+      databasePreflight,
+      root,
+      outro,
     });
-    if (!interactiveRepair) {
-      outro("Doctor repairs cancelled. Run openclaw doctor --lint for read-only diagnosis.");
+    if (admission !== "accepted") {
       return;
     }
+    interactiveRepair = true;
+    updateAdmissionComplete = true;
   }
   try {
     if (options.repair === true || options.yes === true || interactiveRepair) {
@@ -224,7 +224,7 @@ async function runDoctorHealthFlowWithResult(
       });
       // Explicit repair never offers an update. Its current-state preflight remains
       // inside maintenance; diagnostic Doctor checks state before update admission.
-      if (!maintenance) {
+      if (!maintenance && !updateAdmissionComplete) {
         if (!databasePreflight) {
           await prepareDoctorDatabasePreflight({ scope: "state" });
         }
