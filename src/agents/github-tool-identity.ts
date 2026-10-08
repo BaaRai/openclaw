@@ -571,7 +571,7 @@ async function prepareSharedGitHubIdentity(
 
 /** Publication owns a fixed credential snapshot for its already-admitted operation. */
 export async function prepareGitHubPublicationIdentity(
-  params: GitHubIdentityPreparation,
+  params: GitHubIdentityPreparation & { assertCurrent?: () => void },
 ): Promise<PreparedGitHubPublicationIdentity> {
   const { prepared } = await prepareSharedGitHubIdentity(params);
   if (!prepared) {

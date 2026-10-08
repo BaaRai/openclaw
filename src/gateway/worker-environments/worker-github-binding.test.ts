@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   repository: vi.fn(),
   repositoryWorkspace: vi.fn(),
   session: vi.fn(),
+  admittedSessionRead: vi.fn(),
   nativeToken: vi.fn(),
   oauth: vi.fn(),
 }));
@@ -47,6 +48,10 @@ vi.mock("../../agents/worktrees/registry-read.js", async (importOriginal) => ({
     mocks.worktreeRead(kind, id),
 }));
 vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.session }));
+vi.mock("../../config/sessions/session-entry-read-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/session-entry-read-runtime.js")>()),
+  readSessionEntriesFromStoreInWorker: mocks.admittedSessionRead,
+}));
 vi.mock("../session-utils-store-worker.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../session-utils-store-worker.js")>()),
   loadGatewaySessionEntryReadOnlyInWorker: async (
@@ -125,6 +130,9 @@ describe("worker GitHub launch binding", () => {
         worktree: { id: worktree.id, branch: worktree.branch, repoRoot: worktree.repoRoot },
       },
     });
+    mocks.admittedSessionRead.mockReset().mockImplementation(async () => ({
+      entries: [{ sessionKey: session.sessionKey, entry: mocks.session().entry }],
+    }));
     mocks.nativeToken.mockReset().mockResolvedValue({
       code: 0,
       stdout: Buffer.from(token),
@@ -135,6 +143,177 @@ describe("worker GitHub launch binding", () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("rejects a missing admitted session instead of borrowing a routed session", async () => {
+    await installProfile();
+    mocks.session.mockReturnValue({ ...mocks.session(), storePath: "/synthetic/admitted.sqlite" });
+    mocks.admittedSessionRead.mockResolvedValue({ entries: [] });
+    let grant: Awaited<ReturnType<typeof prepareWorkerGitHubBindingGrant>>;
+    try {
+      await expect(
+        prepareWorkerGitHubBindingGrant({
+          ...session,
+          sessionTarget: { ...session, storePath: "/synthetic/admitted.sqlite" },
+        }).then((value) => {
+          grant = value;
+          return value;
+        }),
+      ).rejects.toThrow();
+      expect(mocks.admittedSessionRead).toHaveBeenCalled();
+    } finally {
+      await grant?.revoke();
+    }
+  });
+
+  it.each(["session", "lifecycle", "writer"] as const)(
+    "retires a credential-only grant when its admitted %s changes before renewal",
+    async (changed) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      await installProfile();
+      const entry = {
+        sessionId: session.sessionId,
+        lifecycleRevision: "lifecycle",
+        activeWriterRunId: "writer",
+      };
+      mocks.session.mockReturnValue({
+        canonicalKey: session.sessionKey,
+        agentId: session.agentId,
+        storePath: "/synthetic/admitted.sqlite",
+        entry,
+      });
+      const grant = await prepareWorkerGitHubBindingGrant({
+        ...session,
+        sessionTarget: {
+          ...session,
+          storePath: "/synthetic/admitted.sqlite",
+          expectedLifecycleRevision: "lifecycle",
+          expectedWriterRunId: "writer",
+        },
+      });
+      try {
+        expect(grant?.binding).toEqual({
+          token,
+          login: verified.account.login,
+          gitAuthor: { name: "Shared Bot" },
+        });
+        expect(mocks.repository).not.toHaveBeenCalled();
+        expect(mocks.nativeToken).not.toHaveBeenCalled();
+        const replacement = {
+          ...entry,
+          ...(changed === "session"
+            ? { sessionId: "replacement" }
+            : changed === "lifecycle"
+              ? { lifecycleRevision: "replacement" }
+              : { activeWriterRunId: "replacement" }),
+        };
+        // Only the admitted worker read changes; the synchronous projection remains stale.
+        mocks.admittedSessionRead.mockResolvedValue({
+          entries: [{ sessionKey: session.sessionKey, entry: replacement }],
+        });
+        vi.setSystemTime(Date.now() + 60_001);
+        await expect(grant!.refresh!()).rejects.toThrow();
+        expect(grant!.signal?.aborted).toBe(true);
+        expect(mocks.admittedSessionRead).toHaveBeenLastCalledWith(
+          expect.objectContaining({ storePath: "/synthetic/admitted.sqlite" }),
+          expect.any(Function),
+        );
+      } finally {
+        await grant?.revoke();
+      }
+    },
+  );
+
+  it("rejects a rerouted session without lending the original grant to its replacement store", async () => {
+    await installProfile();
+    mocks.session.mockReturnValue({ ...mocks.session(), storePath: "/synthetic/admitted.sqlite" });
+    const grant = await prepareWorkerGitHubBindingGrant({
+      ...session,
+      sessionTarget: { ...session, storePath: "/synthetic/admitted.sqlite" },
+    });
+    try {
+      mocks.session.mockReturnValue({
+        ...mocks.session(),
+        storePath: "/synthetic/replacement.sqlite",
+      });
+      expect(() => grant!.assertCurrent!()).toThrow();
+      expect(grant!.signal?.aborted).toBe(true);
+    } finally {
+      await grant?.revoke();
+    }
+  });
+
+  it("rejects claim closure while the admitted workspace read is pending", async () => {
+    await installProfile();
+    let active = true;
+    mocks.admittedSessionRead.mockImplementationOnce(async () => {
+      active = false;
+      return { entries: [{ sessionKey: session.sessionKey, entry: mocks.session().entry }] };
+    });
+    await expect(
+      prepareWorkerGitHubBindingGrant({
+        ...session,
+        assertCurrent: () => active,
+        sessionTarget: { ...session, storePath: "/synthetic/admitted.sqlite" },
+      }),
+    ).rejects.toThrow("authority closed");
+    expect(mocks.verify).not.toHaveBeenCalled();
+  });
+
+  it("revalidates admitted ownership before replaying an unacknowledged credential", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const profileDir = await installProfile();
+    mocks.session.mockReturnValue({ ...mocks.session(), storePath: "/synthetic/admitted.sqlite" });
+    const grant = await prepareWorkerGitHubBindingGrant({
+      ...session,
+      sessionTarget: { ...session, storePath: "/synthetic/admitted.sqlite" },
+    });
+    try {
+      await writeManagedGitHubProfileFiles(profileDir, {
+        login: verified.account.login,
+        token: "synthetic-pending-rotation",
+      });
+      const pending = await grant!.refresh!();
+      expect(pending).toMatchObject({ generation: 1, token: "synthetic-pending-rotation" });
+      mocks.admittedSessionRead.mockClear();
+      vi.setSystemTime(Date.now() + 60_001);
+      expect(await grant!.refresh!()).toEqual(pending);
+      expect(mocks.admittedSessionRead).toHaveBeenCalled();
+      mocks.admittedSessionRead.mockResolvedValue({ entries: [] });
+      vi.setSystemTime(Date.now() + 60_001);
+      await expect(grant!.refresh!()).rejects.toThrow();
+      expect(grant!.signal?.aborted).toBe(true);
+    } finally {
+      await grant?.revoke();
+    }
+  });
+
+  it("replaces an unacknowledged credential when its selected profile rotates again", async () => {
+    const profileDir = await installProfile();
+    const grant = await prepareWorkerGitHubBindingGrant(session);
+    try {
+      await writeManagedGitHubProfileFiles(profileDir, {
+        login: verified.account.login,
+        token: "synthetic-pending-first",
+      });
+      expect(await grant!.refresh!()).toMatchObject({
+        generation: 1,
+        token: "synthetic-pending-first",
+      });
+      await writeManagedGitHubProfileFiles(profileDir, {
+        login: verified.account.login,
+        token: "synthetic-pending-second",
+      });
+      expect(await grant!.refresh!()).toMatchObject({
+        generation: 2,
+        token: "synthetic-pending-second",
+      });
+      expect(grant!.binding.token).toBe(token);
+      await grant!.refresh!(2);
+      expect(grant!.binding.token).toBe("synthetic-pending-second");
+    } finally {
+      await grant?.revoke();
+    }
   });
 
   it("binds the verified shared account and canonical HTTPS remote", async () => {

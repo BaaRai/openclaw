@@ -85,11 +85,8 @@ export function createWorkerGitHubBindingGrant(params: {
         pending = undefined;
         assertCurrent();
       }
-      if (pending) {
-        return pending.refresh;
-      }
       if (Date.now() - checkedAtMs < 60_000 && !params.refreshRequired?.()) {
-        return undefined;
+        return pending?.refresh;
       }
       const next = await params.refreshCredential();
       checkedAtMs = Date.now();
@@ -97,7 +94,14 @@ export function createWorkerGitHubBindingGrant(params: {
         return undefined;
       }
       assertCurrent();
-      if (next.token === current.token && next.expiresAtMs === current.expiresAtMs) {
+      if (pending) {
+        if (
+          next.token === pending.credential.token &&
+          next.expiresAtMs === pending.credential.expiresAtMs
+        ) {
+          return pending.refresh;
+        }
+      } else if (next.token === current.token && next.expiresAtMs === current.expiresAtMs) {
         return undefined;
       }
       pending = {

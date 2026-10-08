@@ -7,6 +7,7 @@ import {
   resolveConfiguredGitHubToolIdentity,
   onManagedGitHubProfileChanged,
 } from "../../agents/github-tool-identity.js";
+import type { AgentRunSessionTarget } from "../../agents/run-session-target.types.js";
 import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
 import { registerConfigWriteListener } from "../../config/config.js";
@@ -61,6 +62,7 @@ export async function prepareWorkerGitHubBindingGrant(params: {
   assertCurrent?: () => boolean;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   signal?: AbortSignal;
+  sessionTarget?: AgentRunSessionTarget;
 }): Promise<WorkerGitHubBindingGrant | undefined> {
   if (params.signal?.aborted || params.assertCurrent?.() === false) {
     return undefined;
@@ -81,8 +83,17 @@ export async function prepareWorkerGitHubBindingGrant(params: {
       (candidate): candidate is AbortSignal => candidate !== undefined,
     ),
   );
+  const assertRunCurrent = () => {
+    signal.throwIfAborted();
+    operator?.assertCurrent();
+    if (params.assertCurrent?.() === false) {
+      throw new Error("Worker GitHub credential authority closed");
+    }
+  };
   const preparedWorkspace = await prepareGitHubPublicationWorkspaceOwner(params, {
     allowMissingWorkspace: true,
+    sessionTarget: params.sessionTarget,
+    assertCurrent: assertRunCurrent,
   });
   signal.throwIfAborted();
   operator?.assertCurrent();
@@ -91,12 +102,8 @@ export async function prepareWorkerGitHubBindingGrant(params: {
   }
   const workspace = preparedWorkspace.initial;
   const assertAuthority = () => {
-    signal.throwIfAborted();
-    operator?.assertCurrent();
-    if (
-      params.assertCurrent?.() === false ||
-      !sameGitHubPublicationWorkspace(workspace, preparedWorkspace.current())
-    ) {
+    assertRunCurrent();
+    if (!sameGitHubPublicationWorkspace(workspace, preparedWorkspace.current())) {
       throw new Error("Worker GitHub credential authority closed");
     }
   };
@@ -135,7 +142,7 @@ export async function prepareWorkerGitHubBindingGrant(params: {
   do {
     preparedProfileRevision = profileRevision;
     try {
-      identity = await prepareCurrentGitHubPublicationIdentity(params.agentId);
+      identity = await prepareCurrentGitHubPublicationIdentity(params.agentId, assertAuthority);
     } catch (error) {
       assertAuthority();
       const config = currentGitHubPublicationConfig();
@@ -207,7 +214,10 @@ export async function prepareWorkerGitHubBindingGrant(params: {
     let revision: number;
     do {
       revision = profileRevision;
-      currentIdentity = await prepareCurrentGitHubPublicationIdentity(params.agentId);
+      currentIdentity = await prepareCurrentGitHubPublicationIdentity(
+        params.agentId,
+        assertAuthority,
+      );
       await refreshWorkspace();
       assertCurrent();
     } while (revision !== profileRevision);

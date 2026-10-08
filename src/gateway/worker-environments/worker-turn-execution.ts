@@ -349,6 +349,7 @@ export async function executeWorkerTurn(
     }
     const preparingGitHubGrant = prepareWorkerGitHubBindingGrant({
       ...placement,
+      sessionTarget: transcriptTarget,
       operatorAuthority,
       signal,
       assertCurrent: isAuthorized,

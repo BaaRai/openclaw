@@ -73,15 +73,15 @@ import {
   type NodePresenceActivityUpdate,
 } from "./node-registry.presence.js";
 import {
-  authorizedSystemRunEventExpiresAt,
-  authorizedSystemRunEventKey,
-} from "./node-registry.system-run.js";
-import {
   updateNodeCommandFeatures,
   updateNodeHostStats,
   type NodeCommandFeaturesUpdate,
   type NodeHostStatsUpdate,
 } from "./node-registry.publications.js";
+import {
+  authorizedSystemRunEventExpiresAt,
+  authorizedSystemRunEventKey,
+} from "./node-registry.system-run.js";
 import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
 import type { NodeSession } from "./node-session.types.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
