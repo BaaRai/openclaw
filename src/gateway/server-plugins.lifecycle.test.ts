@@ -3,10 +3,9 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import * as configFileSource from "../config/source-file.js";
 import { markGatewayRestartHandled } from "../infra/restart.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
@@ -14,7 +13,6 @@ import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-l
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { captureEnv } from "../test-utils/env.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
-import { createWatcherMock } from "./config-reload.watcher.test-support.js";
 import {
   CHANNEL_BINDING_IDS,
   clearInstanceBindingProbeCoordinators,
@@ -25,6 +23,7 @@ import {
   type InstanceBindingProbeResult,
 } from "./server-plugins.lifecycle.test-fixtures.js";
 import {
+  controlRpcOwnedConfigWatcher,
   prepareInstanceBindingFixture,
   installInstanceBindingConfigIo,
   patchInstanceBindingTestConfig,
@@ -60,28 +59,6 @@ async function prepareInstanceBindingTest(
 }
 
 installInstanceBindingConfigIo();
-
-function controlRpcOwnedConfigWatcher(configPath: string) {
-  const createConfigFileAdapter = configFileSource.createConfigFileAdapter;
-  const configWatcher = vi
-    .spyOn(configFileSource, "createConfigFileAdapter")
-    .mockImplementation((options) => {
-      if (options.path !== configPath) {
-        return createConfigFileAdapter(options);
-      }
-      // Explicit config writes own these cases; filesystem echoes can race the next RPC.
-      const watcher = createWatcherMock();
-      const adapter = watcher.attach(options);
-      return {
-        ...adapter,
-        start() {
-          adapter.start();
-          queueMicrotask(() => watcher.emit("ready"));
-        },
-      };
-    });
-  onTestFinished(() => configWatcher.mockRestore());
-}
 
 describe("gateway plugin instance bindings", () => {
   const started: Array<Awaited<ReturnType<typeof startTestGatewayServer>>> = [];
