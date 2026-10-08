@@ -67,9 +67,9 @@ type CrabboxToolOptions = {
   gateway: OpenClawPluginApi["runtime"]["gateway"];
 };
 
-function operationId(sessionId: string, toolCallId: string): string {
+function operationId(sessionId: string, toolCallId: string, runId?: string): string {
   return createHash("sha256")
-    .update(JSON.stringify([sessionId, toolCallId]))
+    .update(JSON.stringify(runId ? [sessionId, runId, toolCallId] : [sessionId, toolCallId]))
     .digest("hex");
 }
 
@@ -134,7 +134,7 @@ export function createCrabboxTool({ context, gateway }: CrabboxToolOptions): Any
             "environments.session.create",
             {
               profileId,
-              idempotencyKey: operationId(sessionId, toolCallId),
+              idempotencyKey: operationId(sessionId, toolCallId, context.runId),
               ...(os ? { os } : {}),
               ...(machineClass ? { machineClass } : {}),
               ...(presentation ? { presentation } : {}),

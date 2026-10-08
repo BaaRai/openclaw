@@ -46,6 +46,19 @@ describe("Crabbox conversation tool", () => {
     expect(fixture(toolContext).tool).toBeNull();
   });
 
+  it("scopes repeated provider call ids to the run while preserving invocation retries", async () => {
+    const firstContext = { ...context, runId: "run-one" };
+    const first = fixture(firstContext);
+    const retry = fixture(firstContext);
+    const next = fixture({ ...firstContext, runId: "run-two" });
+    for (const { tool } of [first, retry, next]) {
+      await tool!.execute("crabbox_0", { action: "create" });
+    }
+    const key = first.request.mock.calls[0]?.[1].idempotencyKey;
+    expect(retry.request.mock.calls[0]?.[1].idempotencyKey).toBe(key);
+    expect(next.request.mock.calls[0]?.[1].idempotencyKey).not.toBe(key);
+  });
+
   it("reuses allocation identity on a replay without accepting caller-supplied ownership", async () => {
     const { tool, request } = fixture();
     const params = {
