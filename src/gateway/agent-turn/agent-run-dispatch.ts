@@ -518,7 +518,8 @@ export function dispatchAgentRunFromGateway(params: {
       });
       return { terminalOutcome, settled };
     });
-  const runCompletion = (async () => {
+  // Gateway shutdown must join this execution, not just its admission.
+  return (async () => {
     try {
       return await dispatchCompletion;
     } finally {
@@ -529,7 +530,4 @@ export function dispatchAgentRunFromGateway(params: {
       }
     }
   })();
-
-  // Gateway shutdown must join this execution, not just its admission.
-  return runCompletion;
 }

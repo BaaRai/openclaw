@@ -66,8 +66,7 @@ export const sessionActivitySummaryHandlers: GatewayRequestHandlers = {
       }
       respond(true, {
         sessions: targets.map((target) => ({
-          key: target.key,
-          agentId: target.agentId,
+          ...target,
           activitySummary: { ...service.ensure(target), canEnsure: true },
         })),
       });
