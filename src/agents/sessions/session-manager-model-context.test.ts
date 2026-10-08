@@ -22,7 +22,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "./session-manager.js";
 
-it("reports context queue overload without losing context and recovers in admission order", async () => {
+it("reports context queue overload without losing context and recovers after draining", async () => {
   await withOpenClawTestState({ label: "model-context-pressure" }, async (state) => {
     const scope = {
       agentId: "main",
@@ -36,39 +36,38 @@ it("reports context queue overload without losing context and recovers in admiss
     await waitForSessionTranscriptProjection(scope);
     const expected = source.buildSessionContext();
     const release = createDeferredCore();
-    const completed: number[] = [];
-    const spy = vi.spyOn(WorkerTaskPool.prototype, "run").mockImplementationOnce(function (
+    let completed = 0;
+    // oxlint-disable-next-line typescript/unbound-method -- The spy forwards the original pool receiver.
+    const run = WorkerTaskPool.prototype.run;
+    const spy = vi.spyOn(WorkerTaskPool.prototype, "run").mockImplementation(function (
       this: WorkerTaskPool<unknown, unknown>,
       input,
       options,
     ) {
-      spy.mockRestore();
-      // Hold this caller's first preparation while real pool admission fills the queue.
-      return this.run(async () => {
-        await release.promise;
-        return input;
-      }, options);
+      // Hold every reader's preparation while real pool admission fills the queue.
+      return run.call(
+        this,
+        async () => {
+          await release.promise;
+          return typeof input === "function" ? input() : input;
+        },
+        options,
+      );
     });
-    const accepted = Array.from({ length: 128 }, (_, index) =>
+    const accepted = Array.from({ length: 128 }, () =>
       SessionManager.openModelContextAsync(scope).then((context) => {
-        completed.push(index);
+        completed++;
         return context.buildSessionContext();
       }),
     );
-    let reported: unknown;
-    const excess = SessionManager.openModelContextAsync(scope).catch((error: unknown) => {
-      reported = error;
-    });
+    const excess = SessionManager.openModelContextAsync(scope).catch((error: unknown) => error);
     try {
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      expect(reported).toMatchObject({ name: "WorkerTaskError", code: "overloaded" });
-      expect(completed).toEqual([]);
+      expect(await excess).toMatchObject({ name: "WorkerTaskError", code: "overloaded" });
+      expect(completed).toBe(0);
       expect(source.buildSessionContext()).toEqual(expected);
+      spy.mockRestore();
       release.resolve();
       expect(await Promise.all(accepted)).toEqual(Array.from({ length: 128 }, () => expected));
-      expect(completed).toEqual(Array.from({ length: 128 }, (_, index) => index));
       expect((await SessionManager.openModelContextAsync(scope)).buildSessionContext()).toEqual(
         expected,
       );
