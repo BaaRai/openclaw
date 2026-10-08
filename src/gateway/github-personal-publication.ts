@@ -15,7 +15,6 @@ import {
 } from "../state/session-repository-workspaces.js";
 import { readUserGitHubConnection } from "../state/user-github-connections.js";
 import { requestCurrentPersonalGitHubRefresh } from "./github-oauth-lifecycle.js";
-import { personalGitHubStatus, type PersonalGitHubAction } from "./github-personal-oauth.js";
 import {
   claimPersonalGitHubPublication,
   insertPersonalGitHubPublication,
@@ -23,6 +22,7 @@ import {
   readPersonalGitHubPublication,
   type PersonalGitHubPublicationRow,
 } from "./github-personal-publication-store.js";
+import { personalGitHubStatus, type PersonalGitHubAction } from "./github-personal-status.js";
 import {
   readGitHubPublicationWorktreeOwner,
   type PublicationSessionIdentity as SessionIdentity,

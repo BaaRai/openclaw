@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { updateUserGitHubConnection } from "../state/user-github-connections.js";
+import {
+  readUserGitHubConnection,
+  replaceUserGitHubConnection,
+} from "../state/user-github-connections.js";
 import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
 import {
   callPersonalPublicationRpc,
@@ -285,21 +288,26 @@ describe("GitHub publication selection admission", () => {
           account: personalPublicationAccount,
         },
       };
-      const rotate = () =>
-        updateUserGitHubConnection(
+      const rotate = async () => {
+        const current = readUserGitHubConnection(fixture.owner)!;
+        await replaceUserGitHubConnection(
           fixture.owner,
-          (current) => ({ ...current!, generation: "f7cb52c6-1d4f-4012-aeae-e31b00f41456" }),
+          {
+            expected: current,
+            next: { ...current, generation: "f7cb52c6-1d4f-4012-aeae-e31b00f41456" },
+          },
           () => {},
         );
+      };
       if (phase === "initial") {
-        rotate();
+        await rotate();
       } else if (phase === "refresh") {
         mocks.refreshIdentity.mockImplementationOnce(async () => rotate());
       } else if (phase === "target") {
         const resolve = mocks.resolveRepository.getMockImplementation()!;
         mocks.resolveRepository.mockImplementationOnce(async () => {
           const target = await resolve();
-          rotate();
+          await rotate();
           return target;
         });
       } else {
@@ -308,7 +316,7 @@ describe("GitHub publication selection admission", () => {
           async (args: string[], options?: { input?: string }) => {
             const result = await run(args, options);
             if (args.includes("write-tree")) {
-              rotate();
+              await rotate();
             }
             return result;
           },

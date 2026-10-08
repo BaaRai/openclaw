@@ -5,6 +5,7 @@ import { root as fsRoot, type Root } from "@openclaw/fs-safe/root";
 import { isManagedGitHubProfileId } from "../config/github-identity-profile-id.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { listAgentIds, resolveAgentConfig } from "./agent-scope.js";
 import { listGitHubOAuthRecords } from "./github-oauth-records.js";
 import {
@@ -115,11 +116,12 @@ export async function cleanupRetiredManagedGitHubProfiles(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 }): Promise<GitHubProfileCleanupResult> {
+  const context = captureOpenClawStateWorkerContext({ env: params.env });
   const warnings: string[] = [];
   const systemRoot = resolveManagedGitHubProfileRoot({
     agentId: "system",
     scope: "system",
-    env: params.env,
+    env: context.environment,
   });
   const systemProfiles = new Set(
     params.config.tools?.github?.profileId ? [params.config.tools.github.profileId] : [],
@@ -132,7 +134,7 @@ export async function cleanupRetiredManagedGitHubProfiles(params: {
   );
   // Initial setup can be durable before its config CAS is known. Pending
   // refresh metadata also owns the selected stable profile until recovery.
-  for (const { record } of listGitHubOAuthRecords()) {
+  for (const { record } of await listGitHubOAuthRecords({ context })) {
     if (!record) {
       continue;
     }

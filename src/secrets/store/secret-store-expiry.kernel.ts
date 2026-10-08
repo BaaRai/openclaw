@@ -10,7 +10,7 @@ import {
   classifyHiddenGitHubStoreName,
   GITHUB_DEVICE_STORE_MAX_AGE_MS,
   GITHUB_SETUP_HANDOFF_MAX_AGE_MS,
-} from "./secret-store-hidden-github.js";
+} from "./secret-store-hidden-github.kernel.js";
 import { isMissingSecretStoreTableError } from "./secret-store-sqlite.js";
 
 type SecretStoreDatabase = Pick<DB, "secret_store_entries">;

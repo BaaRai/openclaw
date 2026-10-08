@@ -95,6 +95,43 @@ unscoped calls warn once per method. Core and bundled callers use the awaited
 methods. This migration changes no RPC schema, stored data, retention, or update
 behavior.
 
+## Await GitHub connection operations
+
+The Gateway context's `githubOAuthService` provides worker-backed companions:
+
+| Existing method                | Worker-backed companion             |
+| ------------------------------ | ----------------------------------- |
+| `cancelAuthorization`          | `cancelAuthorizationAsync`          |
+| `retireProfile`                | `retireProfileAsync`                |
+| `personal.startAuthorization`  | `personal.startAuthorizationAsync`  |
+| `personal.pollAuthorization`   | `personal.pollAuthorizationAsync`   |
+| `personal.cancelAuthorization` | `personal.cancelAuthorizationAsync` |
+| `personal.disconnect`          | `personal.disconnectAsync`          |
+
+Await completion before replying or starting dependent work. The personal
+companions take a versioned action with `assertMutationCurrent`, which checks
+live requester authority using the supplied transaction-local role facts without
+accessing SQLite. Keep `assertCurrent` for the existing synchronous credential
+and external-effect boundaries; prepared status does not grant publication
+authority.
+
+The methods shipped in 2026.9.8 retain their arguments, return values, and
+completion timing until the next Plugin SDK major and explicit breaking-release
+approval. Existing async start and poll methods retain their plain-action
+contract; opaque callbacks use native transactions. Each legacy method emits
+one `DEP_SESSION_PERSISTENCE` warning per plugin and method per process.
+The new companions are optional on the public context type so older custom
+service implementations remain valid. Core selects a supplied async method or
+the custom service's legacy method before execution; it never retries a failed
+worker operation through a native adapter. Stored data, schemas, retention,
+permissions, and update behavior are unchanged.
+
+The released `GatewayRequestHandlerOptions.sessionMutationCommitGuard` may access
+SQLite synchronously. GitHub setup keeps that opaque guard beside the consuming
+native transaction; ordinary worker-safe Gateway requests use the worker. Both
+paths consume the same exact handoff predicate and preserve write ordering.
+There is no fallback to native execution after a worker failure.
+
 ## Await placement preparation
 
 Gateway contexts provide `workerSessionPlacementService.getManyAsync` and

@@ -3290,8 +3290,53 @@ captures the physical store before yielding, registers returned secrets with its
 redaction owner, and seals exec sentinels with its process-local key. Each exec
 call rechecks its existing source authority after awaiting the run's shared
 snapshot; generic SecretRef callers retain their current activation guards.
-Hidden GitHub operations and the CLI allowed-host setter remain with their existing
-owners. Schemas, retention, stored bytes, and update behavior are unchanged.
+Hidden GitHub setup consumption, record preparation, and OAuth maintenance use
+the same shared-state workers. A record listing returns names and values in one
+snapshot instead of rereading each listed name. Setup consumption returns the
+value from its exact, freshness-constrained deletion. Replacement and cleanup
+compare the original record bytes inside the synchronous writer transaction;
+they cannot resurrect canceled authorization or remove a repaired successor.
+Physical state, profile-directory, and config targets remain captured across
+provider and worker waits. Accepted token rotations retain settlement ownership.
+GitHub writes share the secret store's existing first-use worker admission, so
+they do not rerun additive schema setup for each write. Native SDK and profile
+merge adapters preserve their existing first-use behavior.
+
+Personal GitHub mutations use typed commands that reread the canonical owner,
+connection generation, pending request, and refresh operation before writing.
+Transaction and commit grants consume current role and lease facts while the
+host checks live requester authority. Only acknowledged commits publish profile
+retirement; returned credentials enter the host's redaction registry before use.
+Retirement notifications and retry queues retain their originating physical store
+and profile directory. Cleanup uses that captured source for its lease and file
+removal, even if the process environment changes after an awaited scan or commit.
+Immediately before removal, the retained lease owner reads current references
+with one native live-profile join and the existing connection decoder. Raw native,
+released SDK, and foreign writers can add references outside worker publication,
+so this final-authority guard remains T1 debt until complete revocation publication
+replaces those writers at the next Plugin SDK major. Maintenance inventories remain
+in the worker; cleanup does not issue a redundant worker reference read.
+
+The final personal credential check and publication lifecycle binding check are
+retained final-authority guards. Native and released SDK writers can revoke their
+rows outside worker publication, so a prepared snapshot cannot replace their
+current indexed reads. Publication receipts and their lifecycle bindings still
+commit atomically through the existing publication owner. These native sites
+remain T1 debt. Their retirement requires complete revocation publication after
+raw synchronous writers are removed at the next Plugin SDK major. The released
+GitHub service's synchronous cancellation, retirement, and disconnect methods,
+and async methods accepting opaque native guards, retain documented SDK adapters;
+bundled callers use the worker methods. See the
+[GitHub SDK migration guide](/plugins/sdk-migration/how-to-migrate#await-github-connection-operations).
+Setup consumption also retains the released opaque `sessionMutationCommitGuard`
+beside its native transaction. That compatibility family and worker mutations
+share the existing FIFO and input-budget primitives; a worker failure never
+selects the native adapter. The generic guard cannot become worker-safe until
+the next Plugin SDK major. Shared agent setup keeps its current incarnation and
+deletion checks at mutation grants until that lifecycle owner can publish complete
+revocation facts; those retained native reads remain counted.
+The CLI allowed-host setter keeps its one-shot owner. Schemas, retention, stored
+bytes, and update behavior are unchanged.
 
 Placement change reporting reads its before/after snapshots in the shared-state
 read worker using the placement store's row codec. It transfers only session

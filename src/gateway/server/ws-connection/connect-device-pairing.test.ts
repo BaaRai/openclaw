@@ -35,7 +35,7 @@ import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import {
   disconnectedUserGitHubConnection,
   readUserGitHubConnection,
-  updateUserGitHubConnection,
+  replaceUserGitHubConnection,
 } from "../../../state/user-github-connections.js";
 import { setUserProfileRole } from "../../../state/user-profile-writes.worker.js";
 import { repairMergedGatewayOwnerProfile } from "../../../state/user-profiles-owner-migration.js";
@@ -311,21 +311,24 @@ describe("gateway connect pairing exemptions", () => {
           visibility: "draft",
         },
       );
-      const personalConnection = updateUserGitHubConnection(
+      const personalConnection = await replaceUserGitHubConnection(
         person.id,
-        () => ({
-          ...disconnectedUserGitHubConnection(),
-          selection: {
-            kind: "connected",
-            profileId: "ghp_00000000000000000000000000000001",
-            accountId: 101,
-            login: "personal-person",
-            refreshToken: "synthetic-refresh",
-            accessExpiresAtMs: Date.now() + 60_000,
-            refreshExpiresAtMs: Date.now() + 120_000,
-            scopes: ["repo"],
+        {
+          expected: undefined,
+          next: {
+            ...disconnectedUserGitHubConnection(),
+            selection: {
+              kind: "connected",
+              profileId: "ghp_00000000000000000000000000000001",
+              accountId: 101,
+              login: "personal-person",
+              refreshToken: "synthetic-refresh",
+              accessExpiresAtMs: Date.now() + 60_000,
+              refreshExpiresAtMs: Date.now() + 120_000,
+              scopes: ["repo"],
+            },
           },
-        }),
+        },
         () => {},
       );
       const stateDb = openOpenClawStateDatabase();

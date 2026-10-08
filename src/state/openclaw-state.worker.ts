@@ -366,7 +366,15 @@ function createSharedStateWorkerBackend(
       if (!currentRuntime) {
         throw new Error("Shared-state worker command runtime is not prepared");
       }
-      if (command.type === "secrets.write" && !secretSchemaAdmitted) {
+      if (
+        !secretSchemaAdmitted &&
+        (command.type === "secrets.write" ||
+          command.type === "githubSecrets.write" ||
+          (command.type === "userGitHub.mutate" &&
+            (command.input.kind === "start" ||
+              command.input.kind === "disconnect" ||
+              command.input.kind === "replace")))
+      ) {
         runOpenClawStateWriteTransaction(
           ({ db }) => ensureSecretStoreSchema(db),
           { database: open() },

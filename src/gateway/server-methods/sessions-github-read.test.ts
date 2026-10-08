@@ -6,13 +6,13 @@ import { clearGitHubCredentialVerificationCache } from "../../agents/github-oaut
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
-  updateUserGitHubConnection,
+  replaceUserGitHubConnection,
   type UserGitHubConnection,
 } from "../../state/user-github-connections.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import * as prRead from "../control-ui-session-pr-read.js";
 import { requestCurrentGitHubOAuthRefresh } from "../github-oauth-lifecycle.js";
-import { personalGitHubStatus } from "../github-personal-oauth.js";
+import { personalGitHubStatus } from "../github-personal-status.js";
 import * as publicationAvailability from "../github-publication-availability.js";
 import * as relevance from "../github-publication-relevance.js";
 import {
@@ -312,9 +312,9 @@ describe("publication receipt reads", () => {
           },
         } satisfies UserGitHubConnection;
         if (hasGitHubConnection) {
-          updateUserGitHubConnection(
+          await replaceUserGitHubConnection(
             owner,
-            () => connection,
+            { expected: undefined, next: connection },
             () => {},
           );
         }
@@ -368,25 +368,31 @@ describe("publication receipt reads", () => {
               { lifecycleRevision: "replaced-publication-session" },
             );
           } else if (change === "github-generation") {
-            updateUserGitHubConnection(
+            await replaceUserGitHubConnection(
               owner,
-              () => ({
-                ...connection,
-                generation: "6a7862d3-9895-4905-a4fb-f16f143aed3e",
-              }),
+              {
+                expected: connection,
+                next: {
+                  ...connection,
+                  generation: "6a7862d3-9895-4905-a4fb-f16f143aed3e",
+                },
+              },
               () => {},
             );
           } else if (change === "github-account") {
-            updateUserGitHubConnection(
+            await replaceUserGitHubConnection(
               owner,
-              () => ({
-                ...connection,
-                selection: {
-                  ...connection.selection,
-                  accountId: 43,
-                  login: "replacement-reader",
+              {
+                expected: connection,
+                next: {
+                  ...connection,
+                  selection: {
+                    ...connection.selection,
+                    accountId: 43,
+                    login: "replacement-reader",
+                  },
                 },
-              }),
+              },
               () => {},
             );
           }

@@ -52,6 +52,11 @@ describe("GitHub identity config mutation", () => {
 
   it("revalidates the agent incarnation inside the config mutation and never recreates it", async () => {
     const draft: OpenClawConfig = { agents: { entries: { main: {} } } };
+    const stateDatabase = {
+      path: "/synthetic-original/state.sqlite",
+      env: { OPENCLAW_STATE_DIR: "/synthetic-original" },
+    };
+    const expectedConfigPath = "/synthetic-original/openclaw.json";
     mocks.matchesAgentLifecycleBinding.mockReturnValue(false);
     mocks.mutateConfigFileWithRetry.mockImplementation(async ({ mutate }) => {
       mutate(draft);
@@ -65,13 +70,24 @@ describe("GitHub identity config mutation", () => {
         identity: { profileId: `ghp_${"1".repeat(32)}`, kind: "oauth" },
         expectedIdentity: null,
         agentLifecycleBinding: { agentId: "main", provenance: null },
+        stateDatabase,
+        expectedConfigPath,
       }),
     ).rejects.toThrow("Agent changed while GitHub setup was in progress.");
 
-    expect(mocks.matchesAgentLifecycleBinding).toHaveBeenCalledWith(draft, {
-      agentId: "main",
-      provenance: null,
-    });
+    expect(mocks.matchesAgentLifecycleBinding).toHaveBeenCalledWith(
+      draft,
+      {
+        agentId: "main",
+        provenance: null,
+      },
+      stateDatabase,
+    );
+    expect(mocks.mutateConfigFileWithRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        writeOptions: { expectedConfigPath },
+      }),
+    );
     expect(draft.agents?.entries?.main?.tools?.github).toBeUndefined();
   });
 });

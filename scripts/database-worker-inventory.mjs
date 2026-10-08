@@ -1709,13 +1709,20 @@ const reviewedOperations = new Map([
     ],
   ],
   [
-    "src/secrets/store/secret-store-hidden-github.ts",
+    "src/secrets/store/secret-store-hidden-github.kernel.ts",
     [
       {
         tier: "W",
-        operations: ["writePersonalGitHubSecret"],
+        operations: ["writePersonalGitHubSecret", "listHiddenGitHubRows"],
         evidence:
-          "Counted expression is null DELETE only: src/state/user-github-connections.ts:260 → user-profiles-merge.ts:58 → user-profile-writes.worker.ts:325,375,432. Other value callers pass JSON strings.",
+          "Personal null DELETE is used only by mergeUserGitHubConnection in user-profile-writes.worker.ts; native SDK writes pass JSON strings. Hidden listing executes only in secret-store-hidden-github.worker.ts; setup consumption also retains opaque SDK commit guards on the native boundary.",
+      },
+      {
+        tier: "W",
+        operations: ["upsertHiddenGitHubSecret"],
+        binding: "updated",
+        evidence:
+          "Exact-value UPDATE branch is selected only by githubSecrets.write worker commands. Native personal SDK adapters call writePersonalGitHubSecret without an expected value and retain the INSERT branch's T1 classification.",
       },
     ],
   ],

@@ -41,6 +41,7 @@ import type { NodeWorkerJournalWorkerOperations } from "../node-host/node-worker
 import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-store.worker.js";
 import type { PluginRuntimeWorkerOperations } from "../plugins/state.worker-contract.js";
 import type { ProjectRegistryWorkerOperations } from "../projects/project-registry.worker-contract.js";
+import type { HiddenGitHubWorkerOperations } from "../secrets/store/secret-store-hidden-github.worker.js";
 import type { SkillLibraryWorkerOperations } from "../skills/library/store.worker-contract.js";
 import type { SkillUploadWorkerOperations } from "../skills/lifecycle/upload-store.worker-contract.js";
 import type {
@@ -51,6 +52,7 @@ import type { TranscriptWriteOperations } from "../transcripts/store-write.worke
 import type { OnboardingRecommendationWriteOperations } from "./onboarding-recommendations.kernel.js";
 import type { AgentDatabaseRegistryWorkerOperations } from "./openclaw-agent-db-contract.js";
 import type { RepositoryWorkspaceWorkerOperations } from "./session-repository-workspaces.worker-contract.js";
+import type { UserGitHubWorkerOperations } from "./user-github-connections.worker-contract.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 import type { WorkerOperations, WorkerWriteOperationContext } from "./worker-operation-registry.js";
 import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
@@ -106,12 +108,20 @@ export type RegisteredStateWorkerOperations = WorkerOperations<typeof gatewayBoo
   WorkerEnvironmentWorkerOperations &
   WorkerTranscriptCommitOperations &
   RepositoryWorkspaceWorkerOperations &
-  UserProfileWorkerOperations;
+  UserProfileWorkerOperations &
+  HiddenGitHubWorkerOperations &
+  UserGitHubWorkerOperations;
 
 export const stateWorkerRegistry = createWorkerOperationRegistry<
   RegisteredStateWorkerOperations,
   WorkerWriteOperationContext
 >({
+  githubSecrets: () =>
+    import("../secrets/store/secret-store-hidden-github.worker.js").then(
+      (m) => m.hiddenGitHubOperations,
+    ),
+  userGitHub: () =>
+    import("./user-github-connections.worker.js").then((m) => m.userGitHubOperations),
   gatewayBoot: () =>
     import("../infra/gateway-boot-lifecycle.worker.js").then((m) => m.gatewayBootOperations),
   localWorkspace: () =>

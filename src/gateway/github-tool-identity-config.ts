@@ -9,6 +9,7 @@ import { unsetConfigValueAtPath } from "../config/config-paths.js";
 import { mutateConfigFileWithRetry } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
+import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 
 export async function updateGitHubToolIdentityConfig(params: {
   scope: "system" | "agent";
@@ -16,9 +17,12 @@ export async function updateGitHubToolIdentityConfig(params: {
   identity?: GitHubToolIdentityConfig;
   expectedIdentity?: GitHubToolIdentityConfig | null;
   agentLifecycleBinding?: AgentLifecycleBinding;
+  expectedConfigPath?: string;
+  stateDatabase?: Pick<OpenClawStateDatabaseOptions, "path" | "env">;
 }): Promise<OpenClawConfig> {
   const mutation = await mutateConfigFileWithRetry({
     afterWrite: { mode: "auto" },
+    writeOptions: { expectedConfigPath: params.expectedConfigPath },
     mutate: (draft) => {
       if (params.scope === "system") {
         if (
@@ -38,7 +42,7 @@ export async function updateGitHubToolIdentityConfig(params: {
 
       if (
         params.agentLifecycleBinding &&
-        !matchesAgentLifecycleBinding(draft, params.agentLifecycleBinding)
+        !matchesAgentLifecycleBinding(draft, params.agentLifecycleBinding, params.stateDatabase)
       ) {
         throw new Error("Agent changed while GitHub setup was in progress.");
       }

@@ -2,8 +2,13 @@ import { z } from "zod";
 import { isManagedGitHubProfileId } from "../config/github-identity-profile-id.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
+  deleteHiddenGitHubSecretRecordInDatabase,
+  isLiveHiddenGitHubStoreRow,
+  readHiddenGitHubRow,
+} from "../secrets/store/secret-store-hidden-github.kernel.js";
+import {
   deleteHiddenGitHubSecretRecord,
-  listHiddenGitHubSecretRecordNames,
+  listHiddenGitHubSecretRecords,
   readHiddenGitHubSecretRecord,
   writeHiddenGitHubSecretRecord,
 } from "../secrets/store/secret-store.js";
@@ -15,6 +20,9 @@ import {
   githubOAuthDeviceFields,
   validGitHubDeviceTiming,
 } from "../shared/github-oauth-values.js";
+import { withExistingOpenClawStateDatabaseCurrentReadOnly } from "../state/openclaw-state-db-readonly.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { GitHubOAuthTokenPair } from "./github-oauth-client.js";
 import type { GitHubToolAccount } from "./github-tool-account.js";
 
@@ -188,80 +196,241 @@ function parseGitHubRecord<T>(raw: string, schema: z.ZodType<T>): T | undefined 
   return result.success ? result.data : undefined;
 }
 
+export type GitHubOAuthRecordAccess = {
+  context?: OpenClawStateWorkerContext;
+  assertCurrent?: () => void;
+};
+type GitHubOAuthRecordWrite = GitHubOAuthRecordAccess & {
+  expected?: GitHubDeviceAuthorizationRecord | GitHubOAuthRecord | null;
+};
+type GitHubOAuthRecordDelete = GitHubOAuthRecordAccess & {
+  expected?: GitHubDeviceAuthorizationRecord | GitHubOAuthRecord;
+  expectedValue?: string;
+};
+const storedValues = new WeakMap<object, string>();
+
+export class GitHubOAuthRecordChangedError extends Error {
+  constructor() {
+    super("GitHub authorization changed before persistence.");
+  }
+}
+
+function expectedValue(options: GitHubOAuthRecordWrite): { expectedValue?: string | null } {
+  if (options.expected === undefined) {
+    return {};
+  }
+  if (options.expected === null) {
+    return { expectedValue: null };
+  }
+  const value = storedValues.get(options.expected);
+  if (value === undefined) {
+    throw new Error("GitHub authorization comparison requires a stored record.");
+  }
+  return { expectedValue: value };
+}
+
+function remember<T extends object>(record: T | undefined, value: string): T | undefined {
+  if (record) {
+    storedValues.set(record, value);
+  }
+  return record;
+}
+
+async function writeRecord(name: string, record: object, options: GitHubOAuthRecordWrite) {
+  const value = JSON.stringify(record);
+  const written = await writeHiddenGitHubSecretRecord({
+    name,
+    value,
+    context: options.context,
+    assertCurrent: options.assertCurrent,
+    ...expectedValue(options),
+  });
+  if (!written) {
+    throw new GitHubOAuthRecordChangedError();
+  }
+  storedValues.set(record, value);
+}
+
 export function writeGitHubDeviceAuthorizationRecord(
   record: GitHubDeviceAuthorizationRecord,
-): void {
+  options: GitHubOAuthRecordWrite = {},
+): Promise<void> {
   const parsed = parseGitHubRecord(JSON.stringify(record), deviceRecordSchema);
   if (!parsed || parsed.requestId !== record.requestId) {
     throw new Error("GitHub device authorization record is invalid.");
   }
-  writeHiddenGitHubSecretRecord({
-    name: githubDeviceRecordName(record.requestId),
-    value: JSON.stringify(parsed),
+  return writeRecord(githubDeviceRecordName(record.requestId), parsed, options).then(() => {
+    storedValues.set(record, JSON.stringify(parsed));
   });
 }
 
-export function readGitHubDeviceAuthorizationRecord(
+export async function readGitHubDeviceAuthorizationRecord(
   requestId: string,
-): GitHubDeviceAuthorizationRecord | undefined {
-  const raw = readHiddenGitHubSecretRecord({ name: githubDeviceRecordName(requestId) });
-  const record = raw === undefined ? undefined : parseGitHubRecord(raw, deviceRecordSchema);
+  options: GitHubOAuthRecordAccess = {},
+): Promise<GitHubDeviceAuthorizationRecord | undefined> {
+  const raw = await readHiddenGitHubSecretRecord({
+    name: githubDeviceRecordName(requestId),
+    ...options,
+  });
+  const record =
+    raw === undefined ? undefined : remember(parseGitHubRecord(raw, deviceRecordSchema), raw);
   return record?.requestId === requestId ? record : undefined;
 }
 
-export function deleteGitHubDeviceAuthorizationRecord(requestId: string): void {
-  deleteHiddenGitHubSecretRecord({ name: githubDeviceRecordName(requestId) });
-}
-
-export function listGitHubDeviceAuthorizationRecords(): Array<{
-  requestId: string;
-  record: GitHubDeviceAuthorizationRecord | undefined;
-}> {
-  return listHiddenGitHubSecretRecordNames({ prefix: "github-device" }).flatMap((name) => {
-    const requestId = name;
-    if (!DEVICE_REQUEST_ID_PATTERN.test(requestId)) {
-      return [];
-    }
-    return [{ requestId, record: readGitHubDeviceAuthorizationRecord(requestId) }];
+export function deleteGitHubDeviceAuthorizationRecord(
+  requestId: string,
+  options: GitHubOAuthRecordDelete = {},
+): Promise<boolean> {
+  const expected = options.expectedValue ?? expectedValue(options).expectedValue;
+  return deleteHiddenGitHubSecretRecord({
+    name: githubDeviceRecordName(requestId),
+    context: options.context,
+    assertCurrent: options.assertCurrent,
+    expectedValue: expected ?? undefined,
   });
 }
 
-export function writeGitHubOAuthRecord(record: GitHubOAuthRecord): void {
+export async function listGitHubDeviceAuthorizationRecords(
+  options: GitHubOAuthRecordAccess = {},
+): Promise<
+  Array<{
+    requestId: string;
+    record: GitHubDeviceAuthorizationRecord | undefined;
+    expectedValue: string;
+  }>
+> {
+  return (await listHiddenGitHubSecretRecords({ prefix: "github-device", ...options })).flatMap(
+    ({ name, value }) => {
+      const requestId = name;
+      if (!DEVICE_REQUEST_ID_PATTERN.test(requestId)) {
+        return [];
+      }
+      const record = remember(parseGitHubRecord(value, deviceRecordSchema), value);
+      return [
+        {
+          requestId,
+          record: record?.requestId === requestId ? record : undefined,
+          expectedValue: value,
+        },
+      ];
+    },
+  );
+}
+
+export function writeGitHubOAuthRecord(
+  record: GitHubOAuthRecord,
+  options: GitHubOAuthRecordWrite = {},
+): Promise<void> {
   const parsed = parseGitHubRecord(JSON.stringify(record), oauthRecordSchema);
   if (!parsed || parsed.profileId !== record.profileId) {
     throw new Error("GitHub OAuth record is invalid.");
   }
-  writeHiddenGitHubSecretRecord({
-    name: githubOAuthRecordName(record.profileId),
-    value: JSON.stringify(parsed),
+  return writeRecord(githubOAuthRecordName(record.profileId), parsed, options).then(() => {
+    storedValues.set(record, JSON.stringify(parsed));
   });
 }
 
-export function inspectGitHubOAuthRecord(
+export async function inspectGitHubOAuthRecord(
   profileId: string,
-): { state: "missing" } | { state: "invalid" } | { state: "valid"; record: GitHubOAuthRecord } {
-  const raw = readHiddenGitHubSecretRecord({ name: githubOAuthRecordName(profileId) });
+  options: GitHubOAuthRecordAccess = {},
+): Promise<
+  { state: "missing" } | { state: "invalid" } | { state: "valid"; record: GitHubOAuthRecord }
+> {
+  const raw = await readHiddenGitHubSecretRecord({
+    name: githubOAuthRecordName(profileId),
+    ...options,
+  });
   if (raw === undefined) {
     return { state: "missing" };
   }
-  const record = parseGitHubRecord(raw, oauthRecordSchema);
+  const record = remember(parseGitHubRecord(raw, oauthRecordSchema), raw);
   return record?.profileId === profileId ? { state: "valid", record } : { state: "invalid" };
 }
 
-export function deleteGitHubOAuthRecord(profileId: string): void {
-  deleteHiddenGitHubSecretRecord({ name: githubOAuthRecordName(profileId) });
+export function deleteGitHubOAuthRecord(
+  profileId: string,
+  options: GitHubOAuthRecordDelete = {},
+): Promise<boolean> {
+  const expected = options.expectedValue ?? expectedValue(options).expectedValue;
+  return deleteHiddenGitHubSecretRecord({
+    name: githubOAuthRecordName(profileId),
+    context: options.context,
+    assertCurrent: options.assertCurrent,
+    expectedValue: expected ?? undefined,
+  });
 }
 
-export function listGitHubOAuthRecords(): Array<{
-  profileId: string;
-  record: GitHubOAuthRecord | undefined;
-}> {
-  return listHiddenGitHubSecretRecordNames({ prefix: "github-oauth" }).flatMap((name) => {
-    const profileId = parseGitHubOAuthProfileId(name);
-    if (!profileId) {
-      return [];
-    }
-    const inspected = inspectGitHubOAuthRecord(profileId);
-    return [{ profileId, record: inspected.state === "valid" ? inspected.record : undefined }];
-  });
+export async function listGitHubOAuthRecords(options: GitHubOAuthRecordAccess = {}): Promise<
+  Array<{
+    profileId: string;
+    record: GitHubOAuthRecord | undefined;
+    expectedValue: string;
+  }>
+> {
+  return (await listHiddenGitHubSecretRecords({ prefix: "github-oauth", ...options })).flatMap(
+    ({ name, value }) => {
+      const profileId = parseGitHubOAuthProfileId(name);
+      if (!profileId) {
+        return [];
+      }
+      const record = remember(parseGitHubRecord(value, oauthRecordSchema), value);
+      return [
+        {
+          profileId,
+          record: record?.profileId === profileId ? record : undefined,
+          expectedValue: value,
+        },
+      ];
+    },
+  );
+}
+
+/** Released Gateway SDK cancellation keeps its synchronous completion boundary. */
+export function cancelGitHubDeviceAuthorizationRecordForSdk(
+  requestId: string,
+  context: OpenClawStateWorkerContext,
+  onCleanupFailure: () => void,
+): boolean {
+  const name = githubDeviceRecordName(requestId);
+  context.admission.assertCurrent();
+  const options = { path: context.admission.databasePath, env: context.environment };
+  const row = withExistingOpenClawStateDatabaseCurrentReadOnly(
+    ({ db }) => readHiddenGitHubRow(db, name),
+    options,
+  );
+  const existed = Boolean(
+    row &&
+    isLiveHiddenGitHubStoreRow(row, "device", Date.now()) &&
+    parseGitHubRecord(row.value, deviceRecordSchema)?.requestId === requestId,
+  );
+  try {
+    runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        context.admission.assertCurrent();
+        deleteHiddenGitHubSecretRecordInDatabase(db, { name });
+      },
+      options,
+      { operationLabel: "github-oauth.cancel-sdk" },
+    );
+  } catch {
+    onCleanupFailure();
+  }
+  return existed;
+}
+
+/** Released Gateway SDK retirement retains immediate metadata removal. */
+export function retireGitHubOAuthRecordForSdk(
+  profileId: string,
+  context: OpenClawStateWorkerContext,
+): void {
+  const name = githubOAuthRecordName(profileId);
+  context.admission.assertCurrent();
+  runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      context.admission.assertCurrent();
+      deleteHiddenGitHubSecretRecordInDatabase(db, { name });
+    },
+    { path: context.admission.databasePath, env: context.environment },
+    { operationLabel: "github-oauth.retire-sdk" },
+  );
 }

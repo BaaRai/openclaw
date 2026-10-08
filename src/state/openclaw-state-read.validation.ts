@@ -106,6 +106,13 @@ export function isReadRequest(input: unknown): input is OpenClawStateReadRequest
       (input.command.type === "secrets.execEnvironment" &&
         isRecord(input.command.input) &&
         isStringArray(input.command.input.excludeNames)) ||
+      (input.command.type === "githubSecrets.read" &&
+        isRecord(input.command.input) &&
+        typeof input.command.input.name === "string") ||
+      (input.command.type === "githubSecrets.list" &&
+        isRecord(input.command.input) &&
+        (input.command.input.prefix === "github-device" ||
+          input.command.input.prefix === "github-oauth")) ||
       (input.command.type === "secrets.value" &&
         isRecord(input.command.input) &&
         typeof input.command.input.name === "string") ||

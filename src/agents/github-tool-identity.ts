@@ -4,12 +4,12 @@ import path from "node:path";
 import { root as fsRoot } from "@openclaw/fs-safe/root";
 import { readSecretFile } from "@openclaw/fs-safe/secret";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 import { parseDocument, stringify as stringifyYaml } from "yaml";
 import type {
   GitHubIdentityFacts,
   ToolsGitHubStatusResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { isManagedGitHubProfileId } from "../config/github-identity-profile-id.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
@@ -21,6 +21,7 @@ import { isSecretRef, isValidEnvSecretRefId } from "../config/types.secrets.js";
 import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
 import {
   CLEARED_GITHUB_CREDENTIALS,
@@ -39,7 +40,7 @@ import {
   normalizeGitHubToken as normalizeManagedGitHubToken,
   readCachedNativeGitHubToken,
   readNativeGitHubToken,
-  runGitHubIdentityCommand as runIdentityCommand,
+  readGitHubAuthor,
   startGitHubIdentityOperation,
   type GitHubIdentityPreparation,
   type GitHubReadIdentityPreparation,
@@ -282,32 +283,6 @@ async function readManagedGitHubToken(profileDir: string): Promise<string | unde
   }
 }
 
-async function readGitAuthor(env: NodeJS.ProcessEnv, cwd: string) {
-  const result = await runIdentityCommand(
-    ["git", "config", "--null", "--get-regexp", "^user\\.(name|email)$"],
-    env,
-    cwd,
-  );
-  const author: { name: string | null; email: string | null } = { name: null, email: null };
-  if (result.code !== 0) {
-    return author;
-  }
-  for (const entry of result.stdout.toString("utf8").split("\0")) {
-    const separator = entry.indexOf("\n");
-    if (separator < 0) {
-      continue;
-    }
-    const key = entry.slice(0, separator);
-    const value = readNonBlankString(entry.slice(separator + 1))?.trim() ?? null;
-    if (key === "user.name") {
-      author.name = value;
-    } else if (key === "user.email") {
-      author.email = value;
-    }
-  }
-  return author;
-}
-
 async function isPrivateManagedGitHubProfile(profileDir: string): Promise<boolean> {
   try {
     const [profile, hosts] = await Promise.all([
@@ -333,16 +308,19 @@ async function isPrivateManagedGitHubProfile(profileDir: string): Promise<boolea
 export async function resolveGitHubToolIdentityStatus(
   params: GitHubIdentityPreparation & { selectedScope: "system" | "agent" },
 ): Promise<ToolsGitHubStatusResult> {
-  const effectiveIdentity = resolveGitHubToolIdentity(params);
+  const env = cloneEnvWithPlatformSemantics(params.env ?? process.env);
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const effectiveIdentity = resolveGitHubToolIdentity({ ...params, env });
   const selectedIdentity = resolveScopedGitHubToolIdentity({
     ...params,
+    env,
     scope: params.selectedScope,
   });
   const probe = {
     config: params.config,
     sourceConfig: params.sourceConfig,
     cwd: resolveAgentWorkspaceDir(params.config, params.agentId),
-    env: params.env,
+    env,
   };
   const effective = await resolveGitHubIdentityFacts({ ...probe, identity: effectiveIdentity });
   const selectedMatchesEffective =
@@ -386,6 +364,10 @@ async function resolveGitHubIdentityFacts(
 ): Promise<GitHubIdentityFacts> {
   const identity = params.identity;
   const managed = identity.source !== "system-detected";
+  const oauthContext =
+    managed && identity.config.kind === "oauth"
+      ? captureOpenClawStateWorkerContext({ env: params.env })
+      : undefined;
   const probeEnv = githubIdentityProbeEnvironment(params, identity);
   const host = resolveGitHubHost();
   const apiBaseUrl = resolveGitHubApiBaseUrl();
@@ -394,7 +376,7 @@ async function resolveGitHubIdentityFacts(
     : await readNativeGitHubToken(probeEnv, false, host);
   const [probe, author] = await Promise.all([
     token ? verifyGitHubCredential(token, managed ? undefined : { apiBaseUrl }) : undefined,
-    readGitAuthor(probeEnv, params.cwd),
+    readGitHubAuthor(probeEnv, params.cwd),
   ]);
   const account = probe?.status === "available" ? probe.account : null;
   const credentialState =
@@ -405,7 +387,7 @@ async function resolveGitHubIdentityFacts(
       : probe.status;
   const oauth =
     managed && identity.config.kind === "oauth"
-      ? inspectGitHubOAuthRecord(identity.config.profileId)
+      ? await inspectGitHubOAuthRecord(identity.config.profileId, { context: oauthContext })
       : { state: "missing" as const };
   const oauthRecord = oauth.state === "valid" ? oauth.record : undefined;
   const refreshState =
@@ -454,8 +436,10 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
   profileId: string;
   accountId: number;
   assertCurrent: () => void;
+  env?: NodeJS.ProcessEnv;
 }): Promise<PreparedGitHubPublicationIdentity> {
   params.assertCurrent();
+  const sourceEnvironment = cloneEnvWithPlatformSemantics(params.env ?? process.env);
   const host = resolveGitHubHost();
   const apiBaseUrl = resolveGitHubApiBaseUrl();
   const assertSelected = () => {
@@ -468,6 +452,7 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
     agentId: "",
     scope: "personal",
     profileId: params.profileId,
+    env: sourceEnvironment,
   });
   const token = await readManagedGitHubToken(profileDir);
   if (!token) {
@@ -475,7 +460,7 @@ export async function preparePersonalGitHubPublicationIdentity(params: {
   }
   assertSelected();
   const env = {
-    ...withGitHubToken(process.env, token),
+    ...withGitHubToken(sourceEnvironment, token),
     GH_CONFIG_DIR: profileDir,
     GH_PROMPT_DISABLED: "1",
   };

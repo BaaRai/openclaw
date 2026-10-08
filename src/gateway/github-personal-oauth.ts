@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import type {
-  PersonalGitHubStatus,
   UsersGitHubAuthorizePollResult,
   UsersGitHubAuthorizeStartResult,
 } from "../../packages/gateway-protocol/src/schema/users.js";
@@ -13,7 +12,6 @@ import { clearNativeGitHubTokenCache } from "../agents/github-read-identity.js";
 import {
   createManagedGitHubProfileId,
   installManagedGitHubProfile,
-  preparePersonalGitHubPublicationIdentity,
   refreshManagedGitHubProfile,
   removeManagedGitHubProfile,
   resolveManagedGitHubProfileDir,
@@ -21,126 +19,74 @@ import {
 } from "../agents/github-tool-identity.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
-import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
-  disconnectedUserGitHubConnection,
-  disconnectUserGitHubConnection,
+  type OpenClawStateLeaseContext,
+  withOpenClawStateLease,
+} from "../state/openclaw-state-lease.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import {
   listUserGitHubConnections,
+  disconnectUserGitHubConnection,
   observeUserGitHubProfileRetirement,
   readUserGitHubConnection,
+  readUserGitHubConnectionAsync,
   resolvePersonalGitHubOwner,
-  updateUserGitHubConnection,
+  replaceUserGitHubConnection,
+  mutateUserGitHubConnectionAsync,
   updateUserGitHubRefresh,
   type UserGitHubConnection,
   type UserGitHubConnected,
   type UserGitHubDevice,
 } from "../state/user-github-connections.js";
+import {
+  connectionProfiles,
+  listUserGitHubConnectionsInDatabase,
+} from "../state/user-github-connections.kernel.js";
+import type { UserGitHubRole } from "../state/user-github-connections.worker-contract.js";
 import { assertGitHubCliAvailable } from "./github-cli-preflight.js";
 import { pollGitHubDeviceFlow, startGitHubDeviceFlow } from "./github-oauth-device-flow.js";
+import {
+  createPersonalGitHubSdkAdapters,
+  type PersonalGitHubOperationAction,
+} from "./github-personal-oauth.compat.js";
+import {
+  personalGitHubStatus,
+  projectPending,
+  revalidatePersonalGitHubStatus,
+  resolvePersonalGitHubStatus,
+  type PersonalGitHubAction,
+} from "./github-personal-status.js";
 
-export type PersonalGitHubAction = { owner: string; assertCurrent: () => void };
-const profileDir = (profileId: string) =>
-  resolveManagedGitHubProfileDir({ agentId: "", scope: "personal", profileId });
-const withProfileLease = <T>(profileId: string, run: (assertOwned: () => void) => Promise<T>) =>
+export type PersonalGitHubActionV2 = PersonalGitHubAction & {
+  assertMutationCurrent: (role?: UserGitHubRole) => void;
+};
+const profileDir = (profileId: string, context: OpenClawStateWorkerContext) =>
+  resolveManagedGitHubProfileDir({
+    agentId: "",
+    scope: "personal",
+    profileId,
+    env: context.environment,
+  });
+const withProfileLease = <T>(
+  profileId: string,
+  context: OpenClawStateWorkerContext,
+  run: (assertOwned: () => void, lease: OpenClawStateLeaseContext) => Promise<T>,
+) =>
   withOpenClawStateLease(
     {
       scope: "personal-github-profile",
       key: profileId,
-      database: { scope: "shared" },
+      database: {
+        scope: "shared",
+        options: { path: context.admission.databasePath, env: context.environment },
+      },
       leaseMs: 60000,
       waitMs: 30000,
     },
-    async (lease) => await run(() => lease.assertOwned()),
+    async (lease) => await run(() => lease.assertOwned(), lease),
   );
-
-function projectPending(pending: UserGitHubDevice): UsersGitHubAuthorizeStartResult {
-  return {
-    requestId: pending.requestId,
-    userCode: pending.userCode,
-    verificationUri: pending.verificationUri,
-    expiresInMs: Math.max(0, pending.expiresAtMs - Date.now()),
-    pollAfterMs: Math.max(1, Math.min(60000, pending.nextPollAtMs - Date.now())),
-  };
-}
-
-export function personalGitHubStatus(action: PersonalGitHubAction): PersonalGitHubStatus {
-  action.assertCurrent();
-  let record: UserGitHubConnection | undefined;
-  try {
-    record = readUserGitHubConnection(action.owner);
-  } catch {
-    action.assertCurrent();
-    return {
-      state: "unavailable",
-      generation: null,
-      account: null,
-      accessExpiresAtMs: null,
-      refreshState: "failed",
-      pending: null,
-    };
-  }
-  const selection = record?.selection;
-  const connected = selection?.kind === "connected" ? selection : undefined;
-  return {
-    state: connected ? "connected" : "disconnected",
-    generation: record?.generation ?? null,
-    account: connected ? { accountId: connected.accountId, login: connected.login } : null,
-    accessExpiresAtMs: connected?.accessExpiresAtMs ?? null,
-    refreshState: !connected
-      ? "not_applicable"
-      : connected.refresh
-        ? "refreshing"
-        : (connected.refreshFailure ??
-          (connected.refreshExpiresAtMs <= Date.now() ? "expired" : "available")),
-    pending:
-      record?.pending?.kind === "device" && record.pending.expiresAtMs > Date.now()
-        ? projectPending(record.pending)
-        : null,
-  };
-}
-
-function revalidatePersonalGitHubStatus(
-  action: PersonalGitHubAction,
-  prepared: PersonalGitHubStatus,
-): PersonalGitHubStatus {
-  const current = personalGitHubStatus(action);
-  if (
-    current.generation !== prepared.generation ||
-    current.account?.accountId !== prepared.account?.accountId ||
-    current.account?.login.toLowerCase() !== prepared.account?.login.toLowerCase()
-  ) {
-    throw new Error("My GitHub connection changed; reload its status.");
-  }
-  return prepared.state === "unavailable" ? { ...current, state: "unavailable" } : current;
-}
-
-async function resolvePersonalGitHubStatus(
-  action: PersonalGitHubAction,
-): Promise<PersonalGitHubStatus> {
-  const status = personalGitHubStatus(action);
-  if (status.state !== "connected") {
-    return status;
-  }
-  const record = readUserGitHubConnection(action.owner);
-  if (record?.selection.kind !== "connected") {
-    return { ...status, state: "unavailable" };
-  }
-  const assertCurrent = () => {
-    revalidatePersonalGitHubStatus(action, status);
-  };
-  try {
-    // Receipts use the durable selection above; live status must additionally
-    // prove the selected profile can authenticate without borrowing native auth.
-    await preparePersonalGitHubPublicationIdentity({
-      profileId: record.selection.profileId,
-      accountId: record.selection.accountId,
-      assertCurrent,
-    });
-    return revalidatePersonalGitHubStatus(action, status);
-  } catch {
-    return { ...revalidatePersonalGitHubStatus(action, status), state: "unavailable" };
-  }
-}
 
 function requirePending(
   record: UserGitHubConnection | undefined,
@@ -176,18 +122,31 @@ export function createPersonalGitHubOAuthLifecycle() {
     string,
     {
       owner: string;
+      context: OpenClawStateWorkerContext;
       profileId: string;
       operationId: string;
       tokens: GitHubOAuthTokenPair;
       receivedAtMs: number;
     }
   >();
-  const retirements = new Set<string>();
+  type Retirement = { key: string; id: string; context: OpenClawStateWorkerContext };
+  const retirements = new Map<string, Retirement>();
+  const queueRetirement = (id: string, context: OpenClawStateWorkerContext): Retirement => {
+    const key = JSON.stringify([context.admission.identity.key, profileDir(id, context)]);
+    const retirement = retirements.get(key) ?? { key, id, context };
+    retirements.set(key, retirement);
+    return retirement;
+  };
   const cleanups = new Map<string, Promise<void>>();
   let stopped = false;
   let inspectedProfiles = false;
-  const profileIsReferenced = (id: string) =>
-    listUserGitHubConnections().some(
+  const profileIsReferenced = (id: string, context: OpenClawStateWorkerContext) =>
+    listUserGitHubConnectionsInDatabase(
+      openOpenClawStateDatabase({
+        path: context.admission.databasePath,
+        env: context.environment,
+      }).db,
+    ).some(
       ({ connection }) =>
         (connection.selection.kind === "connected" && connection.selection.profileId === id) ||
         (connection.pending?.kind === "device" && connection.pending.candidate?.profileId === id),
@@ -197,32 +156,32 @@ export function createPersonalGitHubOAuthLifecycle() {
       throw new Error("GitHub authorization is stopping.");
     }
   };
-  const retire = async (id: string) => {
+  const retire = async ({ key, id, context }: Retirement) => {
     await getOrCreatePromise(
       cleanups,
-      id,
+      key,
       () =>
-        withProfileLease(id, async (assertOwned) => {
+        withProfileLease(id, context, async (assertOwned) => {
+          context.admission.assertCurrent();
           assertOwned();
-          if (profileIsReferenced(id)) {
+          if (profileIsReferenced(id, context)) {
             return;
           }
-          await removeManagedGitHubProfile(profileDir(id));
+          await removeManagedGitHubProfile(profileDir(id, context));
         }).then(
           () => {
-            retirements.delete(id);
+            retirements.delete(key);
           },
           () => {
-            retirements.add(id);
+            /* Retain the original source for maintenance retry. */
           },
         ),
       { evictOnSettled: true },
     );
   };
-  const unobserve = observeUserGitHubProfileRetirement((ids) => {
-    for (const id of ids) {
-      retirements.add(id);
-      void retire(id);
+  const unobserve = observeUserGitHubProfileRetirement(({ profileIds, context }) => {
+    for (const id of profileIds) {
+      void retire(queueRetirement(id, context));
     }
   });
   const guard = (action: PersonalGitHubAction) => {
@@ -230,10 +189,24 @@ export function createPersonalGitHubOAuthLifecycle() {
     action.assertCurrent();
   };
 
+  const workerAction = (action: PersonalGitHubActionV2): PersonalGitHubOperationAction => ({
+    ...action,
+    mutate: (input, context, lease) =>
+      mutateUserGitHubConnectionAsync(
+        input,
+        (role) => {
+          assertRunning();
+          action.assertMutationCurrent(role);
+        },
+        { context, lease },
+      ),
+  });
+
   const install = async (
-    action: PersonalGitHubAction,
+    action: PersonalGitHubOperationAction,
     generation: string,
     pending: UserGitHubDevice,
+    context: OpenClawStateWorkerContext,
   ): Promise<UsersGitHubAuthorizePollResult> => {
     const candidate = pending.candidate;
     if (!candidate) {
@@ -242,7 +215,10 @@ export function createPersonalGitHubOAuthLifecycle() {
     const assertCurrent = () => {
       guard(action);
       const record = requirePending(
-        readUserGitHubConnection(action.owner),
+        readUserGitHubConnection(action.owner, {
+          path: context.admission.databasePath,
+          env: context.environment,
+        }),
         generation,
         pending.requestId,
       );
@@ -254,43 +230,31 @@ export function createPersonalGitHubOAuthLifecycle() {
       }
     };
     try {
-      await withProfileLease(candidate.profileId, async (assertOwned) => {
+      await withProfileLease(candidate.profileId, context, async (assertOwned, lease) => {
         const assertInstall = () => {
           assertOwned();
           assertCurrent();
         };
         assertInstall();
         // A prior attempt may have materialized the inactive candidate before losing its response.
-        await removeManagedGitHubProfile(profileDir(candidate.profileId));
+        await removeManagedGitHubProfile(profileDir(candidate.profileId, context));
         assertInstall();
         await installManagedGitHubProfile({
-          profileDir: profileDir(candidate.profileId),
+          profileDir: profileDir(candidate.profileId, context),
           token: candidate.tokens.accessToken,
           assertCurrent: assertInstall,
           commitConfig: async (account) => {
-            updateUserGitHubConnection(
-              action.owner,
-              (current) => {
-                const owned = requirePending(current, generation, pending.requestId);
-                return {
-                  ...owned,
-                  generation: randomUUID(),
-                  pending: undefined,
-                  selection: {
-                    kind: "connected",
-                    profileId: candidate.profileId,
-                    accountId: account.accountId,
-                    login: account.login,
-                    refreshToken: candidate.tokens.refreshToken,
-                    scopes: candidate.tokens.scopes,
-                    accessExpiresAtMs:
-                      candidate.receivedAtMs + candidate.tokens.expiresInSeconds * 1000,
-                    refreshExpiresAtMs:
-                      candidate.receivedAtMs + candidate.tokens.refreshTokenExpiresInSeconds * 1000,
-                  },
-                };
+            await action.mutate(
+              {
+                kind: "install",
+                owner: action.owner,
+                generation,
+                requestId: pending.requestId,
+                profileId: candidate.profileId,
+                account,
               },
-              assertInstall,
+              context,
+              lease,
             );
           },
         });
@@ -304,9 +268,10 @@ export function createPersonalGitHubOAuthLifecycle() {
   };
 
   const pollOnce = async (
-    action: PersonalGitHubAction,
+    action: PersonalGitHubOperationAction,
     initial: UserGitHubConnection,
     requestId: string,
+    context: OpenClawStateWorkerContext,
   ): Promise<UsersGitHubAuthorizePollResult> => {
     const pending = initial.pending;
     if (!pending || pending.requestId !== requestId || pending.expiresAtMs <= Date.now()) {
@@ -316,43 +281,47 @@ export function createPersonalGitHubOAuthLifecycle() {
       return { status: "pending", retryAfterMs: 1000 };
     }
     if (pending.candidate) {
-      return await install(action, initial.generation, pending);
+      return await install(action, initial.generation, pending, context);
     }
     const polled = await pollGitHubDeviceFlow(pending, abort.signal);
     guard(action);
     let next: UserGitHubConnection;
     try {
-      next = updateUserGitHubConnection(
-        action.owner,
-        (current) => {
-          const owned = requirePending(current, initial.generation, requestId);
-          if (owned.pending.kind !== "device" || owned.pending.deviceCode !== pending.deviceCode) {
-            throw new Error("My GitHub authorization changed.");
-          }
-          return {
-            ...owned,
-            pending:
-              polled.kind === "terminal"
-                ? undefined
-                : {
-                    ...owned.pending,
-                    ...(polled.kind === "authorized"
-                      ? {
-                          candidate: {
-                            receivedAtMs: Date.now(),
-                            profileId: createManagedGitHubProfileId(),
-                            tokens: polled.tokens,
-                          },
-                        }
-                      : {
-                          pollIntervalMs: polled.pollIntervalMs,
-                          nextPollAtMs: polled.nextPollAtMs,
-                        }),
-                  },
-          };
+      const owned = requirePending(initial, initial.generation, requestId);
+      if (owned.pending.kind !== "device" || owned.pending.deviceCode !== pending.deviceCode) {
+        throw new Error("My GitHub authorization changed.");
+      }
+      const changed = await action.mutate(
+        {
+          kind: "pending",
+          owner: action.owner,
+          generation: initial.generation,
+          expectedPending: owned.pending,
+          pending:
+            polled.kind === "terminal"
+              ? undefined
+              : {
+                  ...owned.pending,
+                  ...(polled.kind === "authorized"
+                    ? {
+                        candidate: {
+                          receivedAtMs: Date.now(),
+                          profileId: createManagedGitHubProfileId(),
+                          tokens: polled.tokens,
+                        },
+                      }
+                    : {
+                        pollIntervalMs: polled.pollIntervalMs,
+                        nextPollAtMs: polled.nextPollAtMs,
+                      }),
+                },
         },
-        () => guard(action),
+        context,
       );
+      if (!changed.connection) {
+        throw new Error("My GitHub authorization returned no connection.");
+      }
+      next = changed.connection;
     } catch {
       guard(action);
       return { status: "failed", reason: "identity_changed" };
@@ -363,37 +332,37 @@ export function createPersonalGitHubOAuthLifecycle() {
     if (next.pending?.kind !== "device") {
       throw new Error("My GitHub authorization changed.");
     }
-    return await install(action, next.generation, next.pending);
+    return await install(action, next.generation, next.pending, context);
   };
 
-  const persistRotation = (pending: NonNullable<ReturnType<typeof rotated.get>>): boolean =>
-    updateUserGitHubRefresh({
-      ...pending,
-      update: (selection) => ({
-        ...selection,
-        refreshToken: pending.tokens.refreshToken,
-        scopes: pending.tokens.scopes,
-        accessExpiresAtMs: pending.receivedAtMs + pending.tokens.expiresInSeconds * 1000,
-        refreshExpiresAtMs:
-          pending.receivedAtMs + pending.tokens.refreshTokenExpiresInSeconds * 1000,
-        refreshFailure: undefined,
-        refresh: {
-          operationId: pending.operationId,
-          tokens: pending.tokens,
-          receivedAtMs: pending.receivedAtMs,
-        },
-      }),
-    });
+  const persistRotation = (
+    pending: NonNullable<ReturnType<typeof rotated.get>>,
+  ): Promise<boolean> =>
+    updateUserGitHubRefresh(
+      {
+        owner: pending.owner,
+        profileId: pending.profileId,
+        operationId: pending.operationId,
+        update: { kind: "rotated", tokens: pending.tokens, receivedAtMs: pending.receivedAtMs },
+      },
+      { context: pending.context },
+    );
   const materializeRefresh = async (
     owner: string,
     id: string,
     operationId: string,
     assertOwned: () => void,
+    lease: OpenClawStateLeaseContext,
+    context: OpenClawStateWorkerContext,
   ): Promise<void> => {
     const readExact = () => {
       assertOwned();
-      const canonical = resolvePersonalGitHubOwner(owner);
-      const selection = canonical ? readUserGitHubConnection(canonical)?.selection : undefined;
+      context.admission.assertCurrent();
+      const database = { path: context.admission.databasePath, env: context.environment };
+      const canonical = resolvePersonalGitHubOwner(owner, openOpenClawStateDatabase(database).db);
+      const selection = canonical
+        ? readUserGitHubConnection(canonical, database)?.selection
+        : undefined;
       if (
         selection?.kind !== "connected" ||
         selection.profileId !== id ||
@@ -406,7 +375,7 @@ export function createPersonalGitHubOAuthLifecycle() {
     };
     const current = readExact();
     const account = await refreshManagedGitHubProfile({
-      profileDir: profileDir(id),
+      profileDir: profileDir(id, context),
       token: current.refresh!.tokens!.accessToken,
       expectedAccountId: current.accountId,
       assertCurrent: () => {
@@ -414,22 +383,24 @@ export function createPersonalGitHubOAuthLifecycle() {
       },
     });
     assertOwned();
-    updateUserGitHubRefresh({
-      owner,
-      profileId: id,
-      operationId,
-      update: (selection) => ({
-        ...selection,
-        login: account.login,
-        refresh: undefined,
-        refreshFailure: undefined,
-      }),
-    });
+    await updateUserGitHubRefresh(
+      {
+        owner,
+        profileId: id,
+        operationId,
+        update: { kind: "materialized", login: account.login },
+      },
+      { lease, context },
+    );
   };
 
-  const refresh = async (owner: string): Promise<void> => {
+  const refresh = async (
+    owner: string,
+    context = captureOpenClawStateWorkerContext(),
+  ): Promise<void> => {
     assertRunning();
-    const initial = readUserGitHubConnection(owner)?.selection;
+    const initial = (await readUserGitHubConnectionAsync(owner, { context }))?.selection;
+    assertRunning();
     if (initial?.kind !== "connected") {
       return;
     }
@@ -441,16 +412,17 @@ export function createPersonalGitHubOAuthLifecycle() {
       refreshes,
       id,
       () =>
-        withProfileLease(id, async (assertOwned) => {
+        withProfileLease(id, context, async (assertOwned, lease) => {
           const memory = rotated.get(id);
           if (memory) {
-            if (!persistRotation(memory)) {
+            if (!(await persistRotation(memory))) {
               rotated.delete(id);
               return;
             }
             rotated.delete(id);
           }
-          const record = readUserGitHubConnection(owner);
+          const record = await readUserGitHubConnectionAsync(owner, { context });
+          assertOwned();
           const selection = record?.selection;
           if (
             !record ||
@@ -461,24 +433,27 @@ export function createPersonalGitHubOAuthLifecycle() {
             return;
           }
           if (selection.refresh?.tokens) {
-            await materializeRefresh(owner, id, selection.refresh.operationId, assertOwned);
+            await materializeRefresh(
+              owner,
+              id,
+              selection.refresh.operationId,
+              assertOwned,
+              lease,
+              context,
+            );
             return;
           }
           const operationId = selection.refresh?.operationId ?? randomUUID();
-          updateUserGitHubConnection(
+          await replaceUserGitHubConnection(
             owner,
-            (current) => {
-              if (
-                current?.generation !== record.generation ||
-                current.selection.kind !== "connected" ||
-                current.selection.profileId !== id
-              ) {
-                throw new Error("My GitHub selection changed.");
-              }
-              return { ...current, selection: { ...current.selection, refresh: { operationId } } };
+            {
+              expected: record,
+              next: { ...record, selection: { ...selection, refresh: { operationId } } },
             },
-            assertOwned,
+            assertRunning,
+            { lease, context },
           );
+          assertOwned();
           let result;
           try {
             // Refresh rotates remote credentials: shutdown drains this bounded exchange, never aborts it.
@@ -486,43 +461,49 @@ export function createPersonalGitHubOAuthLifecycle() {
               refreshToken: selection.refreshToken,
             });
           } catch {
-            updateUserGitHubRefresh({
-              owner,
-              profileId: id,
-              operationId,
-              update: (current) => ({ ...current, refresh: undefined, refreshFailure: "failed" }),
-            });
+            await updateUserGitHubRefresh(
+              {
+                owner,
+                profileId: id,
+                operationId,
+                update: { kind: "failed", failure: "failed" },
+              },
+              { context },
+            );
             return;
           }
           if (result.status === "error") {
-            updateUserGitHubRefresh({
-              owner,
-              profileId: id,
-              operationId,
-              update: (current) => ({
-                ...current,
-                refresh: undefined,
-                refreshFailure: result.code === "bad_refresh_token" ? "expired" : "failed",
-              }),
-            });
+            await updateUserGitHubRefresh(
+              {
+                owner,
+                profileId: id,
+                operationId,
+                update: {
+                  kind: "failed",
+                  failure: result.code === "bad_refresh_token" ? "expired" : "failed",
+                },
+              },
+              { context },
+            );
             return;
           }
           // Persist remote rotation even if the initiating request closed or its profile merged.
           // The exact operation CAS fences disconnect/replacement; memory retries use that same CAS.
           const pending = {
             owner,
+            context,
             profileId: id,
             operationId,
             tokens: result.tokens,
             receivedAtMs: Date.now(),
           };
           rotated.set(id, pending);
-          if (!persistRotation(pending)) {
+          if (!(await persistRotation(pending))) {
             rotated.delete(id);
             return;
           }
           rotated.delete(id);
-          await materializeRefresh(owner, id, operationId, assertOwned);
+          await materializeRefresh(owner, id, operationId, assertOwned, lease, context);
         }),
       { evictOnSettled: true },
     );
@@ -530,138 +511,174 @@ export function createPersonalGitHubOAuthLifecycle() {
 
   let maintenance: Promise<void> | undefined;
   const runMaintenance = async (): Promise<void> => {
+    const context = captureOpenClawStateWorkerContext();
     if (!inspectedProfiles) {
-      const root = resolveManagedGitHubProfileRoot({ agentId: "", scope: "personal" });
+      const root = resolveManagedGitHubProfileRoot({
+        agentId: "",
+        scope: "personal",
+        env: context.environment,
+      });
       const entries = await fs.readdir(root, { withFileTypes: true }).catch((error: unknown) => {
         if (hasErrnoCode(error, "ENOENT")) {
           return [];
         }
         throw error;
       });
-      for (const entry of entries) {
-        if (
-          entry.isDirectory() &&
-          /^ghp_[a-f0-9]{32}$/u.test(entry.name) &&
-          !profileIsReferenced(entry.name)
-        ) {
-          retirements.add(entry.name);
+      const candidates = entries.filter(
+        (entry) => entry.isDirectory() && /^ghp_[a-f0-9]{32}$/u.test(entry.name),
+      );
+      const referenced = new Set(
+        (candidates.length ? await listUserGitHubConnections({ context }) : []).flatMap(
+          ({ connection }) => connectionProfiles(connection),
+        ),
+      );
+      for (const entry of candidates) {
+        if (!referenced.has(entry.name)) {
+          queueRetirement(entry.name, context);
         }
       }
       inspectedProfiles = true;
     }
     for (const pending of rotated.values()) {
       try {
-        persistRotation(pending);
+        await persistRotation(pending);
         rotated.delete(pending.profileId);
       } catch {
         /* Keep the exact rotated pair for the next durable write. */
       }
     }
-    for (const id of retirements) {
-      await retire(id);
+    for (const retirement of retirements.values()) {
+      await retire(retirement);
     }
-    for (const { owner, connection } of listUserGitHubConnections()) {
+    for (const { owner, connection } of await listUserGitHubConnections({ context })) {
       if (stopped) {
         break;
       }
       if (connection.pending && connection.pending.expiresAtMs <= Date.now()) {
-        updateUserGitHubConnection(
-          owner,
-          (current) => {
-            if (!current) {
-              return disconnectedUserGitHubConnection();
-            }
-            return current.pending && current.pending.expiresAtMs <= Date.now()
-              ? { ...current, pending: undefined }
-              : current;
+        await mutateUserGitHubConnectionAsync(
+          {
+            kind: "expire-pending",
+            owner,
+            generation: connection.generation,
+            requestId: connection.pending.requestId,
           },
           assertRunning,
+          { context },
         );
       }
       try {
-        await refresh(owner);
+        await refresh(owner, context);
       } catch {
         /* Exact pending recovery remains durable for retry. */
       }
     }
   };
 
+  const startAuthorization = async (
+    action: PersonalGitHubOperationAction,
+  ): Promise<UsersGitHubAuthorizeStartResult> => {
+    guard(action);
+    assertGitHubCliAvailable();
+    const context = captureOpenClawStateWorkerContext();
+    const requestId = randomUUID();
+    const createdAtMs = Date.now();
+    const started = await action.mutate(
+      {
+        kind: "start",
+        owner: action.owner,
+        pending: { kind: "starting", requestId, createdAtMs, expiresAtMs: createdAtMs + 900000 },
+      },
+      context,
+    );
+    const initial = started.connection;
+    if (!initial) {
+      throw new Error("My GitHub authorization returned no connection.");
+    }
+    guard(action);
+    const authorization = await startGitHubDeviceFlow(abort.signal);
+    guard(action);
+    if (authorization.expiresAtMs <= Date.now()) {
+      throw new Error("My GitHub authorization expired while starting; start again.");
+    }
+    const changed = await action.mutate(
+      {
+        kind: "pending",
+        owner: action.owner,
+        generation: initial.generation,
+        expectedPending: requirePending(initial, initial.generation, requestId).pending,
+        pending: { ...authorization, kind: "device", requestId },
+      },
+      context,
+    );
+    guard(action);
+    const next = changed.connection;
+    if (next?.pending?.kind !== "device") {
+      throw new Error("My GitHub authorization changed.");
+    }
+    return projectPending(next.pending);
+  };
+
+  const pollAuthorization = async (
+    action: PersonalGitHubOperationAction,
+    requestId: string,
+  ): Promise<UsersGitHubAuthorizePollResult> => {
+    guard(action);
+    const context = captureOpenClawStateWorkerContext();
+    const current = await readUserGitHubConnectionAsync(action.owner, { context });
+    guard(action);
+    if (current?.pending?.requestId !== requestId) {
+      return { status: "expired" };
+    }
+    const key = `${action.owner}\0${requestId}`;
+    const result = await getOrCreatePromise(
+      polls,
+      key,
+      () => pollOnce(action, current, requestId, context),
+      { evictOnSettled: true },
+    );
+    guard(action);
+    return result;
+  };
+
   return {
     status: resolvePersonalGitHubStatus,
     revalidateStatus: revalidatePersonalGitHubStatus,
-    async startAuthorization(
-      action: PersonalGitHubAction,
-    ): Promise<UsersGitHubAuthorizeStartResult> {
-      guard(action);
-      assertGitHubCliAvailable();
-      const requestId = randomUUID();
-      const createdAtMs = Date.now();
-      const initial = updateUserGitHubConnection(
-        action.owner,
-        (current) => ({
-          ...(current ?? disconnectedUserGitHubConnection()),
-          pending: { kind: "starting", requestId, createdAtMs, expiresAtMs: createdAtMs + 900000 },
-        }),
-        () => guard(action),
-      );
-      const authorization = await startGitHubDeviceFlow(abort.signal);
-      guard(action);
-      if (authorization.expiresAtMs <= Date.now()) {
-        throw new Error("My GitHub authorization expired while starting; start again.");
-      }
-      const next = updateUserGitHubConnection(
-        action.owner,
-        (current) => ({
-          ...requirePending(current, initial.generation, requestId),
-          pending: { ...authorization, kind: "device", requestId },
-        }),
-        () => guard(action),
-      );
-      if (next.pending?.kind !== "device") {
-        throw new Error("My GitHub authorization changed.");
-      }
-      return projectPending(next.pending);
+    ...createPersonalGitHubSdkAdapters({
+      assertCurrent: guard,
+      startAuthorization,
+      pollAuthorization,
+    }),
+    startAuthorizationAsync(action: PersonalGitHubActionV2) {
+      return startAuthorization(workerAction(action));
     },
-    async pollAuthorization(
-      action: PersonalGitHubAction,
+    pollAuthorizationAsync(action: PersonalGitHubActionV2, requestId: string) {
+      return pollAuthorization(workerAction(action), requestId);
+    },
+    async cancelAuthorizationAsync(
+      action: PersonalGitHubActionV2,
       requestId: string,
-    ): Promise<UsersGitHubAuthorizePollResult> {
+    ): Promise<boolean> {
       guard(action);
-      const current = readUserGitHubConnection(action.owner);
-      if (current?.pending?.requestId !== requestId) {
-        return { status: "expired" };
-      }
-      const key = `${action.owner}\0${requestId}`;
-      const result = await getOrCreatePromise(
-        polls,
-        key,
-        () => pollOnce(action, current, requestId),
-        { evictOnSettled: true },
+      const context = captureOpenClawStateWorkerContext();
+      const result = await workerAction(action).mutate(
+        { kind: "cancel", owner: action.owner, requestId },
+        context,
       );
       guard(action);
-      return result;
+      return result.changed;
     },
-    cancelAuthorization(action: PersonalGitHubAction, requestId: string): boolean {
+    async disconnectAsync(action: PersonalGitHubActionV2): Promise<void> {
       guard(action);
-      const current = readUserGitHubConnection(action.owner);
-      if (current?.pending?.requestId !== requestId) {
-        return false;
-      }
-      updateUserGitHubConnection(
+      const context = captureOpenClawStateWorkerContext();
+      await disconnectUserGitHubConnection(
         action.owner,
-        (record) => {
-          if (!record || record.pending?.requestId !== requestId) {
-            throw new Error("My GitHub authorization changed.");
-          }
-          return { ...record, pending: undefined };
+        (role) => {
+          assertRunning();
+          action.assertMutationCurrent(role);
         },
-        () => guard(action),
+        { context },
       );
-      return true;
-    },
-    disconnect(action: PersonalGitHubAction): void {
       guard(action);
-      disconnectUserGitHubConnection(action.owner, () => guard(action));
       clearNativeGitHubTokenCache();
     },
     refresh,
@@ -686,7 +703,7 @@ export function createPersonalGitHubOAuthLifecycle() {
       ]);
       for (const pending of rotated.values()) {
         try {
-          persistRotation(pending);
+          await persistRotation(pending);
         } catch {
           /* In-memory rotation remains owned until process exit. */
         }

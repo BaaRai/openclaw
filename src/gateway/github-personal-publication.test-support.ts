@@ -9,12 +9,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { updateUserGitHubConnection } from "../state/user-github-connections.js";
+import { replaceUserGitHubConnection } from "../state/user-github-connections.js";
 import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
-import {
-  createPersonalGitHubOAuthLifecycle,
-  personalGitHubStatus,
-} from "./github-personal-oauth.js";
+import { createPersonalGitHubOAuthLifecycle } from "./github-personal-oauth.js";
+import { personalGitHubStatus } from "./github-personal-status.js";
 import {
   SESSION_ID,
   SESSION_KEY,
@@ -93,21 +91,24 @@ export async function createPersonalPublicationFixture() {
   const otherOwner = (await ensureCanonicalUserProfileForEmail("bob@example.test")).id;
   const generation = randomUUID();
   const personalToken = `synthetic-personal-credential-${generation}`;
-  updateUserGitHubConnection(
+  await replaceUserGitHubConnection(
     owner,
-    () => ({
-      version: 1,
-      generation,
-      selection: {
-        kind: "connected",
-        profileId,
-        ...account,
-        refreshToken: "synthetic-refresh",
-        accessExpiresAtMs: Date.now() + 3600000,
-        refreshExpiresAtMs: Date.now() + 86400000,
-        scopes: ["repo"],
+    {
+      expected: undefined,
+      next: {
+        version: 1,
+        generation,
+        selection: {
+          kind: "connected",
+          profileId,
+          ...account,
+          refreshToken: "synthetic-refresh",
+          accessExpiresAtMs: Date.now() + 3600000,
+          refreshExpiresAtMs: Date.now() + 86400000,
+          scopes: ["repo"],
+        },
       },
-    }),
+    },
     () => {},
   );
   const dir = resolveManagedGitHubProfileDir({ scope: "personal", agentId: "", profileId });

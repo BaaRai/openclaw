@@ -1,9 +1,10 @@
+import type { ToolsGitHubStatusResult } from "../../packages/gateway-protocol/src/index.js";
 import type { GitHubIdentityScope, GitHubOAuthRecord } from "../agents/github-oauth-records.js";
 import type { GitHubToolAccount } from "../agents/github-tool-account.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GitHubToolIdentityConfig } from "../config/types.tools.js";
 
-export const NOW = Date.parse("2026-08-19T12:00:00.000Z");
+export const NOW = Date.now();
 export const OLD_PROFILE = `ghp_${"1".repeat(32)}`;
 export const NEW_PROFILE = `ghp_${"2".repeat(32)}`;
 export const OTHER_PROFILE = `ghp_${"3".repeat(32)}`;
@@ -57,5 +58,25 @@ export function oauthRecord(
     scopes: ["repo", "workflow"],
     createdAtMs: NOW - 60_000,
     ...overrides,
+  };
+}
+
+export function statusResult(scope: GitHubIdentityScope): ToolsGitHubStatusResult {
+  return {
+    agentId: "main",
+    selectedScope: scope,
+    selected: { scope, configured: true, identity: null },
+    effective: {
+      source: scope === "agent" ? "agent-override" : "system-configured",
+      credentialKind: "managed-oauth",
+      credentialState: "available",
+      account: { login: ACCOUNT.login },
+      gitAuthor: { name: ACCOUNT.login, email: null },
+      evidence: "github-api",
+      accessExpiresAtMs: NOW + TOKENS.expiresInSeconds * 1_000,
+      refreshState: "available",
+      oauthScopes: [...TOKENS.scopes],
+      repositoryGrants: "unknown",
+    },
   };
 }

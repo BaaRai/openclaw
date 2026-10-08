@@ -11,7 +11,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import { classifyHiddenGitHubStoreName } from "./secret-store-hidden-github.js";
+import { classifyHiddenGitHubStoreName } from "./secret-store-hidden-github.kernel.js";
 import { isMissingSecretStoreTableError } from "./secret-store-sqlite.js";
 import { SecretStoreValidationError } from "./secret-store-validation-error.js";
 import {

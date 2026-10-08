@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prepareGitHubPublicationOptionsRead,
+  preparePersonalGitHubActionV2,
+  preparePersonalGitHubAction,
   preparePersonalGitHubSessionAction,
 } from "./github-personal-authorization.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
@@ -8,8 +10,32 @@ import type { GatewayClient, GatewayRequestContext } from "./types.js";
 const mocks = vi.hoisted(() => ({
   loadSession: vi.fn<typeof import("../session-utils.js").loadGatewaySessionEntryReadOnly>(),
   roleScopes: undefined as string[] | undefined,
+  ownerCurrent: true,
+  sourceCurrent: true,
+  sourcePath: "/test/github-source.sqlite",
+  openDatabase: vi.fn(() => ({ db: {} })),
+  resolveOwner: vi.fn((profile: string) => profile),
 }));
 
+vi.mock("../../state/openclaw-state-db.js", () => ({
+  openOpenClawStateDatabase: mocks.openDatabase,
+}));
+vi.mock("../../state/openclaw-state-db.paths.js", () => ({
+  resolveOpenClawStateSqlitePath: () => mocks.sourcePath,
+}));
+vi.mock("../../state/openclaw-state-worker-context.js", () => ({
+  captureOpenClawStateWorkerContext: () => ({
+    admission: {
+      databasePath: mocks.sourcePath,
+      assertCurrent() {
+        if (!mocks.sourceCurrent) {
+          throw new Error("Captured physical state was replaced");
+        }
+      },
+    },
+    environment: { OPENCLAW_STATE_DIR: "/test" },
+  }),
+}));
 vi.mock("../session-utils.js", () => ({
   loadGatewaySessionEntryReadOnly: mocks.loadSession,
 }));
@@ -19,11 +45,13 @@ vi.mock("../../agents/tools/gateway-caller-context.js", () => ({
 vi.mock("../../state/user-channel-identity-operations.js", () => ({
   prepareUserProfileRoleAuthority: async (profileId: string) => ({
     profileId,
-    isCurrent: () => true,
+    isCurrent: () => mocks.ownerCurrent,
+    role: null,
+    githubLogin: null,
   }),
 }));
 vi.mock("../../state/user-github-connections.js", () => ({
-  resolvePersonalGitHubOwner: (profile: string) => profile,
+  resolvePersonalGitHubOwner: mocks.resolveOwner,
 }));
 vi.mock("../operator-role-policy.js", () => ({
   resolveOperatorRolePolicy: () => (mocks.roleScopes ? { scopes: mocks.roleScopes } : null),
@@ -82,8 +110,44 @@ function sessionRead(agentId = "main") {
 describe("GitHub publication request discovery", () => {
   beforeEach(() => {
     mocks.roleScopes = undefined;
+    mocks.ownerCurrent = true;
+    mocks.sourceCurrent = true;
+    mocks.sourcePath = "/test/github-source.sqlite";
+    mocks.openDatabase.mockClear();
+    mocks.resolveOwner.mockReset().mockImplementation((profile) => profile);
     mocks.loadSession.mockReset();
     mocks.loadSession.mockReturnValue(sessionRead());
+  });
+
+  it("keeps native action reads on the captured store and rejects retargeting or replacement", () => {
+    const action = preparePersonalGitHubAction(createRequest());
+    expect(mocks.openDatabase).toHaveBeenLastCalledWith({
+      path: "/test/github-source.sqlite",
+      env: { OPENCLAW_STATE_DIR: "/test" },
+    });
+    mocks.openDatabase.mockClear();
+    mocks.sourcePath = "/other/github-source.sqlite";
+    expect(() => action.assertCurrent()).toThrow("state store changed");
+    expect(mocks.openDatabase).not.toHaveBeenCalled();
+    mocks.sourcePath = "/test/github-source.sqlite";
+    mocks.sourceCurrent = false;
+    expect(() => action.assertCurrent()).toThrow("physical state was replaced");
+    expect(mocks.openDatabase).not.toHaveBeenCalled();
+  });
+
+  it("checks worker-supplied authority without reopening the owner database under its writer", async () => {
+    const request = createRequest();
+    const action = await preparePersonalGitHubActionV2(request);
+    mocks.resolveOwner.mockImplementation(() => {
+      throw new Error("Synchronous shared-state access while the worker owns its transaction");
+    });
+    const role = { profileId: action.owner, role: null, githubLogin: null };
+    expect(() => action.assertMutationCurrent(role)).not.toThrow();
+    mocks.roleScopes = [];
+    expect(() => action.assertMutationCurrent(role)).toThrow("current operator.read permission");
+    mocks.roleScopes = undefined;
+    mocks.ownerCurrent = false;
+    expect(() => action.assertMutationCurrent(role)).toThrow("owner changed");
   });
 
   it.each([

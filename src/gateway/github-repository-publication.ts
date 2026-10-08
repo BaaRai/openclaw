@@ -13,7 +13,6 @@ import {
 } from "../state/github-publication-requester.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.types.js";
-import type { PersonalGitHubAction } from "./github-personal-oauth.js";
 import {
   assertPersonalGitHubPublicationReplay,
   bindPersonalGitHubPublicationSelection,
@@ -23,6 +22,7 @@ import {
   type PersonalGitHubSessionAction,
   type PreparedRepositoryPublicationStatus,
 } from "./github-personal-publication.js";
+import type { PersonalGitHubAction } from "./github-personal-status.js";
 import {
   assertExpectedSharedGitHubPublisher,
   prepareCurrentGitHubPublicationIdentity,

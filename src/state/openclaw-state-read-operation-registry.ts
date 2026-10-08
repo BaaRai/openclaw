@@ -9,6 +9,7 @@ import type { DiagnosticReadOperations } from "../infra/sqlite-audit-record.read
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type { GeneratedHtmlProvenanceReadOperations } from "../media/generated-html-provenance.worker-contract.js";
 import type { PairingReadOperations } from "../pairing/pairing-store.types.js";
+import type { HiddenGitHubReadOperations } from "../secrets/store/secret-store-hidden-github.types.js";
 import type { SecretStoreReadOperations } from "../secrets/store/secret-store.types.js";
 import type { SessionStateReadOperations } from "../sessions/session-state-events.read.worker-contract.js";
 import type { SkillLibraryReadOperations } from "../skills/library/read.contract.js";
@@ -27,12 +28,17 @@ type Operations = WorkerOperations<typeof localWorkspaceReadOperations> &
   RestartSentinelReadOperations &
   SessionStateReadOperations &
   SecretStoreReadOperations &
+  HiddenGitHubReadOperations &
   WorkerOperations<typeof configHealthReadOperations> &
   DeferredPluginMigrationReadOperations;
 export type RegisteredStateReadCommand = SqliteWorkerCommand<Operations>;
 export type RegisteredStateReadResult = Operations[keyof Operations]["output"];
 
 export const stateReadRegistry = createWorkerOperationRegistry<Operations, DatabaseSync>({
+  githubSecrets: () =>
+    import("../secrets/store/secret-store-hidden-github.worker.js").then(
+      (m) => m.hiddenGitHubReadOperations,
+    ),
   gatewayBoot: () =>
     import("../infra/gateway-boot-lifecycle.kernel.js").then((m) => m.gatewayBootReadOperations),
   localWorkspace: () =>

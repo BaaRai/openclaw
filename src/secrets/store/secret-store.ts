@@ -1,10 +1,6 @@
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { isRedactedSecretValue } from "../../config/redact-sentinel.js";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-} from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import { createSqliteWorkerWriteAdmission } from "../../infra/sqlite-worker-store.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
@@ -27,11 +23,6 @@ import {
 } from "../../state/openclaw-state-worker-store.js";
 import { sealSecretSentinel } from "../sentinel.js";
 import { captureSecretStoreExpiryCutoffs } from "./secret-store-expiry.kernel.js";
-import {
-  classifyHiddenGitHubStoreName,
-  GITHUB_SETUP_HANDOFF_MAX_AGE_MS,
-} from "./secret-store-hidden-github.js";
-import { isMissingSecretStoreTableError } from "./secret-store-sqlite.js";
 import { SecretStoreValidationError } from "./secret-store-validation-error.js";
 import {
   assertSecretStoreEnvName,
@@ -61,7 +52,9 @@ export {
 
 export {
   deleteHiddenGitHubSecretRecord,
-  listHiddenGitHubSecretRecordNames,
+  listHiddenGitHubSecretRecords,
+  consumeGitHubSetupHandoff,
+  consumeGitHubSetupHandoffWithNativeGuard,
   readHiddenGitHubSecretRecord,
   writeHiddenGitHubSecretRecord,
 } from "./secret-store-hidden-github.js";
@@ -149,62 +142,6 @@ export async function listSecretStoreEntries(
   context.admission.assertCurrent();
   params.assertCurrent?.();
   return entries;
-}
-
-/** Atomically returns and hard-deletes one exact fresh, non-egress GitHub setup handoff. */
-export function consumeGitHubSetupHandoff(params: {
-  name: string;
-  nowMs?: number;
-  database?: OpenClawStateDatabaseOptions;
-}): string | undefined {
-  if (classifyHiddenGitHubStoreName(params.name) !== "setup") {
-    return undefined;
-  }
-  const now = params.nowMs ?? Date.now();
-  try {
-    const value = runOpenClawStateWriteTransaction(
-      ({ db: sqlite }) => {
-        const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
-        const row = executeSqliteQueryTakeFirstSync(
-          sqlite,
-          db
-            .selectFrom("secret_store_entries")
-            .select("value")
-            .where("scope_kind", "=", "team")
-            .where("scope_id", "=", "")
-            .where("name", "=", params.name)
-            .where("kind", "=", "secret")
-            .where("allowed_hosts", "is", null)
-            .where("created_at_ms", ">=", now - GITHUB_SETUP_HANDOFF_MAX_AGE_MS)
-            .where("created_at_ms", "<=", now)
-            .where("deleted_at_ms", "is", null),
-        );
-        if (!row) {
-          return undefined;
-        }
-        executeSqliteQuerySync(
-          sqlite,
-          db
-            .deleteFrom("secret_store_entries")
-            .where("scope_kind", "=", "team")
-            .where("scope_id", "=", "")
-            .where("name", "=", params.name),
-        );
-        return row.value;
-      },
-      params.database,
-      { operationLabel: "secrets.store.consume-github-setup-handoff" },
-    );
-    if (value !== undefined) {
-      registerSecretValueForRedaction(value);
-    }
-    return value;
-  } catch (error) {
-    if (isMissingSecretStoreTableError(error)) {
-      return undefined;
-    }
-    throw error;
-  }
 }
 
 /** Captures one coherent team-store snapshot for an agent run's exec environment. */

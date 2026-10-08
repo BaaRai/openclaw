@@ -3,9 +3,13 @@ import {
   operatorScopeSatisfied,
   roleScopesAllow,
 } from "../../shared/operator-scope-compat.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
 import { resolvePersonalGitHubOwner } from "../../state/user-github-connections.js";
-import type { PersonalGitHubAction } from "../github-personal-oauth.js";
+import type { PersonalGitHubActionV2 } from "../github-personal-oauth.js";
+import type { PersonalGitHubAction } from "../github-personal-status.js";
 import { GitHubPublicationSessionChangedError } from "../github-publication-failure.js";
 import { hasCurrentGatewayOperatorAccess } from "../operator-access-policy.js";
 import {
@@ -197,12 +201,14 @@ export async function prepareGitHubPublicationOptionsRead(
 }
 
 /** Authority stays in this direct connection closure; a profile or request id alone grants nothing. */
-export function preparePersonalGitHubAction(
+function capturePersonalGitHubAction(
   options: Request,
-  scope: "operator.read" | "operator.write" = "operator.read",
+  scope: "operator.read" | "operator.write",
   signal?: AbortSignal,
-): PersonalGitHubAction {
+) {
   const { client, context } = options;
+  const source = captureOpenClawStateWorkerContext();
+  const database = { path: source.admission.databasePath, env: source.environment };
   const resolveOwner = () => {
     signal?.throwIfAborted();
     if (
@@ -214,8 +220,15 @@ export function preparePersonalGitHubAction(
     ) {
       throw new Error("My GitHub requires a current authenticated human Gateway connection.");
     }
+    source.admission.assertCurrent();
+    // Role-policy helpers also use the ambient store; reject retargeting before either lookup.
+    if (resolveOpenClawStateSqlitePath() !== database.path) {
+      throw new Error("My GitHub state store changed; retry from your current profile.");
+    }
     const profile = client.authenticatedUserProfile?.profileId;
-    const owner = profile ? resolvePersonalGitHubOwner(profile) : undefined;
+    const owner = profile
+      ? resolvePersonalGitHubOwner(profile, openOpenClawStateDatabase(database).db)
+      : undefined;
     if (!owner) {
       throw new Error("My GitHub requires a verified durable user profile; sign in and try again.");
     }
@@ -224,11 +237,53 @@ export function preparePersonalGitHubAction(
   };
   const owner = resolveOwner();
   return {
-    owner,
-    assertCurrent: () => {
-      if (resolveOwner() !== owner) {
+    database,
+    action: {
+      owner,
+      assertCurrent: () => {
+        if (resolveOwner() !== owner) {
+          throw new Error("My GitHub owner changed; retry from your current profile.");
+        }
+      },
+    },
+  };
+}
+
+export function preparePersonalGitHubAction(
+  options: Request,
+  scope: "operator.read" | "operator.write" = "operator.read",
+  signal?: AbortSignal,
+): PersonalGitHubAction {
+  return capturePersonalGitHubAction(options, scope, signal).action;
+}
+
+/** Personal writes consume transaction-local role facts while the host retains the live socket. */
+export async function preparePersonalGitHubActionV2(
+  options: Request,
+): Promise<PersonalGitHubActionV2> {
+  const { action, database } = capturePersonalGitHubAction(options, "operator.read");
+  const { client } = options;
+  const profileReference = client?.authenticatedUserProfile?.profileId;
+  const userReference = client?.authenticatedUserId;
+  const access = client?.internal?.operatorAccessAuthority;
+  const prepared = await prepareUserProfileRoleAuthority(action.owner, database);
+  action.assertCurrent();
+  if (!prepared || prepared.profileId !== action.owner) {
+    throw new Error("My GitHub owner changed; retry from your current profile.");
+  }
+  return {
+    ...action,
+    assertMutationCurrent(role) {
+      if (
+        !prepared.isCurrent() ||
+        client?.authenticatedUserProfile?.profileId !== profileReference ||
+        client?.authenticatedUserId !== userReference ||
+        client?.internal?.operatorAccessAuthority !== access ||
+        (role && role.profileId !== action.owner)
+      ) {
         throw new Error("My GitHub owner changed; retry from your current profile.");
       }
+      currentGitHubClient(options, "operator.read", role ?? prepared);
     },
   };
 }

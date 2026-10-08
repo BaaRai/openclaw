@@ -4,8 +4,11 @@ const hiddenStore = vi.hoisted(() => ({ records: new Map<string, string>() }));
 
 vi.mock("../secrets/store/secret-store.js", () => ({
   deleteHiddenGitHubSecretRecord: ({ name }: { name: string }) => hiddenStore.records.delete(name),
-  listHiddenGitHubSecretRecordNames: ({ prefix }: { prefix: string }) =>
-    [...hiddenStore.records.keys()].filter((name) => name.startsWith(`${prefix}-`)).toSorted(),
+  listHiddenGitHubSecretRecords: ({ prefix }: { prefix: string }) =>
+    [...hiddenStore.records.entries()]
+      .filter(([name]) => name.startsWith(`${prefix}-`))
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([name, value]) => ({ name, value })),
   readHiddenGitHubSecretRecord: ({ name }: { name: string }) => hiddenStore.records.get(name),
   writeHiddenGitHubSecretRecord: ({ name, value }: { name: string; value: string }) =>
     hiddenStore.records.set(name, value),
@@ -64,23 +67,30 @@ const oauthRecord: GitHubOAuthRecord = {
 describe("GitHub OAuth hidden records", () => {
   beforeEach(() => hiddenStore.records.clear());
 
-  it("round-trips exact pending and refresh records under opaque hidden names", () => {
-    writeGitHubDeviceAuthorizationRecord(deviceRecord);
-    writeGitHubOAuthRecord(oauthRecord);
+  it("round-trips exact pending and refresh records under opaque hidden names", async () => {
+    await writeGitHubDeviceAuthorizationRecord(deviceRecord);
+    await writeGitHubOAuthRecord(oauthRecord);
 
     expect([...hiddenStore.records.keys()]).toEqual([
       requestId,
       `github-oauth-${profileId.slice("ghp_".length)}`,
     ]);
-    expect(listGitHubDeviceAuthorizationRecords()).toEqual([{ requestId, record: deviceRecord }]);
-    expect(listGitHubOAuthRecords()).toEqual([{ profileId, record: oauthRecord }]);
-    expect(readGitHubDeviceAuthorizationRecord(requestId)).toEqual(deviceRecord);
-    expect(inspectGitHubOAuthRecord(profileId)).toEqual({ state: "valid", record: oauthRecord });
+    expect(await listGitHubDeviceAuthorizationRecords()).toEqual([
+      expect.objectContaining({ requestId, record: deviceRecord }),
+    ]);
+    expect(await listGitHubOAuthRecords()).toEqual([
+      expect.objectContaining({ profileId, record: oauthRecord }),
+    ]);
+    expect(await readGitHubDeviceAuthorizationRecord(requestId)).toEqual(deviceRecord);
+    expect(await inspectGitHubOAuthRecord(profileId)).toEqual({
+      state: "valid",
+      record: oauthRecord,
+    });
     expect(JSON.stringify([...hiddenStore.records.keys()])).not.toContain("refresh-token-secret");
     expect(JSON.stringify([...hiddenStore.records.keys()])).not.toContain(deviceRecord.deviceCode);
 
-    deleteGitHubDeviceAuthorizationRecord(requestId);
-    deleteGitHubOAuthRecord(profileId);
+    await deleteGitHubDeviceAuthorizationRecord(requestId);
+    await deleteGitHubOAuthRecord(profileId);
     expect(hiddenStore.records.size).toBe(0);
   });
 
@@ -88,22 +98,22 @@ describe("GitHub OAuth hidden records", () => {
     { name: "  Original Author  " },
     { email: "  original@example.test  " },
     { name: "Original", email: "original@example.test" },
-  ])("preserves persisted Git author bytes %#", (gitAuthor) => {
+  ])("preserves persisted Git author bytes %#", async (gitAuthor) => {
     const record = {
       ...deviceRecord,
       expectedIdentity: { profileId, kind: "oauth" as const, gitAuthor },
     };
-    writeGitHubDeviceAuthorizationRecord(record);
-    expect(readGitHubDeviceAuthorizationRecord(requestId)).toEqual(record);
+    await writeGitHubDeviceAuthorizationRecord(record);
+    expect(await readGitHubDeviceAuthorizationRecord(requestId)).toEqual(record);
   });
 
   it.each([false, true])(
     "preserves sandbox opt-in %s in authorization snapshots",
-    (allowInSandbox) => {
+    async (allowInSandbox) => {
       const expectedIdentity = { profileId, allowInSandbox };
       const device = { ...deviceRecord, expectedIdentity };
-      writeGitHubDeviceAuthorizationRecord(device);
-      expect(readGitHubDeviceAuthorizationRecord(requestId)).toStrictEqual(device);
+      await writeGitHubDeviceAuthorizationRecord(device);
+      expect(await readGitHubDeviceAuthorizationRecord(requestId)).toStrictEqual(device);
 
       const oauth = {
         ...oauthRecord,
@@ -115,14 +125,17 @@ describe("GitHub OAuth hidden records", () => {
           expectedIdentity,
         },
       };
-      writeGitHubOAuthRecord(oauth);
-      expect(inspectGitHubOAuthRecord(profileId)).toStrictEqual({ state: "valid", record: oauth });
+      await writeGitHubOAuthRecord(oauth);
+      expect(await inspectGitHubOAuthRecord(profileId)).toStrictEqual({
+        state: "valid",
+        record: oauth,
+      });
     },
   );
 
   it.each(["record", "identity", "author", "binding", "provenance"] as const)(
     "rejects an own __proto__ key in the persisted %s",
-    (location) => {
+    async (location) => {
       const record = {
         ...deviceRecord,
         expectedIdentity: { profileId, gitAuthor: { name: "Name" } },
@@ -148,17 +161,17 @@ describe("GitHub OAuth hidden records", () => {
                 : record.agentLifecycleBinding.provenance;
       Object.defineProperty(target, "__proto__", { value: null, enumerable: true });
       hiddenStore.records.set(requestId, JSON.stringify(record));
-      expect(readGitHubDeviceAuthorizationRecord(requestId)).toBeUndefined();
+      expect(await readGitHubDeviceAuthorizationRecord(requestId)).toBeUndefined();
     },
   );
 
   it.each([null, { agentId: "main", provenance: null, extra: true }])(
     "preserves System record reads that discard an invalid agent binding: %j",
-    (agentLifecycleBinding) => {
+    async (agentLifecycleBinding) => {
       const { agentLifecycleBinding: _binding, ...unboundDevice } = deviceRecord;
       const expected = { ...unboundDevice, scope: "system" };
       hiddenStore.records.set(requestId, JSON.stringify({ ...expected, agentLifecycleBinding }));
-      expect(readGitHubDeviceAuthorizationRecord(requestId)).toStrictEqual(expected);
+      expect(await readGitHubDeviceAuthorizationRecord(requestId)).toStrictEqual(expected);
       const pendingInitial = {
         requestId,
         scope: "system",
@@ -173,7 +186,7 @@ describe("GitHub OAuth hidden records", () => {
           pendingInitial: { ...pendingInitial, agentLifecycleBinding },
         }),
       );
-      expect(inspectGitHubOAuthRecord(profileId)).toStrictEqual({
+      expect(await inspectGitHubOAuthRecord(profileId)).toStrictEqual({
         state: "valid",
         record: { ...oauthRecord, scope: "system", pendingInitial },
       });
