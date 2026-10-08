@@ -1091,14 +1091,16 @@ still propagate. Registration rechecks current authority after preparation and
 at write admission.
 
 Gateway `session.members.list` and `session.members.listEvidence` read full
-membership rows through the existing session-transcript read worker. Both methods
-recheck the exact session instance and current management rights after the read
-settles. Member ordering, actor evidence, and missing-database behavior are
-unchanged. Incognito membership remains with its process-local native owner;
-the synchronous session-store facade retains its existing compatibility contract.
-Target resolution, profile and creator catalogs, public-share metadata, projection
-refreshes, and membership writes retain their existing execution paths. This cut
-moves the member-row query, not every database read performed by these RPCs.
+membership rows and current session metadata together in one SQLite snapshot on
+the projection worker lane. They do not queue a second session read behind
+transcript history. Both methods recheck the exact session instance and current
+management rights after the snapshot settles, including foreign ownership changes
+that have not published resident facts. Member ordering, actor evidence, and
+missing-database behavior are unchanged. Incognito membership and metadata use the
+same snapshot kernel through their process-local native owner; the synchronous
+session-store facade retains its existing compatibility contract. Profile and
+creator catalogs and membership writes retain their existing execution paths.
+There is no schema, configuration, retention, or update migration.
 
 Watched upstream-session discovery runs its existing single-query snapshot and
 row decoding in the shared-state worker. The monitor awaits that snapshot and
@@ -1794,6 +1796,16 @@ session still settles before its generation is checked. Cold preparation and
 terminal publication keep their existing writer admission; this changes no
 schema, stored data, retention, or update behavior.
 
+Synchronous session generation checks (delivery, subagent control, cron roots, and
+memory audiences) remain available during a pending entry publication only when the
+committing worker proves, from the committed previous and current rows, that the
+publication keeps that session's ID and lifecycle revision. Created, deleted,
+archived, and membership-invalidated rows carry no such proof, and publication
+paths that do not supply it keep the existing fence. Owners that prepare a
+generation read still join every pending publication for the session, so effect
+ordering is unchanged. Sharing, membership, and incognito reads are unchanged.
+This changes no schema, stored data, or update behavior.
+
 Automatic entry maintenance captures its policy at writer admission. Metadata
 planning and planner statistics updates use the existing agent database executor;
 after cold native admission, row preparation runs outside the writer and archive
@@ -2343,6 +2355,10 @@ in bounded batches; selection and sorting run before the deletion transaction.
 
 The retention owner holds mutation receipts only for the active sweep. Committed
 appends publish their retained session's run summaries, including per-session trims.
+Session metadata patches advance only the receipt's committed mutation counter
+after all patch-owned writes. They preserve trajectory rows and reuse the sweep's
+prepared run summaries without another aggregate. Foreign-commit and lease checks
+still apply before accepting that metadata-only receipt.
 The owner replaces affected snapshot sessions with these receipts, so writes that
 overlap snapshot creation are neither lost nor counted twice. Its byte and expiry
 facts settle each batch without waiting for a write-free read. No receipts are
