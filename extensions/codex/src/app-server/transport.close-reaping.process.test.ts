@@ -80,14 +80,14 @@ function scanRetainedZombies(): number[] {
 }
 
 async function waitFor<T>(
-  probe: () => T,
+  probe: () => T | Promise<T>,
   isDone: (value: T) => boolean,
   timeoutMs: number,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let latest: T;
   for (;;) {
-    latest = probe();
+    latest = await probe();
     if (isDone(latest)) {
       return latest;
     }
@@ -221,7 +221,9 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
         // Every descendant is alive when close begins, so containment observes
         // and terminates each one through the real production path.
         expect(stat?.state, `${role} must be alive at close`).toBeDefined();
-        expect(stat?.state).not.toStartWith("Z");
+        expect(stat?.state.startsWith("Z"), `${role} must be live, state ${stat?.state}`).toBe(
+          false,
+        );
       }
       expect(readStat(fixtureRow(rows, "root").pid)?.ppid).toBe(process.pid);
 
@@ -236,27 +238,33 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
       // Run-owned residue check: each retained descendant fully left /proc,
       // meaning its adopted zombie status was consumed rather than left
       // defunct, and no run-owned PID survives as a harness-parented zombie.
-      const fixturePids = DESCENDANT_ROLES.map((role) => fixtureRow(rows, role).pid);
-      for (const [role, pid] of DESCENDANT_ROLES.map(
-        (role) => [role, fixtureRow(rows, role).pid] as const,
+      const fixturePids = new Set(DESCENDANT_ROLES.map((entry) => fixtureRow(rows, entry).pid));
+      for (const [name, pid] of DESCENDANT_ROLES.map(
+        (entry) => [entry, fixtureRow(rows, entry).pid] as const,
       )) {
-        const stat = await waitFor(() => readStat(pid), (current) => current === undefined, 10_000);
-        expect(stat, `${role} pid ${pid} still present: ${JSON.stringify(stat)}`).toBeUndefined();
+        const stat = await waitFor(
+          () => readStat(pid),
+          (current) => current === undefined,
+          10_000,
+        );
+        expect(stat, `${name} pid ${pid} still present: ${JSON.stringify(stat)}`).toBeUndefined();
       }
       const retained = await waitFor(
         () => scanRetainedZombies(),
-        (zombies) => !zombies.some((pid) => fixturePids.includes(pid)),
+        (zombies) => !zombies.some((pid) => fixturePids.has(pid)),
         10_000,
       );
       expect(
-        retained.filter((pid) => fixturePids.includes(pid)),
+        retained.filter((pid) => fixturePids.has(pid)),
         `run-owned zombies still parented to harness: ${retained.join(", ")}`,
       ).toEqual([]);
 
       // Unrelated work outside the closed tree keeps running untouched.
       expect(readStat(unrelated.pid!)).toBeDefined();
       unrelated.kill("SIGKILL");
-      await new Promise((resolve) => unrelated.once("exit", resolve));
+      await new Promise((resolve) => {
+        unrelated.once("exit", resolve);
+      });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -276,7 +284,9 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
         [fixtures.leaverPath, fixtures.logPath, fixtures.relayPath],
         { stdio: "ignore" },
       );
-      await new Promise((resolve) => leaver.once("exit", resolve));
+      await new Promise((resolve) => {
+        leaver.once("exit", resolve);
+      });
       const rows = await waitFor(
         () => readFixtureRows(fixtures.logPath),
         (current) => current.some((row) => row.role === "control-orphan"),
@@ -289,7 +299,9 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
         (stat) => stat !== undefined && stat.ppid === process.pid,
         10_000,
       );
-      expect(adopted.state).not.toStartWith("Z");
+      expect(adopted.state.startsWith("Z"), `orphan must be live, state ${adopted.state}`).toBe(
+        false,
+      );
 
       process.kill(orphanPid, "SIGKILL");
       const zombie = await waitFor(
