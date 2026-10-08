@@ -251,6 +251,8 @@ export function scheduleRequesterSettleWake(
     outcome?: Parameters<typeof settleRequesterSettleWakeBatch>[3],
     onCommitted?: () => void,
   ) => {
+    // A retirement may have replaced the pause notice this evaluation was delivering.
+    entry = currentSubagentRunOrObserved(params.runs, entry);
     if (Boolean(admittedWake.pauseNotice) !== Boolean(entry.requesterSettleWake?.pauseNotice)) {
       return;
     }
