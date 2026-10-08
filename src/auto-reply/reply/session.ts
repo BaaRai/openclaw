@@ -927,7 +927,7 @@ async function initSessionStateAttemptLocked(
       if (hasInternalHookListeners(memoryEvent, memoryAction)) {
         // Capture before the same-identity reset changes the visible window.
         // Only the successful lifecycle commit publishes this bounded snapshot.
-        previousSessionMemory = captureSessionMemoryTranscript(
+        previousSessionMemory = await captureSessionMemoryTranscript(
           {
             ...sessionTarget,
             sessionId: currentEntry.sessionId,
