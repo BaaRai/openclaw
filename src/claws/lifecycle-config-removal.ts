@@ -225,7 +225,7 @@ export async function withClawAgentConfigRemoval<T>(
         return await apply(async () => {
           assertCurrent();
           const result = await withAgentExecApprovalsRemoved(
-            params.agentId,
+            deletion.entry,
             async () =>
               commitClawAgentConfigRemoval(
                 { ...params, config, stateDatabase: stateOptions },

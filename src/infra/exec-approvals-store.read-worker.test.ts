@@ -30,7 +30,8 @@ import {
   prepareCronExecHostPolicyUse,
   readExecApprovalsSnapshot,
   restoreExecApprovalsSnapshotLocked,
-  updateExecApprovalsSync,
+  updateExecApprovalsForMaintenance,
+  updateExecApprovals,
 } from "./exec-approvals-store.js";
 import { testing } from "./exec-approvals-store.test-support.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
@@ -365,7 +366,9 @@ it.each(["commit", "rollback", "unknown commit"] as const)(
         : undefined;
     const write = () =>
       runOpenClawStateWriteTransaction(() => {
-        updateExecApprovalsSync({ update: (file) => ({ ...file, defaults: { ask: "always" } }) });
+        updateExecApprovalsForMaintenance({
+          update: (file) => ({ ...file, defaults: { ask: "always" } }),
+        });
         expect(use.assertCurrent).toThrow("policy changed");
         if (outcome === "rollback") {
           throw new Error("synthetic rollback");
@@ -390,7 +393,7 @@ it.each(["commit", "rollback", "unknown commit"] as const)(
   },
 );
 
-it("never revives an old policy use when a native commit outruns its prepared read", async () => {
+it("never revives an old policy use when a worker commit outruns its prepared read", async () => {
   const { root, env } = fixture();
   seed(env);
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
@@ -413,9 +416,11 @@ it("never revives an old policy use when a native commit outruns its prepared re
       prepared,
       "Policy read settled before delivery gate",
     );
-    updateExecApprovalsSync({ update: (file) => ({ ...file, defaults: { security: "deny" } }) });
-    updateExecApprovalsSync({
-      update: (file) => ({ ...file, defaults: { security: "allowlist" } }),
+    await updateExecApprovals({
+      update: { kind: "replace", file: { version: 1, defaults: { security: "deny" } } },
+    });
+    await updateExecApprovals({
+      update: { kind: "replace", file: { version: 1, defaults: { security: "allowlist" } } },
     });
   } finally {
     deliver.resolve();
@@ -476,14 +481,18 @@ it("publishes native restoration and scopes policy retirement to the original ph
   seed(env);
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const original = readExecApprovalsSnapshot();
-  updateExecApprovalsSync({ update: (file) => ({ ...file, defaults: { ask: "always" } }) });
+  updateExecApprovalsForMaintenance({
+    update: (file) => ({ ...file, defaults: { ask: "always" } }),
+  });
   const denied = readExecApprovalsSnapshot();
   await restoreExecApprovalsSnapshotLocked(original, denied.hash);
   const use = await prepareCronPolicy(env);
   const foreign = fixture();
   seed(foreign.env);
   vi.stubEnv("OPENCLAW_STATE_DIR", foreign.root);
-  updateExecApprovalsSync({ update: (file) => ({ ...file, defaults: { security: "deny" } }) });
+  updateExecApprovalsForMaintenance({
+    update: (file) => ({ ...file, defaults: { security: "deny" } }),
+  });
   expect(use.assertCurrent).not.toThrow();
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   await restoreExecApprovalsSnapshotLocked(denied, original.hash);
@@ -513,7 +522,7 @@ it.each(["fulfilled", "throwing launch", "unknown"] as const)(
     const use = await prepareCronPolicy(env);
     const acknowledgement = createDeferred();
     const deny = () =>
-      updateExecApprovalsSync({
+      updateExecApprovalsForMaintenance({
         update: (file) => ({ ...file, defaults: { security: "deny" } }),
       });
     const launch = vi.fn(() => {
@@ -533,7 +542,7 @@ it.each(["fulfilled", "throwing launch", "unknown"] as const)(
       use.release();
       expect(deny).toThrow("native launch acknowledgement is pending");
       expect(
-        updateExecApprovalsSync({
+        updateExecApprovalsForMaintenance({
           update: (file) => ({ ...file, socket: { path: "/synthetic-metadata" } }),
         }),
       ).not.toBeNull();

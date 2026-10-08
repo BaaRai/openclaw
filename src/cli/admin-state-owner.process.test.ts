@@ -232,12 +232,15 @@ describe("administrative CLI state owner routing", () => {
       ],
     });
     await updateExecApprovals({
-      update: () => ({
-        version: 1,
-        agents: {
-          "*": { allowlist: operation.kind === "allowlist-remove" ? [{ pattern }] : [] },
+      update: {
+        kind: "replace",
+        file: {
+          version: 1,
+          agents: {
+            "*": { allowlist: operation.kind === "allowlist-remove" ? [{ pattern }] : [] },
+          },
         },
-      }),
+      },
     });
     if (scenario === "offline") {
       await closeOpenClawStateDatabaseAsync();

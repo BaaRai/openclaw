@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearRuntimeConfigSnapshot,
@@ -12,6 +13,7 @@ import { createPluginRecord } from "../plugins/loader-records.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { resolveDatabasePath } from "../state/openclaw-state-db.paths.js";
 import { invokeRegisteredNodeHostCommand } from "./plugin-node-host.js";
 
 let root: string;
@@ -68,9 +70,22 @@ function launch(source: "session-full" | "human-approved", whilePreparing: () =>
   return { result, spawn, controller, registry };
 }
 
-function setPolicy(owner: "config" | "approvals", security: ExecSecurity, ask: ExecAsk) {
+function setPolicy(
+  owner: "config" | "approvals" | "foreign-approvals",
+  security: ExecSecurity,
+  ask: ExecAsk,
+) {
   if (owner === "config") {
     setRuntimeConfigSnapshot({ tools: { exec: { security, ask } } });
+  } else if (owner === "foreign-approvals") {
+    const db = new DatabaseSync(resolveDatabasePath());
+    try {
+      db.prepare("UPDATE exec_approvals_config SET raw_json = ? WHERE config_key = 'current'").run(
+        JSON.stringify({ version: 1, defaults: { security, ask } }),
+      );
+    } finally {
+      db.close();
+    }
   } else {
     saveExecApprovals({ version: 1, defaults: { security, ask } });
   }
@@ -102,7 +117,7 @@ describe("plugin node execution authorization", () => {
     },
   );
 
-  it.each(["config", "approvals"] as const)(
+  it.each(["config", "approvals", "foreign-approvals"] as const)(
     "refuses %s tightening during awaited setup",
     async (owner) => {
       for (const source of ["session-full", "human-approved"] as const) {

@@ -22,6 +22,8 @@ import {
   mockCallArg,
   registerAgentCreationCommitTests,
 } from "./agents-mutate.test-support.js";
+type AgentPolicyRemoval = { agentId: string; operationId: string };
+
 const mocks = vi.hoisted(() => ({
   sharedAuthStoreOwnership: { location: "legacy-main" } as {
     location: "legacy-main" | "state-db";
@@ -47,7 +49,7 @@ const mocks = vi.hoisted(() => ({
   deleteWorkspaceState: vi.fn(),
   prepareWorkspaceStateDeletion: vi.fn((workspaceDir: string) => ({ workspaceDir })),
   withAgentExecApprovalsRemoved: vi.fn(
-    async (_agentId: string, commit: () => Promise<unknown>) => await commit(),
+    async (_authority: AgentPolicyRemoval, commit: () => Promise<unknown>) => await commit(),
   ),
   assertAgentDeletionCurrent: vi.fn(),
   beginAgentDeletionRollback: vi.fn(),
@@ -251,6 +253,7 @@ vi.mock("../../agents/agent-lifecycle-registry.js", () => ({
   ) =>
     run((entry) => ({
       entry: Object.assign(entry, {
+        operationId: "fixture-deletion-operation",
         databasePaths: entry.databasePaths ?? [],
         cleanupPaths: entry.cleanupPaths ?? [],
       }),
@@ -430,9 +433,7 @@ beforeEach(() => {
     ownerAgentId: "robby",
     warnings: [],
   });
-  mocks.withAgentExecApprovalsRemoved
-    .mockReset()
-    .mockImplementation(async (_agentId: string, commit: () => Promise<unknown>) => await commit());
+  mocks.withAgentExecApprovalsRemoved.mockReset();
   mocks.assertAgentDeletionCurrent.mockReset();
   mocks.beginAgentDeletionRollback.mockReset();
   mocks.beginAgentDeletionFinish.mockReset();
@@ -850,7 +851,7 @@ describe("agents.delete", () => {
       },
     );
     mocks.withAgentExecApprovalsRemoved.mockImplementation(
-      async (agentId: string, commit: () => Promise<unknown>) => {
+      async ({ agentId }: AgentPolicyRemoval, commit: () => Promise<unknown>) => {
         const existed = approvals.delete(agentId);
         events.push("approvals");
         try {
@@ -907,7 +908,7 @@ describe("agents.delete", () => {
       expect.any(Function),
     );
     expect(mocks.withAgentExecApprovalsRemoved).toHaveBeenCalledWith(
-      "test-agent",
+      expect.objectContaining({ agentId: "test-agent", operationId: expect.any(String) }),
       expect.any(Function),
     );
     expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledWith(

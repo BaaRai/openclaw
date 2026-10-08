@@ -44,14 +44,16 @@ const reviewed = new Map([
     "src/infra/exec-approvals-sqlite.ts",
     {
       priority: 1,
-      evidence: "Approval-policy writes; write-coordination cutover owned separately",
+      evidence:
+        "Final synchronous pre-spawn/2026.9.8 SDK policy reads; native opaque approval guards retain MCP grant kernels until the next SDK major",
     },
   ],
   [
     "src/infra/exec-approvals-store.ts",
     {
       priority: 1,
-      evidence: "Approval-policy writes; write-coordination cutover owned separately",
+      evidence:
+        "Runtime policy mutations use the shared-state writer; native update adapter is Doctor-only",
     },
   ],
   [
@@ -1510,10 +1512,10 @@ const reviewedOperations = new Map([
     "src/infra/exec-approvals-sqlite.ts",
     [
       {
-        tier: "T3",
+        tier: "W",
         operations: ["deleteExecApprovalsConfigRow"],
         evidence:
-          "src/cli/exec-policy-cli.ts:405 → src/infra/exec-approvals-store.ts:431 restores an absent row after CLI config-write failure.",
+          "exec-approvals-mutation.worker.ts restores an absent policy row through the shared-state writer.",
       },
     ],
   ],
@@ -1521,10 +1523,10 @@ const reviewedOperations = new Map([
     "src/infra/exec-approvals-store.ts",
     [
       {
-        tier: "T3",
-        operations: ["restoreExecApprovalsSnapshotLocked"],
+        tier: "T2",
+        operations: ["updateExecApprovalsForMaintenance"],
         evidence:
-          "Only src/cli/exec-policy-cli.ts:405 restores the snapshot after CLI config-write failure.",
+          "Only exec-approvals-generated-migration.ts uses the synchronous update adapter in production; runtime edits, removal and restoration dispatch to the writer.",
       },
     ],
   ],
