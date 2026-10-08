@@ -49,7 +49,7 @@ impl OpenClawCli {
         let cli = Self::locate()?;
         match cli.verify() {
             Ok(()) => Ok(cli),
-            Err(_) if cli.executable == PathBuf::from(cli_name()) => Err(CliError::Missing),
+            Err(_) if cli.executable == PathBuf::from("openclaw") => Err(CliError::Missing),
             Err(error) => Err(error),
         }
     }
@@ -68,7 +68,23 @@ impl OpenClawCli {
             return Ok(Self::new(managed, home));
         }
 
-        Ok(Self::new(PathBuf::from(cli_name()), home))
+        let cli = Self::new(PathBuf::from("openclaw"), home);
+        #[cfg(windows)]
+        let cli = {
+            let executable = env::split_paths(&cli.command_path()?)
+                .flat_map(|directory| {
+                    [
+                        directory.join("openclaw.exe"),
+                        directory.join("openclaw.cmd"),
+                    ]
+                })
+                .find(|candidate| candidate.is_file());
+            Self {
+                executable: executable.unwrap_or(cli.executable),
+                ..cli
+            }
+        };
+        Ok(cli)
     }
 
     fn new(executable: PathBuf, openclaw_home: PathBuf) -> Self {
@@ -409,6 +425,68 @@ pub fn openclaw_home() -> Result<PathBuf, CliError> {
 mod tests {
     use super::{output_tail, OpenClawCli};
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn ambient_windows_discovery_supports_executables_and_command_launchers() {
+        use std::{env, fs, process::Command};
+        const CHILD: &str = "OPENCLAW_CLI_DISCOVERY_TEST_CHILD";
+        if let Some(expected) = env::var_os(CHILD) {
+            let cli = OpenClawCli::discover().expect("discover ambient Windows CLI");
+            assert_eq!(cli.executable, PathBuf::from(expected));
+            return;
+        }
+        let root = env::temp_dir().join(format!("openclaw-discovery-{}", uuid::Uuid::new_v4()));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let ambient = root.join("ambient");
+        fs::create_dir_all(&ambient).unwrap();
+        let probe = root.join("probe.rs");
+        fs::write(&probe, "fn main() { println!(\"0.0.0-test\"); }").unwrap();
+        let executable = ambient.join("openclaw.exe");
+        let compiled = Command::new("rustc")
+            .arg(&probe)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let launcher = ambient.join("openclaw.cmd");
+        for (index, expected) in [&executable, &executable, &launcher]
+            .into_iter()
+            .enumerate()
+        {
+            if index == 1 {
+                fs::write(&launcher, "@echo off\r\necho 0.0.0-test\r\n").unwrap();
+            } else if index == 2 {
+                fs::remove_file(&executable).unwrap();
+            }
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", "cli::tests::ambient_windows_discovery_supports_executables_and_command_launchers", "--nocapture"])
+                .env(CHILD, expected)
+                .env("HOME", &root)
+                .env("USERPROFILE", &root)
+                .env("PATH", &ambient)
+                .env_remove("OPENCLAW_DESKTOP_CLI")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[test]
