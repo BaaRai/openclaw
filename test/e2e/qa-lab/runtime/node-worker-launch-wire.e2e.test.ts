@@ -107,6 +107,12 @@ describe("node worker launch wire", () => {
           providerBaseUrl: provider.baseUrl,
           executionIdentity: true,
           useRepoCli: false,
+          // Keep state/worktree allocation on the same filesystem as the owned test root.
+          command: {
+            executablePath: process.execPath,
+            argsPrefix: [path.join(process.cwd(), "dist", "index.js")],
+            tempParentDir: root,
+          },
         });
         operator = await connectWireClient({ gateway, role: "operator", identity: null });
         workerNode = await createPairedNodeWorkerHost({
