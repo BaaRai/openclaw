@@ -107,10 +107,6 @@ export async function handleChatAbortRequestWithLifecycle(
     abortCfg,
     rawSessionKey,
   );
-  const inferredSessionAgentId =
-    !agentIdOverride && parsedAbortSessionKey
-      ? normalizeAgentId(parsedAbortSessionKey.agentId)
-      : undefined;
   const bareSessionAgentResolution = !parsedAbortSessionKey
     ? resolveRequestedSessionAgentId(abortCfg, rawSessionKey, agentIdOverride)
     : undefined;
@@ -119,7 +115,7 @@ export async function handleChatAbortRequestWithLifecycle(
     return;
   }
   const abortAgentId = parsedAbortSessionKey
-    ? (agentIdOverride ?? inferredSessionAgentId)
+    ? (agentIdOverride ?? normalizeAgentId(parsedAbortSessionKey.agentId))
     : bareSessionAgentResolution?.agentId;
   if (!abortAgentId) {
     respond(
@@ -331,12 +327,7 @@ export async function handleChatAbortRequestWithLifecycle(
         if (active && active.controller === controller && activeCurrent?.()) {
           abortChatRunById(ops, { runId, sessionKey: active.sessionKey, stopReason: "rpc" });
         }
-        if (
-          !controller.signal.aborted &&
-          queued &&
-          queued.controller === controller &&
-          queuedCurrent?.()
-        ) {
+        if (!controller.signal.aborted && queued.controller === controller && queuedCurrent?.()) {
           abortQueuedChatTurnById(context.chatQueuedTurns, {
             runId,
             sessionKey: queued.sessionKey,
@@ -344,7 +335,7 @@ export async function handleChatAbortRequestWithLifecycle(
           });
         }
       } finally {
-        release?.();
+        release();
       }
     };
   };
