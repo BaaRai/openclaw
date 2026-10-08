@@ -4,6 +4,7 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { SUPPORTED_NODE_VERSIONS } from "../../node-version.mjs";
 import { note } from "../../packages/terminal-core/src/note.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { formatGatewayServiceInstallationDrift } from "../cli/daemon-cli/shared.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
@@ -562,7 +563,7 @@ export async function maybeRepairGatewayServiceConfig(
     }
     if (sourceCheckoutWarningToShow === null) {
       note(
-        "Run `openclaw gateway install --force` when you want to replace the gateway service definition.",
+        `Run \`${formatCliCommand("openclaw gateway install --force")}\` when you want to replace the gateway service definition.`,
         "Gateway service config",
       );
     }

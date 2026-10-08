@@ -1,5 +1,6 @@
 import { SUPPORTED_NODE_VERSIONS } from "../../node-version.mjs";
 import { note } from "../../packages/terminal-core/src/note.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import {
   SERVICE_AUDIT_CODES,
   type ServiceConfigAudit,
@@ -29,7 +30,7 @@ export function reportGatewayServiceConfigAudit(
   const sourceCheckoutWarning = layout?.entrypointSourceCheckout
     ? [
         `Gateway service entrypoint resolves to a source checkout: ${layout.packageRootReal ?? layout.packageRoot ?? layout.entrypointReal ?? layout.entrypoint}.`,
-        "Run `openclaw gateway install --force` from the intended package install to replace the gateway service definition.",
+        `Run \`${formatCliCommand("openclaw gateway install --force")}\` from the intended package install to replace the gateway service definition.`,
       ].join("\n")
     : null;
   const sourceCheckoutWarningToShow = audit.issues.some(
@@ -71,7 +72,7 @@ export function formatGatewayServiceRepairPreview(params: {
   }
   if (params.plannedLayout?.entrypointSourceCheckout) {
     unresolvedFindings.push(
-      "This repair retains a source-checkout entrypoint. Run `openclaw gateway install --force` from the intended package install to replace it.",
+      `This repair retains a source-checkout entrypoint. Run \`${formatCliCommand("openclaw gateway install --force")}\` from the intended package install to replace it.`,
     );
   }
   const preview = [
