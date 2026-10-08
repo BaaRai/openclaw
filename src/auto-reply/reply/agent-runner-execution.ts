@@ -40,6 +40,7 @@ import {
 import { progressCardRefreshRunProjection } from "../../sessions/input-provenance.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { captureCommandOwnerAssertion } from "../command-owner-authority.js";
+import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
   clearRecoveredAutoFallbackPrimaryProbeSelection,
@@ -417,7 +418,11 @@ async function executeAgentTurnInternalLoop(
     const metaErrorMsg = runResult.meta?.error?.message ?? "";
     const rawErrorPayloadText =
       runResult.payloads?.find(
-        (p) => p.isError && hasNonEmptyString(p.text) && !p.text.startsWith("⚠️"),
+        (p) =>
+          p.isError &&
+          !getReplyPayloadMetadata(p)?.toolFailureExplanation &&
+          hasNonEmptyString(p.text) &&
+          !p.text.startsWith("⚠️"),
       )?.text ?? "";
     const errorCandidate = metaErrorMsg || rawErrorPayloadText;
     const candidateReason = errorCandidate ? classifyFailoverReason(errorCandidate) : null;

@@ -4,6 +4,8 @@ import {
   formatErrorMessage,
   runAgentHarnessLlmOutputHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { extractAssistantText } from "openclaw/plugin-sdk/agent-runtime";
+import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import { appendSessionYieldContext } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { classifyCodexModelCallFailureKind } from "./attempt-diagnostics.js";
 import {
@@ -462,10 +464,25 @@ export async function finalizeCodexAttempt(
     }
     const { assistantTranscriptOwned, assistantTranscriptIdempotencyKey, terminalAnchor } =
       mirrorOutcome;
+    const finalizationAssistantText = result.currentAttemptAssistant
+      ? extractAssistantText(result.currentAttemptAssistant).trim()
+      : "";
+    const toolFailureWithoutFinalAnswer =
+      Boolean(result.lastToolError) &&
+      (result.currentAttemptAssistant?.stopReason === "toolUse" ||
+        !finalizationAssistantText ||
+        isSilentReplyText(finalizationAssistantText));
+    const explainToolFailureAfterDisconnect =
+      toolFailureWithoutFinalAnswer &&
+      codexAppServerFailure?.kind === "client_closed_before_turn_completed" &&
+      !finalAborted &&
+      !effectiveTimedOut;
     const shouldCaptureSettledTurnFinalizationContext =
-      result.assistantTexts.every((text) => !text.trim()) &&
+      (result.assistantTexts.every((text) => !text.trim()) || toolFailureWithoutFinalAnswer) &&
       result.messagesSnapshot.some((message) => message.role === "toolResult") &&
-      (!finalPromptError || activeProjector.settledTurnFailureFinalizationAllowed);
+      (!finalPromptError ||
+        activeProjector.settledTurnFailureFinalizationAllowed ||
+        explainToolFailureAfterDisconnect);
     // Supervised auth belongs to its native connection, which has no generic stock
     // tool-free summary operation. Retain fallback eligibility instead of selecting host auth.
     const settledTurnFinalizationContext = shouldCaptureSettledTurnFinalizationContext
@@ -478,6 +495,7 @@ export async function finalizeCodexAttempt(
               mirroredMessages: mirrorOutcome.mirroredMessages,
               settledMessages: result.messagesSnapshot,
               turnId: activeTurnId,
+              toolFailureExplanation: toolFailureWithoutFinalAnswer,
               signal: params.abortSignal,
               assertActive: connection.assertCurrent,
               withCurrent: connection.withCurrent,

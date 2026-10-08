@@ -84,6 +84,44 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
     },
   );
 
+  it("keeps configured hooks while remote finalization disables model capabilities", async () => {
+    const fake = createClientFactory({
+      terminalItems: [
+        { id: "draft", type: "agentMessage", text: "Rejected draft." },
+        {
+          id: "policy",
+          type: "hookPrompt",
+          fragments: [{ text: "Revise.", hookRunId: "configured-stop" }],
+        },
+        { id: "revision", type: "agentMessage", text: "Approved explanation." },
+      ],
+    });
+    const result = await runTurn({
+      isolation: "configured-transport",
+      options: { clientFactory: fake.factory },
+      requireNoExternalCapabilities: true,
+      preserveConfiguredHooks: true,
+    });
+    expect(result).toMatchObject({ text: "Approved explanation.", managedHooksEnabled: true });
+    const start = fake.request.mock.calls.find(([method]) => method === "thread/start")?.[1];
+    expect(start).toMatchObject({
+      environments: [],
+      dynamicTools: [],
+      ephemeral: true,
+      config: {
+        "features.shell_tool": false,
+        "features.apps": false,
+        "features.plugins": false,
+        mcp_servers: { inherited: { enabled: false } },
+      },
+    });
+    expect((start as { config: Record<string, unknown> }).config).not.toHaveProperty(
+      "features.hooks",
+    );
+    expect((start as { config: Record<string, unknown> }).config).not.toHaveProperty("hooks");
+    expect((start as { config: Record<string, unknown> }).config).not.toHaveProperty("notify");
+  });
+
   it("still refuses managed tool enablement before starting a private completion", async () => {
     const fake = createClientFactory({
       managedRequirements: { featureRequirements: { hooks: true, shell_tool: true } },

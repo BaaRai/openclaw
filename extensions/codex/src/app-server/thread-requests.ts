@@ -162,6 +162,8 @@ export type CodexThreadConfigurationContext = CodexThreadPromptContext &
     | "pluginHarnessToolPolicySafeDeniedTools"
     | "authoredContextTokenCap"
     | "bootstrapContextMode"
+    | "chatType"
+    | "trigger"
     | "scheduledRuntimeAuthority"
     | "requireWorkspaceOnly"
   >;
@@ -473,6 +475,14 @@ export function buildCodexRuntimeThreadConfigForRun(
   const contextConfig = {
     ...runtimeConfig,
     ...(params.bootstrapContextMode === "lightweight" ? CODEX_NO_PROJECT_DOCS_CONFIG : {}),
+    // Connector login belongs with the account manager, not an unattended turn
+    // or a shared conversation. Codex returns the original tool error when this
+    // is disabled instead of waiting on an OAuth question and blocking intake.
+    ...(params.chatType === "group" ||
+    params.chatType === "channel" ||
+    (params.trigger !== undefined && params.trigger !== "user")
+      ? { "features.auth_elicitation": false }
+      : {}),
   };
   return applyCodexManagedShellEnvironment(
     contextConfig,
@@ -496,9 +506,10 @@ export function buildCodexRingZeroThreadConfigPatch(
   };
 }
 
-function buildRestrictedToolConfigPatch(
+export function buildRestrictedToolConfigPatch(
   inheritedMcpServerNames: readonly string[],
   scheduledAppAuthorityActive = false,
+  options: { preserveConfiguredHooks?: boolean } = {},
 ): JsonObject {
   // Restricted turns already send environments: [] and disable native code mode.
   // Remove Codex-owned tool sources here; project-document suppression belongs to
@@ -506,8 +517,14 @@ function buildRestrictedToolConfigPatch(
   const mcpServers = Object.fromEntries(
     [...new Set(inheritedMcpServerNames)].toSorted().map((name) => [name, { enabled: false }]),
   );
+  const toolConfig = { ...CODEX_RING_ZERO_THREAD_CONFIG };
+  if (options.preserveConfiguredHooks) {
+    delete toolConfig["features.hooks"];
+    delete toolConfig.hooks;
+    delete toolConfig.notify;
+  }
   return {
-    ...CODEX_RING_ZERO_THREAD_CONFIG,
+    ...toolConfig,
     ...(scheduledAppAuthorityActive
       ? {
           "features.apps": true,

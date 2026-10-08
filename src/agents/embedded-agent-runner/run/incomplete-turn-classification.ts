@@ -42,6 +42,7 @@ export type IncompleteTurnAttempt = Pick<
   | "replayMetadata"
   | "currentAttemptReplayMetadata"
   | "settledTurnFinalizationContext"
+  | "codexAppServerFailure"
   | "terminal"
   | "toolMetas"
 > &

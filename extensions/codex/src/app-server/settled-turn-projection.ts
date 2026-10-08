@@ -361,7 +361,23 @@ export function projectSettledCodexMessages(
   messages: Iterable<AgentMessage>,
   seenCallIds = new Set<string>(),
 ): JsonValue[] {
-  const projection = new HistoryProjection(seenCallIds, "reject");
+  return readSettledProjection(messages, seenCallIds, "reject").items;
+}
+
+/** Validate complete pairing independently of replay-size limits. */
+export function validateSettledCodexMessages(
+  messages: Iterable<AgentMessage>,
+  seenCallIds = new Set<string>(),
+): void {
+  readSettledProjection(messages, seenCallIds, "omit");
+}
+
+function readSettledProjection(
+  messages: Iterable<AgentMessage>,
+  seenCallIds: Set<string>,
+  oversized: "reject" | "omit",
+): HistoryProjection {
+  const projection = new HistoryProjection(seenCallIds, oversized);
   for (const message of messages) {
     projection.append(message);
   }
@@ -369,7 +385,7 @@ export function projectSettledCodexMessages(
   if (projection.completedResults === 0) {
     throw new CodexHistoryRejection("incomplete_pairing");
   }
-  return projection.items;
+  return projection;
 }
 
 const OMITTED_HISTORY: JsonValue = {

@@ -1,5 +1,6 @@
 import {
   isReplyPayloadTerminalContent,
+  getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
@@ -136,6 +137,11 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       !input.terminalBase.runParams.providerReviewAcknowledgment &&
       typeof input.finalization.harness.finalizeSettledTurn === "function",
   });
+  const toolFailureExplanation = Boolean(
+    prepared.payloadsWithToolMedia?.some(
+      (payload) => getReplyPayloadMetadata(payload)?.toolErrorWarning,
+    ),
+  );
   if (!prompt) {
     return preserveInitial("not-attempted");
   }
@@ -173,6 +179,9 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       `provider=${errorContext.provider}/${errorContext.model} — running isolated finalization`,
   );
   let finalizationOutcome: "answered" | "empty" | "failed" | "silent-fallback" = "failed";
+  const maxFinalizationAttempts = toolFailureExplanation
+    ? 1
+    : MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS;
   try {
     let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
     let finalizationAttempt = 0;
@@ -216,24 +225,18 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
-      if (
-        finalization.outcome === "empty" &&
-        finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-      ) {
+      if (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts) {
         log.warn(
           `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
-            `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS - 1} with tools disabled`,
+            `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${maxFinalizationAttempts - 1} with tools disabled`,
         );
       }
-    } while (
-      finalization.outcome === "empty" &&
-      finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
-    );
+    } while (finalization.outcome === "empty" && finalizationAttempt < maxFinalizationAttempts);
     finalizationOutcome = finalization.outcome;
     if (finalization.outcome === "empty") {
       log.warn(
         `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
-          `provider=${errorContext.provider}/${errorContext.model} attempts=${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
+          `provider=${errorContext.provider}/${errorContext.model} attempts=${finalizationAttempt}/${maxFinalizationAttempts} — ${terminalFallbackAllowed ? "using terminal fallback reply" : "preserving original failure"}`,
       );
     }
   } catch (error) {
@@ -288,6 +291,14 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       finalizationOutcome = "silent-fallback";
     }
   }
+  // Explanation preserves failure evidence and the original terminal status.
+  if (toolFailureExplanation && finalizationOutcome === "answered") {
+    attempt = {
+      ...attempt,
+      lastToolError: initial.attempt.lastToolError,
+      terminal: initial.attempt.terminal,
+    };
+  }
   // Only an actual recovery replaces a failed or timed-out turn's terminal ownership.
   const completion =
     finalizationOutcome !== "answered" && preserveOriginalTerminal
@@ -310,6 +321,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   const finalizedPrepared = prepareEmbeddedRunTerminal({
     ...input.terminalBase,
     ...completion,
+    toolFailureExplanation: toolFailureExplanation && finalizationOutcome === "answered",
     replyDeliveryState: await observeSourceDelivery(),
     lastRunPromptUsage,
   });

@@ -337,6 +337,8 @@ export type ReplyPayloadMetadata = {
   terminalProviderError?: true;
   /** Model fallback uses observed failure facts, never the displayed wording. */
   providerFailure?: { reason: FailoverReason | null; rawError?: string };
+  /** Model-authored tool explanation, never provider-error classification input. */
+  toolFailureExplanation?: true;
   /** The warning owner observed this tool failure; presentation text is not evidence. */
   toolErrorWarning?: { toolName: string };
   /** Warning synthesized from an observed tool error after the run produced assistant output. */

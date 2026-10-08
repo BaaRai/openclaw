@@ -112,6 +112,7 @@ export async function projectCodexSettledHistoryInWorker(
       mirroredMessages: target.mirroredMessages,
       settledMessages: target.settledMessages,
       turnId: target.turnId,
+      toolFailureExplanation: target.toolFailureExplanation,
     },
   };
   // Incognito SQLite is held by this process; run the same lazy operation here.

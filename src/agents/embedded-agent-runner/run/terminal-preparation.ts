@@ -63,6 +63,7 @@ export function prepareEmbeddedRunTerminal(input: {
   contextRecoveryState: EmbeddedRunContextRecoveryState;
   resolvedToolResultFormat: NonNullable<RunEmbeddedAgentParams["toolResultFormat"]>;
   terminalState: EmbeddedRunTerminalState;
+  toolFailureExplanation?: boolean;
 }) {
   const { runParams, attempt } = input;
   const { timedOutDuringCompaction, timedOutDuringToolExecution } = projectAgentRunAttemptTerminal(
@@ -213,6 +214,7 @@ export function prepareEmbeddedRunTerminal(input: {
       isEmbeddedRunTerminalInterrupted(input.terminalState.outcome) &&
       !(timedOutDuringPrompt && timeoutFinal),
     runStopReason: input.terminalState.outcome.stopReason,
+    toolFailureExplanation: input.toolFailureExplanation,
     deferAssistantTimeoutError:
       timedOutDuringPrompt && (!hasMessagingToolDeliveryEvidence(attempt) || timeoutFinal),
   }).map((payload) => applyPreparedReplyMedia(payload, attempt.preparedReplyMedia ?? []));

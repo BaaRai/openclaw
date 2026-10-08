@@ -1,5 +1,6 @@
 import { isResponsesOutputLimitToolCallError } from "@openclaw/ai/diagnostics";
 import { hasOnlyAssistantReasoningContent } from "@openclaw/ai/internal/shared";
+import { getReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
 import { MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE } from "../../../llm/types.js";
 import { isTerminalAssistantError } from "../../../llm/utils/retry.js";
 import { hasAcceptedSessionSpawn } from "../../accepted-session-spawn.js";
@@ -9,6 +10,7 @@ import { TOOL_FAILURE_INSTRUCTION } from "../../tool-outcome-instructions.js";
 import { resolveSourceReplyDelivery } from "../delivery-evidence.js";
 import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
 import { assessLastAssistantMessage } from "../thinking.js";
+import type { EmbeddedAgentRunResult } from "../types.js";
 import {
   hasAsyncActivity,
   hasAttemptTerminalState,
@@ -37,6 +39,64 @@ const TOOL_USE_WITHOUT_CALL_RETRY_INSTRUCTION =
   "The previous assistant turn stopped for tool use but contained no tool call, so nothing ran. Continue from the current state: call the tool you need through the tool interface instead of writing the call as text, or produce the visible answer now. Do not restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
+
+/** Select only the warning the payload owner already decided must be shown. */
+export function resolveVisibleToolFailureExplanation(params: {
+  payloads: EmbeddedAgentRunResult["payloads"];
+  hasTerminalToolPresentation: boolean;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null | undefined {
+  if (!params.payloads?.some((payload) => getReplyPayloadMetadata(payload)?.toolErrorWarning)) {
+    return undefined;
+  }
+  return params.hasTerminalToolPresentation
+    ? null
+    : resolveToolFailureExplanationInstruction(params);
+}
+
+/** Explains an already-visible terminal failure without reopening completed work. */
+function resolveToolFailureExplanationInstruction(params: {
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  const { attempt } = params;
+  const interruptedToolRun =
+    attempt.terminal.kind === "failed" &&
+    attempt.codexAppServerFailure?.kind === "client_closed_before_turn_completed" &&
+    attempt.settledTurnFinalizationContext?.source === "harness";
+  if (
+    params.aborted ||
+    params.timedOut ||
+    (attempt.terminal.kind === "failed" && !attempt.settledTurnFinalizationContext) ||
+    !attempt.lastToolError ||
+    attempt.toolMetas.length === 0 ||
+    attempt.itemLifecycle.startedCount === 0 ||
+    (!interruptedToolRun &&
+      (attempt.itemLifecycle.completedCount !== attempt.itemLifecycle.startedCount ||
+        attempt.itemLifecycle.activeCount !== 0)) ||
+    hasAsyncActivity(attempt.toolMetas) ||
+    hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
+    attempt.clientToolCalls ||
+    attempt.yieldDetected ||
+    attempt.didSendDeterministicApprovalPrompt
+  ) {
+    return null;
+  }
+  return (
+    "A tool failure would otherwise produce only a generic warning. Explain the outcome to the user in concise, ordinary language, without emoji or a tool-status heading. " +
+    "Use the settled transcript to explain what failed, whether a later action recovered, what remains incomplete, and whether the user needs to act. " +
+    "Base the explanation on the actual error details in the tool results, including the service's stated reason and any retry guidance. Translate those details into plain English instead of quoting raw errors, tool identifiers, or stack traces. If the evidence does not establish a cause, say so rather than guessing. " +
+    (interruptedToolRun
+      ? "The connection was lost before the turn finished. Explain the recorded tool failure separately from that interruption. Missing tool results mean those actions have unknown outcomes, not that they succeeded or failed. Do not suggest repeating an action whose outcome is unknown. "
+      : "") +
+    "Do not claim recovery or completion unless the evidence supports it. Do not expose private heartbeat notes or configuration. " +
+    "Produce the explanation even if the earlier turn chose NO_REPLY or notify=false; this replaces an error notification that would already be sent. " +
+    "Tools are unavailable in this step: reply with plain text, do not call tools, repeat completed actions, or restart the work."
+  );
+}
 
 export function shouldRetrySilentErrorAssistantTurn(params: {
   attempt: Pick<

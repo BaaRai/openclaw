@@ -23,6 +23,22 @@ function buildTestReplyPayloads({ payloads }: { payloads: ReplyPayload[] }) {
 describe("tool failure reply delivery", () => {
   beforeEach(() => resetPluginRuntimeStateForTest());
 
+  it("delivers model tool-failure explanations without provider-error rewriting", async () => {
+    const explanation =
+      "Slack rate-limited the lookup. Try again after one second; the thread was not read.";
+    const payloads = buildEmbeddedRunPayloads({
+      assistantTexts: [explanation],
+      lastAssistant: undefined,
+      lastToolError: { toolName: "slack.read_thread", error: "HTTP 429 Too Many Requests" },
+      toolFailureExplanation: true,
+      sessionKey: "agent:main:explanation",
+    });
+    const { replyPayloads } = await buildTestReplyPayloads({ payloads });
+    expect(replyPayloads.map((payload) => normalizeReplyPayload(payload))).toEqual([
+      expect.objectContaining({ text: explanation, isError: true }),
+    ]);
+  });
+
   it("honors a completed silent answer after an exec failure", async () => {
     const payloads = buildEmbeddedRunPayloads({
       assistantTexts: ["NO_REPLY"],

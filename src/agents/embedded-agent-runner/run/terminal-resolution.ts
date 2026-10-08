@@ -44,6 +44,7 @@ import {
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolBatchEvidence,
   resolveSettledToolTerminalContinuationInstruction,
+  resolveVisibleToolFailureExplanation,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import {
@@ -75,27 +76,7 @@ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
   "Before accepting the previous final answer, apply this revision request and produce the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
 
-type TerminalPresentationObservation = {
-  terminalPresentation?: string;
-  toolCallOrdinal?: number;
-};
-
-export function createTerminalToolPresentationTracker() {
-  let latestOrdinal = -1;
-  let nextOrdinal = 0;
-  let value: string | undefined;
-  return {
-    allocateOrdinal: () => nextOrdinal++,
-    observe: (observation: TerminalPresentationObservation): void => {
-      const ordinal = observation.toolCallOrdinal ?? latestOrdinal + 1;
-      if (ordinal >= latestOrdinal) {
-        latestOrdinal = ordinal;
-        value = observation.terminalPresentation;
-      }
-    },
-    read: () => value,
-  };
-}
+export { createTerminalToolPresentationTracker } from "./terminal-tool-presentation.js";
 
 type TerminalResolution =
   | { action: "retry" }
@@ -124,6 +105,16 @@ export function resolveSettledTurnFinalizationRequest(input: {
   }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
   const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
+  const toolFailureExplanation = resolveVisibleToolFailureExplanation({
+    payloads: input.payloadsWithToolMedia,
+    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  if (toolFailureExplanation !== undefined) {
+    return toolFailureExplanation;
+  }
   // Generated errors and pre-tool commentary are fallback surfaces, not authored answers.
   const preparedPayloadCount = countSettledTurnDeliveryPayloads({
     payloads: input.payloadsWithToolMedia,

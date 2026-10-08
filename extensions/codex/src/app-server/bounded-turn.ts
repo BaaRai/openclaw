@@ -44,6 +44,7 @@ import {
   assertCodexManagedRequirementsDoNotOverrideToolPolicy,
   attestCodexRestrictedToolSurfaceMcpServersDisabled,
   buildCodexRingZeroThreadConfigPatch,
+  buildRestrictedToolConfigPatch,
   readCodexInheritedMcpServerNames,
 } from "./thread-requests.js";
 import { resolveCodexPromptError } from "./usage-limit-error.js";
@@ -65,6 +66,7 @@ const CODEX_PRIVATE_BOUNDED_THREAD_CONFIG: JsonObject = {
   notify: [],
 };
 const CODEX_SETTLED_FINALIZER_THREAD_CONFIG: JsonObject = {
+  project_doc_max_bytes: 0,
   "skills.include_instructions": false,
   include_environment_context: false,
 };
@@ -116,6 +118,8 @@ type CodexBoundedTurnParams = {
   threadConfig?: JsonObject;
   historyItems?: JsonValue[];
   requireNoExternalCapabilities?: boolean;
+  /** Remote summaries retain configured/administrator hooks while model tools remain disabled. */
+  preserveConfiguredHooks?: boolean;
   /** Preserve a completed turn when the caller's contract accepts no visible answer. */
   allowEmptyText?: boolean;
 };
@@ -124,6 +128,14 @@ export async function runBoundedCodexAppServerTurn(
   params: CodexBoundedTurnParams,
 ): Promise<CodexBoundedTurnResult> {
   params.assertCurrent?.();
+  if (
+    params.preserveConfiguredHooks &&
+    (params.isolation !== "configured-transport" || !params.requireNoExternalCapabilities)
+  ) {
+    throw new Error(
+      "Preserving configured Codex hooks requires a tools-disabled configured transport.",
+    );
+  }
   const appServer = resolveCodexAppServerRuntimeOptions({
     pluginConfig: params.options.pluginConfig,
     managedCommandOrder: params.isolation === "private-stdio" ? "package-first" : undefined,
@@ -269,7 +281,8 @@ async function runBoundedCodexAppServerTurnInWorkspace(
         client,
         {
           restrictedToolSurface: true,
-          allowConfiguredManagedHooks: workspace.codexHome !== undefined,
+          allowConfiguredManagedHooks:
+            workspace.codexHome !== undefined || params.preserveConfiguredHooks === true,
           privateManagedHooksPresent,
         },
         abortController.signal,
@@ -372,7 +385,8 @@ async function runBoundedCodexAppServerTurnInWorkspace(
           `codex app-server ${params.taskLabel} turn ended with status ${result.turn?.status ?? "unknown"}`,
         );
       }
-      const lastHookPrompt = enableManagedHooks
+      const hooksEnabled = enableManagedHooks || params.preserveConfiguredHooks === true;
+      const lastHookPrompt = hooksEnabled
         ? result.items.findLastIndex((item) => item.type === "hookPrompt")
         : -1;
       // A policy-requested revision supersedes the draft before its hook prompt.
@@ -396,7 +410,7 @@ async function runBoundedCodexAppServerTurnInWorkspace(
         usage: result.usage,
         model: modelSelection.id,
         nativeSelection: { model: thread.model, modelProvider: thread.modelProvider },
-        managedHooksEnabled: enableManagedHooks,
+        managedHooksEnabled: hooksEnabled,
       };
     } finally {
       await interruptPromise;
@@ -453,11 +467,15 @@ function resolveBoundedThreadConfig(
     mergeCodexThreadConfigs(
       privateConfig,
       CODEX_SETTLED_FINALIZER_THREAD_CONFIG,
-      buildCodexRingZeroThreadConfigPatch(
-        { toolsAllow: ["openclaw"] },
-        true,
-        inheritedMcpServerNames,
-      ),
+      params.preserveConfiguredHooks
+        ? buildRestrictedToolConfigPatch(inheritedMcpServerNames, false, {
+            preserveConfiguredHooks: true,
+          })
+        : buildCodexRingZeroThreadConfigPatch(
+            { toolsAllow: ["openclaw"] },
+            true,
+            inheritedMcpServerNames,
+          ),
       // Native administrator hooks remain active; the private process has no
       // operator/project hook sources or model-callable tools to inherit.
       enableManagedHooks ? { "features.hooks": true } : undefined,

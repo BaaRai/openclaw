@@ -127,7 +127,7 @@ describe("resolveSettledTurnFinalizationRequest", () => {
           sessionKey: "session:settled-policy",
         }),
       }),
-    ).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    ).toContain("actual error details in the tool results");
   });
 
   it("preserves optional authored silence after a settled tool failure", () => {

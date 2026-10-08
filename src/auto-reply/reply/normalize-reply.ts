@@ -134,12 +134,13 @@ export function normalizeReplyPayloadOutcome(
     }
 
     if (text) {
-      text = payload.isError
-        ? renderUserFacingText(text, {
-            errorContext: true,
-            conversationContext: opts.conversationContext,
-          })
-        : sanitizeUserFacingText(text, { conversationContext: opts.conversationContext });
+      text =
+        payload.isError && !getReplyPayloadMetadata(payload)?.toolFailureExplanation
+          ? renderUserFacingText(text, {
+              errorContext: true,
+              conversationContext: opts.conversationContext,
+            })
+          : sanitizeUserFacingText(text, { conversationContext: opts.conversationContext });
     }
     if (!hasContent(text) && !hasSpeechContent) {
       return suppress("empty");

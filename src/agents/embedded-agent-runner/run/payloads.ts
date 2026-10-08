@@ -95,6 +95,8 @@ export function buildEmbeddedRunPayloads(params: {
   deferAssistantTimeoutError?: boolean;
   didSendDeterministicApprovalPrompt?: boolean;
   heartbeatToolResponse?: HeartbeatToolResponse;
+  /** Model explanation changes presentation, never the recorded tool outcome. */
+  toolFailureExplanation?: boolean;
 }): ReplyPayload[] {
   const heartbeatTerminalToolFailure =
     params.isHeartbeatTrigger === true &&
@@ -102,7 +104,11 @@ export function buildEmbeddedRunPayloads(params: {
     params.lastToolError.mutatingAction === true
       ? { toolName: params.lastToolError.toolName }
       : undefined;
-  if (params.heartbeatToolResponse && !heartbeatTerminalToolFailure) {
+  if (
+    params.heartbeatToolResponse &&
+    !heartbeatTerminalToolFailure &&
+    !params.toolFailureExplanation
+  ) {
     return [createHeartbeatToolResponsePayload(params.heartbeatToolResponse)];
   }
   // Internal source replies always need transcript/UI mirrors. Only a
@@ -130,10 +136,11 @@ export function buildEmbeddedRunPayloads(params: {
   }
   const useMarkdown = params.toolResultFormat === "markdown";
   const suppressAssistantArtifacts =
-    params.heartbeatToolResponse !== undefined ||
-    params.didSendDeterministicApprovalPrompt === true ||
-    (params.sourceReplyDeliveryMode === "message_tool_only" && hasSourceReplyPayload) ||
-    deliveredSourceReplyViaMessageTool;
+    !params.toolFailureExplanation &&
+    (params.heartbeatToolResponse !== undefined ||
+      params.didSendDeterministicApprovalPrompt === true ||
+      (params.sourceReplyDeliveryMode === "message_tool_only" && hasSourceReplyPayload) ||
+      deliveredSourceReplyViaMessageTool);
   const suppressFailureArtifacts =
     params.didSendDeterministicApprovalPrompt === true ||
     (params.sourceReplyDeliveryMode === "message_tool_only" && completedSourceReplyViaMessageTool);
@@ -321,6 +328,7 @@ export function buildEmbeddedRunPayloads(params: {
         }
         const replyPayload = {
           text: cleanedText,
+          ...(params.toolFailureExplanation ? { isError: true } : {}),
           ...(mediaUrls?.[0] ? { mediaUrl: mediaUrls[0] } : {}),
           ...(mediaUrls?.length ? { mediaUrls } : {}),
           ...(delivery.audioAsVoice ? { audioAsVoice: true } : {}),
@@ -330,6 +338,9 @@ export function buildEmbeddedRunPayloads(params: {
             ? { replyToCurrent: delivery.replyToCurrent }
             : {}),
         };
+        if (params.toolFailureExplanation) {
+          setReplyPayloadMetadata(replyPayload, { toolFailureExplanation: true });
+        }
         addReplyPayloadMediaFailures(replyPayload, mediaFailures);
         if (assistantMessageIndex !== undefined) {
           setReplyPayloadMetadata(replyPayload, { assistantMessageIndex });
@@ -432,7 +443,7 @@ export function buildEmbeddedRunPayloads(params: {
         });
       }
       if (
-        !item.isError &&
+        (!item.isError || params.toolFailureExplanation) &&
         !item.isReasoning &&
         (assistantMessageIndex !== undefined || params.assistantTranscriptOwned === true)
       ) {

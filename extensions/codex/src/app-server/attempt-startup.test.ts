@@ -160,6 +160,29 @@ describe("startCodexAttemptThread", () => {
     tempRoots.clear();
   });
 
+  it.each([
+    { chatType: "channel" as const, trigger: "user" as const, expected: false },
+    { chatType: "direct" as const, trigger: "heartbeat" as const, expected: false },
+    { chatType: "direct" as const, trigger: "user" as const, expected: undefined },
+  ])(
+    "sends the connector login policy to native thread startup for $chatType/$trigger",
+    async ({ chatType, trigger, expected }) => {
+      const paths = createAttemptPaths(tempRoots);
+      const { harness, run } = startThreadWithHarness(5_000, new AbortController().signal, {
+        paths,
+        buildAttemptParams: () => ({ ...createAttemptParams(paths), chatType, trigger }),
+      });
+      await answerInitialize(harness);
+      const threadStart = await waitForRequest(harness, "thread/start");
+      const request = threadStart.params as { config: Record<string, unknown> };
+      expect(request.config["features.auth_elicitation"]).toBe(expected);
+      harness.send({ id: threadStart.id, result: threadStartResult() });
+      const result = await run;
+      result.turnRoute.release();
+      result.releaseSharedClientLease();
+    },
+  );
+
   it("clears the shared app-server when top-level thread startup fails with an app error", async () => {
     const { harness, run } = startThreadWithHarness(5_000);
     await answerInitialize(harness);
