@@ -380,6 +380,21 @@ export function readExactSessionEntryRow(
   });
 }
 
+/** Retained transcript windows keep their stored key independently of the current row. */
+export function readSessionKeyBySessionIdInDatabase(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+): string | undefined {
+  return executeSqliteQueryTakeFirstSync(
+    database.db,
+    getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(database.db)
+      .selectFrom("session_windows")
+      .select("session_key")
+      .where("session_id", "=", sessionId)
+      .limit(1),
+  )?.session_key;
+}
+
 /** Single-key and cohort readers share the same row selection and ordering. */
 function readSelectedSessionEntryRows(
   database: OpenClawAgentDatabaseReader,

@@ -32,6 +32,7 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       parentSessionKey: parentKey,
     };
     writeSessionEntry(database, parentKey, { sessionId: "parent", updatedAt: 1 });
+    writeSessionEntry(database, sessionKey, { ...entry, sessionId: "retained" });
     writeSessionEntry(database, sessionKey, entry);
     addSessionMember(scope, { identityId: "member", addedBy: "owner", addedAt: 1 });
     recordSessionParticipant(scope, {
@@ -59,6 +60,7 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
     };
     const request: SessionEntryCohortRequest = {
       sessionKeys: [sessionKey],
+      runtimeTarget: { agentId: "logical", sessionId: "retained", sessionKey },
       snapshotFields: [],
       replyInitializationSessionKey: sessionKey,
       includeMembers: true,
@@ -73,6 +75,12 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
     expect(first.participantRecords?.[sessionKey]).toMatchObject([
       { identity: { id: "participant" }, contributionCount: 1 },
     ]);
+    expect(first.runtimeTarget).toEqual({
+      agentId: "logical",
+      sessionId: "retained",
+      sessionKey,
+      storePath: database.path,
+    });
     expect(first.lifecycleTimestamps.sessionStartedAt).toBe(123);
     expect(first.transcript).toMatchObject({
       header: { id: "cohort" },
@@ -89,6 +97,9 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       .mockImplementationOnce((...args) => {
         const rows = nativeRead(...args);
         peer.prepare("DELETE FROM session_members WHERE session_key = ?").run(sessionKey);
+        peer
+          .prepare("UPDATE session_windows SET session_key = ? WHERE session_id = ?")
+          .run(parentKey, "retained");
         peer
           .prepare("UPDATE session_participants SET contribution_count = 9 WHERE session_key = ?")
           .run(sessionKey);
@@ -121,7 +132,9 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       expect(transactionCommands).toEqual([]);
       expect(sql.counts.fresh).toBe(1);
       sql.counts.fresh = 0;
-      expect(read().members?.[sessionKey]?.map(({ identityId }) => identityId)).toEqual(["member"]);
+      const pinned = read();
+      expect(pinned.members?.[sessionKey]?.map(({ identityId }) => identityId)).toEqual(["member"]);
+      expect(pinned.runtimeTarget?.sessionKey).toBe(sessionKey);
       expect(sql.counts.fresh).toBe(1);
       expect(transactionCommands).toEqual(["BEGIN", "COMMIT"]);
       // A known write cannot hide the foreign change from this connection's next use.
@@ -130,6 +143,12 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       transactionCommands.length = 0;
       const current = read();
       expect(current.members?.[sessionKey]).toEqual([]);
+      expect(current.runtimeTarget).toEqual({
+        agentId: "logical",
+        sessionId: "retained",
+        sessionKey: parentKey,
+        storePath: database.path,
+      });
       expect(current.participantRecords?.[sessionKey]).toMatchObject([{ contributionCount: 9 }]);
       expect(
         current.entries.find(({ sessionKey: key }) => key === parentKey)?.entry.updatedAt,
@@ -137,6 +156,18 @@ it("prepares bounded facts on one admitted source and refreshes after foreign an
       expect(sql.counts.fresh).toBe(1);
       expect(transactionCommands).toEqual(["BEGIN", "COMMIT"]);
       expect(reopen).not.toHaveBeenCalled();
+      expect(
+        read({
+          ...request,
+          runtimeTarget: { agentId: "logical", sessionId: "missing", sessionKey },
+        }).runtimeTarget?.sessionKey,
+      ).toBe(sessionKey);
+      expect(() =>
+        read({
+          ...request,
+          runtimeTarget: { agentId: "logical", sessionId: "retained", sessionKey: parentKey },
+        }),
+      ).toThrow("must belong to its entry cohort");
       expect(() =>
         read({ ...request, sessionKeys: Array.from({ length: 64 }, (_, i) => `agent:main:${i}`) }),
       ).toThrow("at most 64");
