@@ -1,14 +1,49 @@
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 /** Runtime ACP manager dependencies and stale-binding cleanup used by reply dispatch. */
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import {
+  getSessionBindingService,
+  listSessionBindingsBySessionAsync,
+} from "../../infra/outbound/session-binding-service.js";
 import type { GetReplyOptions, ReplyDispatchRun } from "../get-reply-options.types.js";
 export { getAcpSessionManager } from "../../acp/control-plane/manager.js";
 export { readAcpSessionEntryAsync } from "../../acp/runtime/session-meta.js";
-export { listSessionBindingsBySessionAsync } from "../../infra/outbound/session-binding-service.js";
 
 const ACP_STALE_BINDING_UNBIND_REASON = "acp-session-init-failed";
+
+export async function hasBoundConversationForSession(params: {
+  cfg: OpenClawConfig;
+  sessionKey: string;
+  channelRaw: string | undefined;
+  accountIdRaw: string | undefined;
+}): Promise<boolean> {
+  const channel = normalizeOptionalLowercaseString(params.channelRaw) ?? "";
+  if (!channel) {
+    return false;
+  }
+  const accountId = normalizeOptionalLowercaseString(params.accountIdRaw) ?? "";
+  const channels = params.cfg.channels as Record<string, { defaultAccount?: unknown } | undefined>;
+  const configuredDefaultAccountId = channels?.[channel]?.defaultAccount;
+  const normalizedAccountId =
+    accountId || normalizeOptionalLowercaseString(configuredDefaultAccountId) || "default";
+  const bindings = await listSessionBindingsBySessionAsync(params.sessionKey);
+  return bindings.some((binding) => {
+    const bindingChannel = normalizeOptionalLowercaseString(binding.conversation.channel) ?? "";
+    const bindingAccountId = normalizeOptionalLowercaseString(binding.conversation.accountId) ?? "";
+    const conversationId = normalizeOptionalString(binding.conversation.conversationId) ?? "";
+    return (
+      bindingChannel === channel &&
+      (bindingAccountId || "default") === normalizedAccountId &&
+      conversationId.length > 0
+    );
+  });
+}
 
 /** Prepare transcript evidence before offering synchronous reply completion ownership. */
 export async function prepareAcpDispatchStart(params: {

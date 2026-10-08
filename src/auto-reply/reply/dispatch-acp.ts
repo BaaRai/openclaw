@@ -36,7 +36,6 @@ import { recordRuntimeActionDecision } from "../../audit/runtime-action-decision
 import { readChannelContextAdmissionEvidence } from "../../channels/message-access/admission-evidence.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getGatewayLocalUserIngress } from "../../gateway/local-user-ingress.js";
 import { logVerbose } from "../../globals.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
@@ -108,35 +107,6 @@ function isRestrictiveRuntimeToolsAllow(toolsAllow: string[] | undefined): boole
   );
 }
 
-async function hasBoundConversationForSession(params: {
-  cfg: OpenClawConfig;
-  sessionKey: string;
-  channelRaw: string | undefined;
-  accountIdRaw: string | undefined;
-}): Promise<boolean> {
-  const channel = normalizeOptionalLowercaseString(params.channelRaw) ?? "";
-  if (!channel) {
-    return false;
-  }
-  const accountId = normalizeOptionalLowercaseString(params.accountIdRaw) ?? "";
-  const channels = params.cfg.channels as Record<string, { defaultAccount?: unknown } | undefined>;
-  const configuredDefaultAccountId = channels?.[channel]?.defaultAccount;
-  const normalizedAccountId =
-    accountId || normalizeOptionalLowercaseString(configuredDefaultAccountId) || "default";
-  const { listSessionBindingsBySessionAsync } = await loadDispatchAcpManagerRuntime();
-  const bindings = await listSessionBindingsBySessionAsync(params.sessionKey);
-  return bindings.some((binding) => {
-    const bindingChannel = normalizeOptionalLowercaseString(binding.conversation.channel) ?? "";
-    const bindingAccountId = normalizeOptionalLowercaseString(binding.conversation.accountId) ?? "";
-    const conversationId = normalizeOptionalString(binding.conversation.conversationId) ?? "";
-    return (
-      bindingChannel === channel &&
-      (bindingAccountId || "default") === normalizedAccountId &&
-      conversationId.length > 0
-    );
-  });
-}
-
 export type AcpDispatchAttemptResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
@@ -171,8 +141,12 @@ export async function tryDispatchAcpReplyCore(
   const inputRecorder = params.userTurnTranscriptRecorder;
   const input = bindUserTurnInput(inputRecorder, () => params.abortSignal?.throwIfAborted());
 
-  const { getAcpSessionManager, maybeUnbindStaleBoundConversations, prepareAcpDispatchStart } =
-    await loadDispatchAcpManagerRuntime();
+  const {
+    getAcpSessionManager,
+    hasBoundConversationForSession,
+    maybeUnbindStaleBoundConversations,
+    prepareAcpDispatchStart,
+  } = await loadDispatchAcpManagerRuntime();
   const acpManager = getAcpSessionManager();
   const acpResolution = await acpManager.resolveSessionAsync({
     cfg: params.cfg,

@@ -62,7 +62,7 @@ function initRepo(root: string, objectFormat?: "sha1" | "sha256"): void {
   git(root, "config", "commit.gpgsign", "false");
 }
 
-function mockSession(spawnedCwd: string, entry: Record<string, unknown> = {}): void {
+function mockSession(spawnedCwd: string, entry: Partial<InternalSessionEntry> = {}): void {
   hoisted.loadSessionEntry.mockReturnValue({
     agentId: "main",
     cfg: {},
@@ -247,7 +247,7 @@ describe("loadSessionDiff", () => {
     const settling = createDeferred<InternalSessionEntry>();
     const persist = createDeferred<InternalSessionEntry>();
     hoisted.patchSessionEntryCore.mockImplementationOnce(async (_target, update) => {
-      settling.resolve({ ...entry, ...(await update(entry)) });
+      settling.resolve({ ...entry, ...(await update(entry, { existingEntry: entry })) });
       return persist.promise;
     });
     const capture = ensureSessionDiffBaseline({
