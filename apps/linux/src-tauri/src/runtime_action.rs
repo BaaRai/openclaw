@@ -486,7 +486,11 @@ fn activate_elevated(
             != confirmed.0.pointer("/config/daemon/path")
         || observation.0.pointer("/gateway/port") != confirmed.0.pointer("/gateway/port")
     {
-        return Err(format!("The CLI completed, but the Gateway was not verified healthy on the bundled runtime. Inspect Gateway status before retrying.\n\n{fallback}"));
+        return Err(activation_health_failure(
+            confirmed,
+            false,
+            "The Gateway was not verified healthy on the bundled runtime.",
+        ));
     }
     Ok(Activation::Applied)
 }
@@ -504,23 +508,32 @@ fn perform(
     confirmed.admit(fresh)?;
     inspect(cli)?.unchanged_from(confirmed, fresh)?;
     check_current(is_current)?;
-    let result = install(cli, runtime, confirmed).and_then(|()| {
-        let deadline = Instant::now() + health_timeout;
-        wait_for_health(
-            runtime,
-            fresh && cfg!(windows),
-            is_current,
-            || capture(cli, true),
-            || {
-                if Instant::now() >= deadline {
-                    return Err("The Gateway did not become healthy on the bundled runtime.".into());
-                }
-                thread::sleep(Duration::from_secs(2));
-                Ok(())
-            },
-        )
-    });
-    result.map_err(|error| activation_failure(confirmed, fresh, &error))
+    install(cli, runtime, confirmed)
+        .map_err(|error| activation_failure(confirmed, fresh, &error))?;
+    let deadline = Instant::now() + health_timeout;
+    wait_for_health(
+        runtime,
+        fresh && cfg!(windows),
+        is_current,
+        || capture(cli, true),
+        || {
+            if Instant::now() >= deadline {
+                return Err("The Gateway did not become healthy on the bundled runtime.".into());
+            }
+            thread::sleep(Duration::from_secs(2));
+            Ok(())
+        },
+    )
+    .map_err(|error| activation_health_failure(confirmed, fresh, &error))
+}
+
+fn activation_health_failure(confirmed: &Observation, fresh: bool, error: &str) -> String {
+    if cfg!(windows) {
+        return format!(
+            "The Gateway was installed, but its health could not be verified: {error}\nInspect Gateway status before retrying."
+        );
+    }
+    activation_failure(confirmed, fresh, error)
 }
 
 fn activation_failure(confirmed: &Observation, fresh: bool, error: &str) -> String {
@@ -1027,6 +1040,16 @@ mod windows_tests {
         assert!(fresh.contains("No automatic rollback was performed."));
         assert!(fresh.contains("To install with Node manually"));
         assert!(!fresh.contains("--expected-runtime-pin"));
+        for fresh in [false, true] {
+            let unverified = activation_health_failure(&observed, fresh, "Health check failed.");
+            assert!(unverified.contains("Gateway was installed"));
+            assert!(unverified.contains("health could not be verified"));
+            assert!(unverified.contains("Health check failed."));
+            assert!(unverified.contains("Inspect Gateway status before retrying."));
+            assert!(!unverified.contains("--expected-runtime-pin"));
+            assert!(!unverified.contains("Start-Process"));
+            assert!(!unverified.contains("gateway install"));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
