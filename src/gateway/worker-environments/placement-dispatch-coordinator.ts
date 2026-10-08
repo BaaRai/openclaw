@@ -68,7 +68,7 @@ export function coordinateWorkerPlacementDispatch(
       | "startDispatch"
       | "waitForInitialPlacement"
     >,
-  ): Promise<() => void>;
+  ): ReturnType<typeof ensureWorkerSessionPlacement>;
   /** Lend admission while interrupting session work and waiting for its turn claim. */
   awaitTurnClaimRelease(sessionId: string, wait: () => Promise<void>): Promise<void>;
   isPlacementOperationInFlight(sessionId: string): boolean;

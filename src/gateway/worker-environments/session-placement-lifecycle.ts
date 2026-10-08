@@ -398,7 +398,7 @@ export function prepareSessionWorkerPlacementStop(params: {
 /** Initial placement, readiness, and recovery consume the same recorded destination. */
 export async function ensureWorkerSessionPlacement(params: {
   request: WorkerPlacementDispatchRequest;
-  placements: Pick<WorkerSessionPlacementStore, "get">;
+  placements: Pick<WorkerSessionPlacementStore, "prepareSessionPlacement">;
   environments: { get(environmentId: string): WorkerEnvironmentRecord | undefined };
   dispatch: WorkerPlacementDispatchContract["dispatch"];
   startDispatch: (
@@ -415,134 +415,140 @@ export async function ensureWorkerSessionPlacement(params: {
   onTransition?: Parameters<WorkerPlacementDispatchContract["dispatch"]>[1];
   signal?: AbortSignal;
   waitForReady?: boolean;
-}): Promise<() => void> {
+}): Promise<{ assertCurrent: () => void; release: () => void }> {
   const { request } = params;
-  const read = () => {
-    params.signal?.throwIfAborted();
-    params.assertCurrent();
-    const placement = params.placements.get(request.sessionId);
-    if (!placement || placement.state === "local") {
-      return placement;
-    }
-    if (
-      placement.agentId !== request.agentId ||
-      placement.sessionKey !== request.sessionKey ||
-      placement.executionMode !== request.executionMode
-    ) {
-      throw new Error(
-        "The existing placement conflicts with worker execution; repair its recorded owner before retrying.",
-      );
-    }
-    const environment = placement.environmentId
-      ? params.environments.get(placement.environmentId)
-      : undefined;
-    if (!environment && placement.state === "failed" && placement.environmentId) {
-      throw new Error(
-        "The session's recorded worker profile is unavailable; repair its environment record before retrying. Its workspace will not be moved automatically.",
-      );
-    }
-    if (environment && environment.profileId !== request.profileId) {
-      throw new Error(
-        "The session is bound to another worker profile; its workspace will not be moved automatically.",
-      );
-    }
-    return placement;
-  };
-  const assertReady = () => {
-    const placement = read();
-    const environment = placement?.environmentId
-      ? params.environments.get(placement.environmentId)
-      : undefined;
-    if (
-      placement?.state !== "active" ||
-      !isCurrentActiveWorkerEnvironment(placement, environment)
-    ) {
-      throw new Error(
-        "Worker placement is not ready; inspect its setup error or Stop the failed worker before retrying.",
-      );
-    }
-  };
-  const useRecorded = async () => {
-    const placement = read();
-    if (
-      !placement ||
-      placement.state === "local" ||
-      (placement.state === "failed" &&
-        placement.activeOwnerEpoch === null &&
-        isFailedWorkerPlacementEnvironmentGone({
-          placement,
-          environmentService: params.environments,
-        }))
-    ) {
-      return false;
-    }
-    if (
-      placement.state === "reclaimed" ||
-      (placement.state === "failed" && placement.activeOwnerEpoch !== null)
-    ) {
-      await params.redispatchPlacement(placement, {
-        assertCurrent: params.assertCurrent,
-        signal: params.signal,
-      });
-      assertReady();
-    } else if (params.waitForReady !== false) {
-      if (["requested", "provisioning", "syncing", "starting"].includes(placement.state)) {
-        await params.waitForInitialPlacement(placement, params.signal);
+  const prepared = await params.placements.prepareSessionPlacement(request.sessionId);
+  try {
+    const read = () => {
+      params.signal?.throwIfAborted();
+      params.assertCurrent();
+      const placement = prepared.current();
+      if (!placement || placement.state === "local") {
+        return placement;
       }
+      if (
+        placement.agentId !== request.agentId ||
+        placement.sessionKey !== request.sessionKey ||
+        placement.executionMode !== request.executionMode
+      ) {
+        throw new Error(
+          "The existing placement conflicts with worker execution; repair its recorded owner before retrying.",
+        );
+      }
+      const environment = placement.environmentId
+        ? params.environments.get(placement.environmentId)
+        : undefined;
+      if (!environment && placement.state === "failed" && placement.environmentId) {
+        throw new Error(
+          "The session's recorded worker profile is unavailable; repair its environment record before retrying. Its workspace will not be moved automatically.",
+        );
+      }
+      if (environment && environment.profileId !== request.profileId) {
+        throw new Error(
+          "The session is bound to another worker profile; its workspace will not be moved automatically.",
+        );
+      }
+      return placement;
+    };
+    const assertReady = () => {
+      const placement = read();
+      const environment = placement?.environmentId
+        ? params.environments.get(placement.environmentId)
+        : undefined;
+      if (
+        placement?.state !== "active" ||
+        !isCurrentActiveWorkerEnvironment(placement, environment)
+      ) {
+        throw new Error(
+          "Worker placement is not ready; inspect its setup error or Stop the failed worker before retrying.",
+        );
+      }
+    };
+    const useRecorded = async () => {
+      const placement = read();
+      if (
+        !placement ||
+        placement.state === "local" ||
+        (placement.state === "failed" &&
+          placement.activeOwnerEpoch === null &&
+          isFailedWorkerPlacementEnvironmentGone({
+            placement,
+            environmentService: params.environments,
+          }))
+      ) {
+        return false;
+      }
+      if (
+        placement.state === "reclaimed" ||
+        (placement.state === "failed" && placement.activeOwnerEpoch !== null)
+      ) {
+        await params.redispatchPlacement(placement, {
+          assertCurrent: params.assertCurrent,
+          signal: params.signal,
+        });
+        assertReady();
+      } else if (params.waitForReady !== false) {
+        if (["requested", "provisioning", "syncing", "starting"].includes(placement.state)) {
+          await params.waitForInitialPlacement(placement, params.signal);
+        }
+        assertReady();
+      }
+      return true;
+    };
+    const assertDestinationCurrent = () => {
+      read();
+    };
+    if (await useRecorded()) {
+      return { assertCurrent: assertDestinationCurrent, release: prepared.release };
+    }
+    await params.prepareWorkspace(() => {
+      const placement = read();
+      if (placement?.turnClaim) {
+        throw new Error("A local turn is still active; stop it before worker setup.");
+      }
+      return (
+        !placement ||
+        placement.state === "local" ||
+        (placement.state === "failed" &&
+          placement.activeOwnerEpoch === null &&
+          isFailedWorkerPlacementEnvironmentGone({
+            placement,
+            environmentService: params.environments,
+          }))
+      );
+    });
+    if (await useRecorded()) {
+      return { assertCurrent: assertDestinationCurrent, release: prepared.release };
+    }
+    const placement = read();
+    const previousEnvironment =
+      placement?.state === "failed" && placement.environmentId
+        ? params.environments.get(placement.environmentId)
+        : undefined;
+    const dispatch = params.waitForReady === false ? params.startDispatch : params.dispatch;
+    await dispatch(
+      {
+        ...request,
+        ...(previousEnvironment
+          ? {
+              inheritedProfile: {
+                providerId: previousEnvironment.providerId,
+                profileSnapshot: previousEnvironment.profileSnapshot,
+              },
+            }
+          : {}),
+      },
+      params.onTransition,
+      params.authorizeDispatch,
+      params.signal,
+    );
+    read();
+    if (params.waitForReady !== false) {
       assertReady();
     }
-    return true;
-  };
-  const assertDestinationCurrent = () => {
-    read();
-  };
-  if (await useRecorded()) {
-    return assertDestinationCurrent;
+    return { assertCurrent: assertDestinationCurrent, release: prepared.release };
+  } catch (error) {
+    prepared.release();
+    throw error;
   }
-  await params.prepareWorkspace(() => {
-    const placement = read();
-    if (placement?.turnClaim) {
-      throw new Error("A local turn is still active; stop it before worker setup.");
-    }
-    return (
-      !placement ||
-      placement.state === "local" ||
-      (placement.state === "failed" &&
-        placement.activeOwnerEpoch === null &&
-        isFailedWorkerPlacementEnvironmentGone({
-          placement,
-          environmentService: params.environments,
-        }))
-    );
-  });
-  if (await useRecorded()) {
-    return assertDestinationCurrent;
-  }
-  const placement = read();
-  const previousEnvironment =
-    placement?.state === "failed" && placement.environmentId
-      ? params.environments.get(placement.environmentId)
-      : undefined;
-  const dispatch = params.waitForReady === false ? params.startDispatch : params.dispatch;
-  await dispatch(
-    {
-      ...request,
-      ...(previousEnvironment
-        ? {
-            inheritedProfile: {
-              providerId: previousEnvironment.providerId,
-              profileSnapshot: previousEnvironment.profileSnapshot,
-            },
-          }
-        : {}),
-    },
-    params.onTransition,
-    params.authorizeDispatch,
-    params.signal,
-  );
-  read();
-  if (params.waitForReady !== false) {
-    assertReady();
-  }
-  return assertDestinationCurrent;
 }

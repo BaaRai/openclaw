@@ -63,7 +63,7 @@ export function createRequiredWorkerSessionPreparation(options: {
             execNode: entry.execNode,
           });
         };
-        const assertPlacementCurrent = await options.dispatch.ensurePlacement({
+        const placement = await options.dispatch.ensurePlacement({
           request: {
             sessionId: identity.sessionId,
             sessionKey: identity.sessionKey!,
@@ -87,8 +87,12 @@ export function createRequiredWorkerSessionPreparation(options: {
               canPrepare,
             }),
         });
-        assertPlacementCurrent();
-        return await task(assertPlacementCurrent);
+        try {
+          placement.assertCurrent();
+          return await task(placement.assertCurrent);
+        } finally {
+          placement.release();
+        }
       },
     );
   };

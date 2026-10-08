@@ -164,7 +164,14 @@ test.each(["channel", "shared"] as const)(
       await prepare(
         identity,
         async (assertCurrent) => {
-          assertCurrent();
+          const sql = observeHostDataSql();
+          try {
+            assertCurrent();
+            assertCurrent();
+            expect(sql.queries).toEqual([]);
+          } finally {
+            sql.restore();
+          }
           retainedAssertion = assertCurrent;
         },
         undefined,
@@ -361,13 +368,9 @@ test.each(["unallocated", "missing", "different", "matching"] as const)(
   },
 );
 
-test.each([
-  ["failed", false],
-  ["reclaimed", false],
-  ["failed", true],
-] as const)(
-  "required %s recovery (late=%s) retains the recorded profile and exact placement fence",
-  async (state, late) => {
+test.each(["failed", "reclaimed"] as const)(
+  "required %s recovery retains the recorded profile and exact placement fence",
+  async (state) => {
     const { storePath } = await createSessionStoreDir();
     const config = await getGatewayConfigModule();
     await config.writeConfigFile({
@@ -462,9 +465,6 @@ test.each([
       }),
       dispatch: { dispatch: freshDispatch, waitForInitialPlacement: vi.fn() } as never,
     });
-    if (late) {
-      vi.spyOn(placements, "get").mockReturnValueOnce(undefined);
-    }
     {
       await expect(prepare(identity, async (assertCurrent) => assertCurrent())).rejects.toBe(
         reached,
