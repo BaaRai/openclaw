@@ -426,7 +426,6 @@ export async function stopRegisteredScheduledTask({
     {
       warn: warn ?? ((message) => stdout.write(`Warning: ${message}\n`)),
       onStopped: onEndMutation,
-      beforeMutation,
       restart,
       onSettlement,
       onRecovery,
@@ -442,6 +441,7 @@ export async function stopRegisteredScheduledTask({
         }
       },
     },
+    beforeMutation,
   );
   if (terminated?.length) {
     onProcessStopped?.();

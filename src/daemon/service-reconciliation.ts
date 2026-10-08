@@ -71,6 +71,7 @@ export async function reconcileGatewayServiceDefinition(params: {
       inspect: async () => {
         const current = await resolveGatewayService().readCommand(params.env, {
           requireEffective: true,
+          ...(process.platform === "win32" ? { requireLoaded: true } : {}),
         });
         assertCurrent();
         if (!isDeepStrictEqual(current, command)) {
@@ -87,6 +88,7 @@ export async function reconcileGatewayServiceDefinition(params: {
           const state = await readGatewayServiceState(resolveGatewayService(), {
             env: params.env,
             requireEffective: true,
+            ...(process.platform === "win32" ? { requireLoadedCommand: true } : {}),
           });
           assertCurrent();
           if (!isDeepStrictEqual(state.command, command)) {

@@ -205,6 +205,15 @@ impl Observation {
     pub(crate) fn requires_elevation(&self) -> Result<bool, String> {
         #[cfg(windows)]
         {
+            // Both registration kinds share the Scheduled Task status label.
+            if self
+                .0
+                .pointer("/service/command/startupEntryPaths")
+                .and_then(Value::as_array)
+                .is_some_and(|paths| !paths.is_empty())
+            {
+                return Ok(false);
+            }
             if self.protected_running_task() {
                 return Ok(true);
             }
@@ -489,17 +498,24 @@ fn perform(
             },
         )
     });
-    result.map_err(|error| {
-        let recovery = if fresh {
-            "To install with Node manually"
-        } else {
-            "To select the previous runtime manually"
-        };
-        format!(
-            "Bundled runtime activation failed: {error}\nNo automatic rollback was performed. {recovery}, run:\n{}",
-            confirmed.previous_runtime_command()
-        )
-    })
+    result.map_err(|error| activation_failure(confirmed, fresh, &error))
+}
+
+fn activation_failure(confirmed: &Observation, fresh: bool, error: &str) -> String {
+    let recovery = if fresh {
+        "To install with Node manually"
+    } else {
+        "To select the previous runtime manually"
+    };
+    let outcome = if cfg!(windows) && !fresh {
+        "Inspect Gateway status before retrying."
+    } else {
+        "No automatic rollback was performed."
+    };
+    format!(
+        "Bundled runtime activation failed: {error}\n{outcome} {recovery}, run:\n{}",
+        confirmed.previous_runtime_command()
+    )
 }
 
 fn wait_for_health(
@@ -883,6 +899,38 @@ mod windows_tests {
             "gateway": {"port": 18789},
             "config": {"daemon": {"path": r"C:\Users\fixture\.openclaw\openclaw.json"}}
         }))
+    }
+
+    #[test]
+    fn windows_startup_registration_never_requests_elevation() {
+        let mut observed = protected_task();
+        assert_eq!(observed.requires_elevation(), Ok(true));
+        observed.0["service"]["command"]["startupEntryPaths"] = serde_json::json!([]);
+        assert_eq!(observed.requires_elevation(), Ok(true));
+        observed.0["service"]["command"]["startupEntryPaths"] =
+            serde_json::json!([r"C:\Users\fixture\Startup\OpenClaw Gateway.vbs"]);
+        assert_eq!(observed.requires_elevation(), Ok(false));
+        observed.0["service"]["runtime"] =
+            serde_json::json!({"status": "running", "pid": u64::MAX});
+        assert!(observed.admit(false).is_ok());
+        // An invalid PID would fail before OpenProcess if Startup reached that path.
+        assert_eq!(observed.requires_elevation(), Ok(false));
+    }
+
+    #[test]
+    fn windows_guarded_failure_preserves_owner_recovery_and_manual_command() {
+        let observed = protected_task();
+        let owner_error = "Gateway install failed; the previous definition was restored.";
+        let message = activation_failure(&observed, false, owner_error);
+        assert!(message.contains(owner_error));
+        assert!(message.contains("Inspect Gateway status before retrying."));
+        assert!(!message.contains("No automatic rollback"));
+        assert!(message.ends_with(
+            r"openclaw gateway install --force --runtime node --runtime-path 'C:\runtime\node.exe'"
+        ));
+        let fresh = activation_failure(&observed, true, "Startup failed.");
+        assert!(fresh.contains("No automatic rollback was performed."));
+        assert!(fresh.contains("To install with Node manually"));
     }
 
     #[test]

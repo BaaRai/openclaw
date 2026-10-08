@@ -41,6 +41,10 @@ import {
   resolveSystemdEnvironmentFilePath,
   resolveSystemdUnitPath,
 } from "./systemd-service-files.js";
+import {
+  getWindowsServiceRegistrationKind,
+  getWindowsStartupRegistrationGuards,
+} from "./windows-service-registration.js";
 
 type Context = {
   env: GatewayServiceEnv;
@@ -115,9 +119,7 @@ function definitionFiles({ env, command }: Omit<Context, "assertCurrent">): stri
 
 function assertInventory(params: Context, receipt: GatewayServiceDefinitionBackupReceipt) {
   const files = definitionFiles(params);
-  const observed = [...new Set(params.command.definitionPaths ?? [])].filter(
-    (file) => !files.includes(file),
-  );
+  const observed = definitionGuards(params, files);
   if (
     !isDeepStrictEqual(
       files,
@@ -127,7 +129,9 @@ function assertInventory(params: Context, receipt: GatewayServiceDefinitionBacku
       observed.toSorted(),
       receipt.guards.map((file) => file.sourcePath).toSorted(),
     ) ||
-    Boolean(receipt.task) !== (process.platform === "win32") ||
+    Boolean(receipt.task) !==
+      (process.platform === "win32" &&
+        getWindowsServiceRegistrationKind(params.command) === "scheduled-task") ||
     (params.command.sourcePath &&
       path.resolve(params.command.sourcePath) !== path.resolve(files[0]!))
   ) {
@@ -135,6 +139,17 @@ function assertInventory(params: Context, receipt: GatewayServiceDefinitionBacku
       "SERVICE_DEFINITION_UNKNOWN: Service backup selects different managed artifacts.",
     );
   }
+}
+
+function definitionGuards(params: Omit<Context, "assertCurrent">, files: string[]): string[] {
+  return [
+    ...new Set([
+      ...(params.command.definitionPaths ?? []),
+      ...(process.platform === "win32"
+        ? getWindowsStartupRegistrationGuards(params.env, params.command)
+        : []),
+    ]),
+  ].filter((file) => !files.includes(file));
 }
 
 function mutationHooks(
@@ -174,6 +189,7 @@ function mutationHooks(
     assertCurrent();
     const command = await resolveGatewayService().readCommand(params.env, {
       requireEffective: true,
+      ...(process.platform === "win32" ? { requireLoaded: true } : {}),
     });
     if (!command) {
       throw new Error("SERVICE_DEFINITION_UNKNOWN: Service definition disappeared.");
@@ -231,6 +247,9 @@ function mutationHooks(
     assertCurrent();
   };
   return {
+    ...(process.platform === "win32"
+      ? { windowsRegistration: getWindowsServiceRegistrationKind(params.command) }
+      : {}),
     assertCurrent,
     beforeWrite,
     filePrepared: async (sourcePath, temporaryPath) => {
@@ -304,9 +323,10 @@ export async function captureGatewayServiceDefinitionBackup(
       }),
     ),
     guards: await Promise.all(
-      [...new Set(params.command.definitionPaths ?? [])]
-        .filter((file) => !paths.includes(file))
-        .map(async (sourcePath) => ({ sourcePath, after: await readServiceFileState(sourcePath) })),
+      definitionGuards(params, paths).map(async (sourcePath) => ({
+        sourcePath,
+        after: await readServiceFileState(sourcePath),
+      })),
     ),
   };
   if (!receipt.files[0]?.before) {
@@ -323,7 +343,10 @@ export async function captureGatewayServiceDefinitionBackup(
         return { sourcePath: file.sourcePath, contents };
       }),
   );
-  if (process.platform === "win32") {
+  if (
+    process.platform === "win32" &&
+    getWindowsServiceRegistrationKind(params.command) === "scheduled-task"
+  ) {
     const originalXml = await readScheduledTaskDefinition(params.env);
     live.taskReference = { xml: originalXml };
     const contents = taskBytes(originalXml);

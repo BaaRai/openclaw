@@ -34,8 +34,70 @@ import { readServiceFileState } from "./service-stage.js";
 import type {
   GatewayServiceEnv,
   GatewayServiceReadOptions,
+  GatewayServiceCommandConfig,
   ServiceDefinitionMutationCapability,
 } from "./service-types.js";
+import {
+  getWindowsServiceRegistrationKind,
+  getWindowsStartupRegistrationGuards,
+} from "./windows-service-registration.js";
+
+function normalizeTaskScript(text: string, env: GatewayServiceEnv): string {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => {
+      const comment = /^(?:rem |')(.+)$/iu.exec(line)?.[1];
+      return (
+        line &&
+        !(comment && isInstallerServiceDescription(comment.trim(), env)) &&
+        line !== 'set "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER=1"' &&
+        line !==
+          'if not defined OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER set "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER=cmd"'
+      );
+    })
+    .join("\n")
+    .replace(/(?: --task-supervisor)?(?:\s*<\s*NUL)?$/iu, "");
+}
+
+const readLauncher = async (file: string) =>
+  decodeWindowsLauncherScript({ buffer: await fs.readFile(file) });
+
+export async function auditWindowsServiceDefinition(
+  env: GatewayServiceEnv,
+  command: GatewayServiceCommandConfig,
+  findings: ServiceDefinitionDrift[],
+  timeoutMs?: number,
+  expectedCommand?: GatewayServiceExpectedCommand,
+): Promise<void> {
+  if (getWindowsServiceRegistrationKind(command) === "scheduled-task") {
+    await auditScheduledTaskDefinition(env, findings, timeoutMs, expectedCommand);
+    return;
+  }
+  const guards = getWindowsStartupRegistrationGuards(env, command);
+  const sourcePath = resolveTaskScriptPath(env);
+  if (
+    !command.sourcePath ||
+    path.win32.normalize(command.sourcePath).toLowerCase() !==
+      path.win32.normalize(sourcePath).toLowerCase()
+  ) {
+    throw new Error("Startup registration selects an unrecognized service script.");
+  }
+  const files = await Promise.all([sourcePath, ...guards].map(readServiceFileState));
+  const current = await readScheduledTaskCommand(env, {
+    requireEffective: true,
+    requireLoaded: true,
+    timeoutMs,
+  });
+  if (
+    !isDeepStrictEqual(command, current) ||
+    normalizeTaskScript(await readLauncher(sourcePath), env) !==
+      normalizeTaskScript(buildTaskScript(command), env) ||
+    !isDeepStrictEqual(files, await Promise.all([sourcePath, ...guards].map(readServiceFileState)))
+  ) {
+    throw new Error("Startup service definition contains unrecognized or changed behavior.");
+  }
+}
 
 function elementKey(node: ReturnType<DOMParser["parseFromString"]>["documentElement"]): string {
   return !node.parentElement || node.parentElement.tagName === "Task"
@@ -335,25 +397,11 @@ export async function auditScheduledTaskDefinition(
   }
   if (expectedCommand) {
     const command = await readScheduledTaskCommand(env, { requireEffective: true, timeoutMs });
-    const normalize = (text: string) =>
-      text
-        .split(/\r?\n/u)
-        .map((line) => line.trim())
-        .filter((line) => {
-          const comment = /^(?:rem |')(.+)$/iu.exec(line)?.[1];
-          return (
-            line &&
-            !(comment && isInstallerServiceDescription(comment.trim(), env)) &&
-            line !== 'set "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER=1"' &&
-            line !==
-              'if not defined OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER set "OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER=cmd"'
-          );
-        })
-        .join("\n")
-        .replace(/(?: --task-supervisor)?(?:\s*<\s*NUL)?$/iu, "");
-    const read = async (file: string) =>
-      decodeWindowsLauncherScript({ buffer: await fs.readFile(file) });
-    if (!command || normalize(await read(sourcePath)) !== normalize(buildTaskScript(command))) {
+    const normalize = (text: string) => normalizeTaskScript(text, env);
+    if (
+      !command ||
+      normalize(await readLauncher(sourcePath)) !== normalize(buildTaskScript(command))
+    ) {
       unknown("TaskScript", "The generated task script contains unrecognized behavior.");
     }
     if (
@@ -369,7 +417,7 @@ export async function auditScheduledTaskDefinition(
         scriptPath: sourcePath,
         taskSupervisor: command?.environment?.OPENCLAW_SERVICE_KIND === "gateway",
       });
-      const installedLauncher = await read(hiddenPath).catch((error: unknown) => {
+      const installedLauncher = await readLauncher(hiddenPath).catch((error: unknown) => {
         if (!hiddenSelected && hasErrnoCode(error, "ENOENT")) {
           return undefined;
         }
@@ -419,7 +467,10 @@ export async function readScheduledTaskDefinitionMutationCapability(
         timeoutMs: remaining(),
       });
     const command = await readCommand();
-    if ((command === null) !== (observed.status === "missing")) {
+    const startup = command && getWindowsServiceRegistrationKind(command) === "startup";
+    if (
+      observed.status === "missing" ? command !== null && !startup : command === null || startup
+    ) {
       return unknown;
     }
     const scriptPath = resolveTaskScriptPath(env);
@@ -434,10 +485,14 @@ export async function readScheduledTaskDefinitionMutationCapability(
       ...new Set(
         [env, { ...env, ...options.environment }].flatMap((target) => {
           const script = resolveTaskScriptPath(target);
-          return [
+          const targets = [
             script,
             resolveTaskLauncherScriptPath({ OPENCLAW_WINDOWS_TASK_HIDDEN_LAUNCHER: "1" }, script),
           ];
+          if (startup) {
+            targets.push(...getWindowsStartupRegistrationGuards(target, command));
+          }
+          return targets;
         }),
       ),
     ];
@@ -465,7 +520,11 @@ export async function readScheduledTaskDefinitionMutationCapability(
     let xml: string | undefined;
     if (command) {
       const findings: ServiceDefinitionDrift[] = [];
-      xml = await auditScheduledTaskDefinition(env, findings, remaining(), command);
+      if (startup) {
+        await auditWindowsServiceDefinition(env, command, findings, remaining(), command);
+      } else {
+        xml = await auditScheduledTaskDefinition(env, findings, remaining(), command);
+      }
       if (findings.some((finding) => finding.kind === "unknown-edit")) {
         return unknown;
       }

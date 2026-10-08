@@ -211,7 +211,15 @@ async function runDaemonInstallWithReceipt(
   const service = resolveGatewayService();
   let existingServiceCommand: GatewayServiceCommandConfig | null;
   try {
-    existingServiceCommand = await service.readCommand(process.env, { requireEffective: true });
+    existingServiceCommand = await service.readCommand(process.env, {
+      requireEffective: true,
+      ...(process.platform === "win32" &&
+      (opts.expectedRuntimePin !== undefined ||
+        isUpdateOwnedGatewayServiceCommand() ||
+        isTruthyEnvValue(process.env.OPENCLAW_UPDATE_IN_PROGRESS))
+        ? { requireLoaded: true }
+        : {}),
+    });
   } catch (error) {
     const message = sanitizeServiceInspectionError(error).message;
     // No installer writes precede this read; the updater can retain the unchanged definition.

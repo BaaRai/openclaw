@@ -10,7 +10,6 @@ import * as pidAlive from "../shared/pid-alive.js";
 import { installLaunchAgent } from "./launchd-install.js";
 import * as scheduledControl from "./schtasks-control.js";
 import * as scheduledRuntime from "./schtasks-runtime.js";
-import * as scheduledProbe from "./schtasks-state-probe.js";
 import {
   captureGatewayServiceDefinitionBackup,
   restoreGatewayServiceDefinitionBackup,
@@ -548,11 +547,6 @@ it.each(
     f.setTask(originalTask);
     native.taskState = running ? 4 : 3;
     let enabled = true;
-    vi.spyOn(scheduledProbe, "probeScheduledTaskState").mockImplementation(() => ({
-      status: "found",
-      state: native.taskState,
-      enabled,
-    }));
     const stop = vi
       .spyOn(scheduledControl, "stopRegisteredScheduledTask")
       .mockImplementation(async (params) => {
@@ -562,9 +556,6 @@ it.each(
         params.onEndMutation?.();
         return false;
       });
-    vi.spyOn(scheduledRuntime, "resolveFallbackRuntime").mockImplementation(async () => ({
-      status: native.taskState === 4 ? "running" : "stopped",
-    }));
     vi.spyOn(scheduledRuntime, "waitForScheduledTaskRunningEvidence").mockImplementation(
       async () => native.taskState === 4,
     );
@@ -572,10 +563,9 @@ it.each(
     native.task.mockImplementation(async (args: string[]) => {
       if (args.includes("/DISABLE") || args.includes("/ENABLE")) {
         enabled = args.includes("/ENABLE");
-        f.setTask(exported(f.task(), enabled));
       }
       const result = await execute(args);
-      if (args[0] === "/Create") {
+      if (args[0] === "/Create" || args.includes("/DISABLE") || args.includes("/ENABLE")) {
         f.setTask(exported(f.task(), enabled));
       }
       return result;

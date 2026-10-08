@@ -311,6 +311,14 @@ under its native service lock. Paused, changed, or unverifiable services refuse
 without automatic migration. The app does not implement a separate rollback;
 the canonical service owner retains its backup and recovery behavior.
 
+Fresh setup stays unelevated. When Windows uses a per-user Startup registration,
+later bundled-runtime adoption keeps that registration kind. The same Windows
+owner guards its launcher files and the absence of a Scheduled Task, stops the
+owned process, publishes the replacement command, and verifies readiness before
+committing the runtime pin. A failed publication or startup restores the previous
+command and running state. Startup launcher files remain unchanged; adoption does
+not convert the installation into a Scheduled Task or request UAC.
+
 An existing S4U task can require administrator rights even when it belongs to the
 same Windows account. If the ordinary desktop token cannot inspect or stop that
 Gateway, the confirmation explains the administrator request. The app requests
