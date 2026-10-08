@@ -551,7 +551,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   }
   const restrictionFor = (
     config: OpenClawConfig,
-    selectedEntry: SessionEntry,
+    selectedEntry: Parameters<typeof resolveSessionNativeRuntimeRestriction>[0]["entry"],
     model: typeof resolvedSessionModel,
     persistedEntry?: SessionEntry,
   ) =>

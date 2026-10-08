@@ -116,7 +116,7 @@ async function authorizeSessionCatalogThread(
     context,
     fallbackAgentId: agentId,
     hostId: request.hostId,
-    list: (request) => listSessionCatalogProvider(provider, { ...request, agentId }),
+    list: (listRequest) => listSessionCatalogProvider(provider, { ...listRequest, agentId }),
     listNodes: createSessionCatalogRequestNodeSnapshot(),
     ...(request.sourceHomeId ? { sourceHomeId: request.sourceHomeId } : {}),
     threadId: request.threadId,

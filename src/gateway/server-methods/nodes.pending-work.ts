@@ -10,6 +10,8 @@ import {
   drainNodePendingWork,
   enqueueNodePendingWork,
   removeNodePendingWorkItem,
+  type NodePendingWorkPriority,
+  type NodePendingWorkType,
 } from "../node-pending-work.js";
 import { captureNodeWakeLifecycle, releaseNodeWakeLifecycle } from "../node-wake-state.js";
 import { isNodePairingWorkCurrent, respondPairingChanged } from "./nodes.shared.js";
@@ -69,8 +71,15 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const p = params as {
+      nodeId: string;
+      type: NodePendingWorkType;
+      priority?: NodePendingWorkPriority;
+      expiresInMs?: number;
+      wake?: boolean;
+    };
     await respondUnavailableOnThrow(respond, async () => {
-      const nodeId = params.nodeId.trim();
+      const nodeId = p.nodeId.trim();
       const generation = await captureNodePairingGeneration(nodeId);
       if (!generation) {
         respondPairingChanged(respond, "pending work");
@@ -86,14 +95,14 @@ export const nodePendingWorkHandlers: GatewayRequestHandlers = {
         }
         const queued = enqueueNodePendingWork({
           nodeId,
-          type: params.type,
-          priority: params.priority,
-          expiresInMs: params.expiresInMs,
+          type: p.type,
+          priority: p.priority,
+          expiresInMs: p.expiresInMs,
           pairingGeneration: generation.key,
         });
         let wakeTriggered = false;
         if (
-          params.wake !== false &&
+          p.wake !== false &&
           !queued.deduped &&
           !context.nodeRegistry.getForPairingGeneration(nodeId, generation.key)
         ) {

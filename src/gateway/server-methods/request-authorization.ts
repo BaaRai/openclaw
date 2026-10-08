@@ -190,10 +190,10 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     };
     const authorizeCurrent = (assertCurrent?: () => void, release?: () => void) => {
       const current = authorizeMethod();
-      const error = current.error ?? startupError();
-      if (error) {
+      const authorizationError = current.error ?? startupError();
+      if (authorizationError) {
         release?.();
-        return error;
+        return authorizationError;
       }
       try {
         params.expectedProfileBinding?.assertCurrent();

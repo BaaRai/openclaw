@@ -462,7 +462,7 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
         for (const key of ["inputAudioFormats", "outputAudioFormats"] as const) {
           const formats = capabilities?.[key];
           if (formats) {
-            entry[key] = formats.map((format) => ({ ...format }));
+            entry[key] = formats.map((format) => Object.assign({}, format));
           }
         }
         for (const key of [

@@ -140,7 +140,7 @@ function worktreeHandler<T>(
 
 export function createWorktreesHandlers(service: WorktreeService): GatewayRequestHandlers {
   return {
-    "worktrees.list": worktreeHandler(validateWorktreesListParams, async ({ respond }, params) => {
+    "worktrees.list": worktreeHandler(validateWorktreesListParams, async ({ respond }) => {
       respond(
         true,
         { worktrees: (await service.list()).map((record) => publicWorktreeRecord(record)) },
