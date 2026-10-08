@@ -87,6 +87,7 @@ export function createSessionHistoryWorkerReaders(
       );
   }
   return {
+    readCleanup: reader("session-cleanup", "a cleanup snapshot", (value) => value),
     readBoardSnapshot: reader("board-snapshot", "a Board snapshot", (result) => result.value),
     readBoardWidgetDocument: reader(
       "board-widget-document",
