@@ -173,29 +173,54 @@ async function echoThroughTrustedChildProcess(options: {
 }): Promise<{ ok: true; echoed: string }> {
   const script = `
     import { createRequire } from "node:module";
-    import { resolveSlackMonitorDispatchers } from "./extensions/slack/src/client-options.ts";
+    const observedPhases = new Set();
+    const phase = (name) => {
+      if (observedPhases.has(name)) return;
+      observedPhases.add(name);
+      process.stderr.write(JSON.stringify({
+        fixture: "slack-proxy-child", phase: name, elapsedMs: Math.round(performance.now()),
+      }) + String.fromCharCode(10));
+    };
+    phase("owner-import-start");
+    const { resolveSlackMonitorDispatchers } = await import("./extensions/slack/src/client-options.ts");
+    phase("owner-import-ready");
     const requireFromTest = createRequire(
       new URL("./extensions/slack/src/client-options.ts", import.meta.url),
     );
     const requireFromBolt = createRequire(requireFromTest.resolve("@slack/bolt/package.json"));
     const requireFromSocketMode = createRequire(requireFromBolt.resolve("@slack/socket-mode/package.json"));
     const { WebSocket } = requireFromSocketMode("undici/index.js");
+    phase("socket-runtime-ready");
     const dispatchers = resolveSlackMonitorDispatchers("socket");
+    phase("dispatchers-ready");
     const dispatcher = dispatchers.socketMode;
     const result = await new Promise((resolve, reject) => {
       const ws = new WebSocket(process.env.TEST_WEBSOCKET_URL, { dispatcher });
-      const timer = setTimeout(() => reject(new Error("WebSocket echo timed out")), 5_000);
-      ws.addEventListener("open", () => ws.send("hello"));
+      phase("websocket-created");
+      const timer = setTimeout(() => {
+        phase("echo-timeout");
+        reject(new Error("WebSocket echo timed out"));
+      }, 5_000);
+      ws.addEventListener("open", () => {
+        phase("websocket-open");
+        ws.send("hello");
+      });
       ws.addEventListener("message", (event) => {
         clearTimeout(timer);
+        phase("echo-received");
         resolve({ ok: true, echoed: String(event.data) });
       });
-      ws.addEventListener("error", reject);
+      ws.addEventListener("error", (error) => {
+        phase("websocket-error");
+        reject(error);
+      });
     });
+    phase("dispatcher-close-start");
     await dispatchers.close();
+    phase("dispatcher-close-ready");
     process.stdout.write(JSON.stringify(result), () => process.exit(0));
   `;
-  const { stdout } = await execFileAsync(
+  const { stdout, stderr } = await execFileAsync(
     process.execPath,
     ["--import", "./scripts/tsx.mjs", "--input-type=module", "--eval", script],
     {
@@ -209,6 +234,12 @@ async function echoThroughTrustedChildProcess(options: {
       timeout: 10_000,
     },
   );
+  const phases = stderr
+    .split(String.fromCharCode(10))
+    .filter((line) => line.startsWith('{"fixture":"slack-proxy-child",'));
+  if (phases.length > 0) {
+    console.error(phases.join(String.fromCharCode(10)));
+  }
   return JSON.parse(stdout) as { ok: true; echoed: string };
 }
 
@@ -270,7 +301,17 @@ describe("slack socket mode dispatcher", () => {
     process.env.HTTPS_PROXY = proxy.url;
 
     await expect(
-      echoThroughTrustedChildProcess({ proxyUrl: proxy.url, targetCaFile, targetUrl: target }),
+      echoThroughTrustedChildProcess({
+        proxyUrl: proxy.url,
+        targetCaFile,
+        targetUrl: target,
+      }).catch((error: unknown) => {
+        console.error("Slack proxy parent observations", {
+          connectCount: proxy.targets.length,
+          expectedTargetObserved: proxy.targets.includes(target.replace("wss://", "")),
+        });
+        throw error;
+      }),
     ).resolves.toEqual({ ok: true, echoed: "hello" });
     expect(proxy.targets).toContain(target.replace("wss://", ""));
   });
