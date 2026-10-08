@@ -47,7 +47,8 @@ import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 import * as workerAdmission from "./sqlite-worker-operation-admission.js";
 
 const loggerWarn = vi.hoisted(() => vi.fn());
-vi.mock("../logging/subsystem.js", () => ({
+vi.mock("../logging/subsystem.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logging/subsystem.js")>()),
   createSubsystemLogger: (name: string) => ({
     trace: vi.fn(),
     debug: vi.fn(),

@@ -240,13 +240,8 @@ vi.mock("../../agents/agent-dir-registry.js", () => ({
   unregisterResolvedAgentDir: mocks.unregisterResolvedAgentDir,
 }));
 
-vi.mock("../../agents/agent-lifecycle-registry.js", () => ({
-  AgentDeletionAuthorityRollbackError: class extends AggregateError {},
-  AgentDeletionCommitUncertainError: class extends Error {
-    constructor(cause: unknown) {
-      super(cause instanceof Error ? cause.message : String(cause));
-    }
-  },
+vi.mock("../../agents/agent-lifecycle-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/agent-lifecycle-registry.js")>()),
   withAgentDeletion: async (
     _agentId: string,
     run: (begin: (entry: Record<string, unknown>) => unknown) => Promise<unknown>,
