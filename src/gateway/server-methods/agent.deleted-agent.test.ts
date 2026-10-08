@@ -1,10 +1,7 @@
-// Install the storage mocks before the handler's import graph captures session readers.
-import "./deleted-agent-guard.test-helpers.js";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
-import { agentHandlers } from "./agent.js";
 import {
   mockDeletedAgentSession,
   resetDeletedAgentSessionMocks,
@@ -34,6 +31,9 @@ vi.mock("../chat-attachments.js", async () => {
     parseMessageWithAttachments: parseMessageWithAttachmentsMock,
   };
 });
+
+// Load the handler after the shared helper has registered its storage mocks.
+const { agentHandlers } = await import("./agent.js");
 
 async function invoke(
   id: string,
