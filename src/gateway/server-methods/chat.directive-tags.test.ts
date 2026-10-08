@@ -1714,6 +1714,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.hasMessageReceivedHooks = true;
     const documentPath = path.join(suiteFixtureRoot, "notes.txt");
     fs.writeFileSync(documentPath, "steered document body");
+    mockState.config = { agents: { defaults: { workspace: suiteFixtureRoot } } };
+    mockState.stagedRelativePaths = [documentPath];
     setSavedMediaResults([documentPath, "text/plain"]);
     if (renderFails) {
       mockState.steerDocumentRenderError = new Error("lazy media runtime unavailable");
@@ -1731,6 +1733,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     try {
       await send({
         idempotencyKey: "idem-steer-document",
+        waitFor: "none",
         requestParams: {
           queueMode: "steer",
           attachments: [
@@ -1758,16 +1761,15 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       operation.complete();
       mockState.steerDocumentRenderError = null;
     }
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ status: "started" }),
+      undefined,
+      expect.any(Object),
+    );
     expect(queueMessage).toHaveBeenCalledOnce();
     const [injectedText] = expectDefined(queueMessage.mock.calls[0], "injected document text");
     if (renderFails) {
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ status: "started" }),
-        undefined,
-        expect.any(Object),
-      );
-      expect(injectedText).toBeDefined();
       expect(injectedText).not.toContain('<file name="notes.txt"');
       expect(injectedText).toContain("hello");
     } else {
