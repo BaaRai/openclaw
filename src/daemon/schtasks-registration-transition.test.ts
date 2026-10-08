@@ -9,13 +9,15 @@ import { resolveTaskScriptPath } from "./schtasks-layout.js";
 import { verifyWindowsRegistrationReadiness } from "./schtasks-registration-transition.js";
 import { launchFallbackTaskScript } from "./schtasks-runtime.js";
 import type { GatewayServiceRuntime } from "./service-runtime.js";
-import type { GatewayServiceDefinitionTransactionHooks } from "./service-stage.js";
+import type {
+  GatewayServiceDefinitionTransactionHooks,
+  WindowsServiceRegistrationKind,
+} from "./service-stage.js";
 import type { GatewayServiceCommandConfig, GatewayServiceInstallArgs } from "./service-types.js";
 import {
   assertGatewayServiceUpdateCurrent,
   withGatewayServiceUpdateAuthority,
 } from "./service-update-authority.js";
-import type { WindowsServiceRegistrationKind } from "./windows-service-registration.js";
 
 const native = vi.hoisted(() => ({
   clock: 0,

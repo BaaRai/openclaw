@@ -1,8 +1,7 @@
 import path from "node:path";
 import { resolveStartupEntryPaths } from "./schtasks-layout.js";
+import type { WindowsServiceRegistrationKind } from "./service-stage.js";
 import type { GatewayServiceCommandConfig, GatewayServiceEnv } from "./service-types.js";
-
-export type WindowsServiceRegistrationKind = "scheduled-task" | "startup";
 
 /** The effective command inspector emits Startup paths only after proving task absence. */
 export function getWindowsServiceRegistrationKind(
