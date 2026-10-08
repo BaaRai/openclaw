@@ -184,6 +184,11 @@ export async function beginDoctorMaintenance(params: DoctorMaintenanceParams) {
         }
       }
       if (
+        // Custody consent restores our own stop; it does not authorize starting
+        // a service the operator had already stopped. Explicit repair retains recovery.
+        (params.interactiveRepair &&
+          params.options.repair !== true &&
+          params.options.yes !== true) ||
         resolveDoctorRepairMode(params.options).updateInProgress ||
         before.offline !== true ||
         verdict?.kind !== "owned" ||

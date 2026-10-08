@@ -1,6 +1,7 @@
 import "./doctor-maintenance.settlement.test-support.js";
 import { expect, it } from "vitest";
 import { resolveGatewayService } from "../daemon/service.js";
+import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const settlement = await import("./doctor-maintenance.settlement.test-support.js");
 const { begin, boundary } = settlement;
@@ -57,4 +58,23 @@ it.each([
       expect.stringMatching(/Gateway activation skipped.*gateway status --deep/),
     );
   }
+});
+
+it("preserves an explicitly stopped service after accepted interactive maintenance", async () => {
+  boundary.stop.mockImplementation(async () => ({ ...settlement.stopped, stopped: false }));
+  boundary.read.mockResolvedValue({
+    ...(await boundary.read(resolveGatewayService())),
+    loadState: { status: "not-loaded" },
+  });
+  const maintenance = await beginDoctorMaintenance({
+    root: settlement.root,
+    options: {},
+    interactiveRepair: true,
+    runtime: { log: boundary.log, error: () => {}, exit: () => {} },
+  });
+  await expect(maintenance!.finish({}, async (cfg) => cfg)).resolves.toBeUndefined();
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+  expect(boundary.repair).not.toHaveBeenCalled();
+  expect(boundary.resume).toHaveBeenCalledOnce();
 });
