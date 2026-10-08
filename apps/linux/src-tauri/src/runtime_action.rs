@@ -267,7 +267,7 @@ impl Observation {
             && self.flag("/rpc/ok") == Some(true)
     }
 
-    fn previous_runtime_command(&self) -> String {
+    fn previous_runtime_selection(&self) -> (&str, Option<&Path>) {
         let path = self
             .text("/service/runtimeIntent/pin/path")
             .map(Path::new)
@@ -284,6 +284,11 @@ impl Observation {
                     "node"
                 }
             });
+        (kind, path)
+    }
+
+    fn previous_runtime_command(&self) -> String {
+        let (kind, path) = self.previous_runtime_selection();
         let mut command = format!("openclaw gateway install --force --runtime {kind}");
         if let Some(path) = path {
             if let Ok(path) = quote(path) {
@@ -291,6 +296,13 @@ impl Observation {
             }
         }
         command
+    }
+
+    #[cfg(windows)]
+    fn guarded_previous_runtime_command(&self) -> Result<String, String> {
+        let (kind, path) = self.previous_runtime_selection();
+        let command = windows_install_command(kind, path.ok_or(UPGRADE)?, self)?;
+        crate::windows_elevation::format_manual_command(&command, false)
     }
 }
 
@@ -363,8 +375,9 @@ pub(crate) fn activate(
 }
 
 #[cfg(windows)]
-fn elevated_install_command(
-    runtime: &BundledRuntime,
+fn windows_install_command(
+    runtime: &str,
+    runtime_path: &Path,
     confirmed: &Observation,
 ) -> Result<Command, String> {
     if confirmed.text("/cli/runtime/kind") != Some("node")
@@ -396,7 +409,7 @@ fn elevated_install_command(
     if let Some(profile) = profile {
         command.arg("--profile").arg(profile);
     }
-    command.args(install_arguments(runtime, confirmed)?);
+    command.args(install_arguments(runtime, runtime_path, confirmed)?);
     Ok(command)
 }
 
@@ -407,8 +420,8 @@ fn activate_elevated(
     is_current: &dyn Fn() -> bool,
 ) -> Result<Activation, String> {
     use crate::windows_elevation::{self, ElevationError, Request};
-    let mut command = elevated_install_command(runtime, confirmed)?;
-    let manual = windows_elevation::format_manual_command(&command)?;
+    let mut command = windows_install_command("bun", &runtime.bun, confirmed)?;
+    let manual = windows_elevation::format_manual_command(&command, true)?;
     let fallback = format!(
         "Run this exact command in PowerShell with administrator approval for this Windows account:\n{manual}"
     );
@@ -502,18 +515,25 @@ fn perform(
 }
 
 fn activation_failure(confirmed: &Observation, fresh: bool, error: &str) -> String {
+    #[cfg(windows)]
+    if !fresh {
+        let recovery = match confirmed.guarded_previous_runtime_command() {
+            Ok(command) => format!(
+                "To select the previous runtime manually, run this exact command in PowerShell:\n{command}"
+            ),
+            Err(reason) => format!("The guarded recovery command is unavailable: {reason}"),
+        };
+        return format!(
+            "Bundled runtime activation failed: {error}\nInspect Gateway status before retrying. {recovery}"
+        );
+    }
     let recovery = if fresh {
         "To install with Node manually"
     } else {
         "To select the previous runtime manually"
     };
-    let outcome = if cfg!(windows) && !fresh {
-        "Inspect Gateway status before retrying."
-    } else {
-        "No automatic rollback was performed."
-    };
     format!(
-        "Bundled runtime activation failed: {error}\n{outcome} {recovery}, run:\n{}",
+        "Bundled runtime activation failed: {error}\nNo automatic rollback was performed. {recovery}, run:\n{}",
         confirmed.previous_runtime_command()
     )
 }
@@ -545,7 +565,7 @@ fn install(
     confirmed: &Observation,
 ) -> Result<(), String> {
     let mut command = cli
-        .command(install_arguments(runtime, confirmed)?)
+        .command(install_arguments("bun", &runtime.bun, confirmed)?)
         .map_err(|error| error.to_string())?;
     command
         .env_remove("OPENCLAW_SQLITE_LIBRARY")
@@ -563,7 +583,8 @@ fn install(
 }
 
 fn install_arguments(
-    runtime: &BundledRuntime,
+    runtime: &str,
+    runtime_path: &Path,
     confirmed: &Observation,
 ) -> Result<Vec<OsString>, String> {
     let mut arguments: Vec<OsString> = [
@@ -572,13 +593,13 @@ fn install_arguments(
         "--force",
         "--json",
         "--runtime",
-        "bun",
+        runtime,
         "--runtime-path",
     ]
     .into_iter()
     .map(OsString::from)
     .collect();
-    arguments.push(runtime.bun.as_os_str().to_owned());
+    arguments.push(runtime_path.as_os_str().to_owned());
     arguments.push("--expected-runtime-pin".into());
     arguments.push(
         serde_json::to_string(&confirmed.expected_pin()?)
@@ -919,18 +940,46 @@ mod windows_tests {
 
     #[test]
     fn windows_guarded_failure_preserves_owner_recovery_and_manual_command() {
-        let observed = protected_task();
+        let root = std::env::temp_dir().join(format!("openclaw-recovery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let node = root.join("node's runner.exe");
+        let entry = root.join("entry's module.mjs");
+        fs::write(&node, "synthetic Node").unwrap();
+        fs::write(&entry, "synthetic CLI").unwrap();
+        let mut observed = protected_task();
+        observed.0["cli"] = serde_json::json!({
+            "runtime": {"kind": "node", "supported": true, "execPath": node},
+            "entrypoint": entry
+        });
+        observed.0["service"]["runtimeIntent"]["pin"] = serde_json::json!({
+            "runtime": "bun", "path": r"C:\Peter's files\$(ignored);&bun.exe"
+        });
         let owner_error = "Gateway install failed; the previous definition was restored.";
         let message = activation_failure(&observed, false, owner_error);
         assert!(message.contains(owner_error));
         assert!(message.contains("Inspect Gateway status before retrying."));
         assert!(!message.contains("No automatic rollback"));
-        assert!(message.ends_with(
-            r"openclaw gateway install --force --runtime node --runtime-path 'C:\runtime\node.exe'"
-        ));
+        assert!(message.contains("-ArgumentList '"));
+        assert!(!message.contains("RunAs"));
+        assert!(!message.contains("administrator approval"));
+        assert!(message.contains("node''s runner.exe"));
+        assert!(message.contains("entry''s module.mjs"));
+        assert!(message.contains(r#""--runtime" "bun""#));
+        assert!(message.contains(r#""C:\Peter''s files\$(ignored);&bun.exe""#));
+        assert!(message.contains(r#""--expected-runtime-pin" "{\"revision\":\"captured-pin\",\"definition\":\"captured-task\"}""#));
         let fresh = activation_failure(&observed, true, "Startup failed.");
         assert!(fresh.contains("No automatic rollback was performed."));
         assert!(fresh.contains("To install with Node manually"));
+        assert!(!fresh.contains("--expected-runtime-pin"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_guarded_failure_never_substitutes_an_unguarded_recovery_command() {
+        let message = activation_failure(&protected_task(), false, "Publication failed.");
+        assert!(message.contains("Inspect Gateway status before retrying."));
+        assert!(message.contains("guarded recovery command is unavailable"));
+        assert!(!message.contains("gateway install"));
     }
 
     #[test]
@@ -982,7 +1031,7 @@ mod windows_tests {
             bun: PathBuf::from(r"C:\runtime\bun.exe"),
             sqlite: None,
         };
-        let arguments = install_arguments(&runtime, &confirmed).unwrap();
+        let arguments = install_arguments("bun", &runtime.bun, &confirmed).unwrap();
         let pin_index = arguments
             .iter()
             .position(|value| value == "--expected-runtime-pin")

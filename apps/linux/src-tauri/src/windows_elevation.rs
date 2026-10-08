@@ -250,7 +250,7 @@ fn run_with(
 }
 
 /// Start-Process accepts one already-encoded string; PS5 otherwise strips JSON quotes.
-pub(crate) fn format_manual_command(command: &Command) -> Result<String, String> {
+pub(crate) fn format_manual_command(command: &Command, elevated: bool) -> Result<String, String> {
     let invocation = Invocation::new(command)?;
     let quote = |units: &[u16]| -> Result<String, String> {
         String::from_utf16(&units[..units.len() - 1])
@@ -263,7 +263,12 @@ pub(crate) fn format_manual_command(command: &Command) -> Result<String, String>
         .map(|value| quote(value).map(|value| format!(" -WorkingDirectory {value}")))
         .transpose()?
         .unwrap_or_default();
-    Ok(format!("(Start-Process -FilePath {} -ArgumentList {}{directory} -Verb RunAs -Wait -PassThru).ExitCode", quote(&invocation.program)?, quote(&invocation.arguments)?))
+    let verb = if elevated { " -Verb RunAs" } else { "" };
+    Ok(format!(
+        "(Start-Process -FilePath {} -ArgumentList {}{directory}{verb} -Wait -PassThru).ExitCode",
+        quote(&invocation.program)?,
+        quote(&invocation.arguments)?
+    ))
 }
 
 pub(crate) struct Request {
@@ -442,7 +447,8 @@ mod tests {
             .collect();
         unsafe { LocalFree(Some(windows::Win32::Foundation::HLOCAL(raw.cast()))) };
         assert_eq!(&observed[1..], arguments);
-        let manual = format_manual_command(&command).unwrap();
+        let manual = format_manual_command(&command, true).unwrap();
+        assert!(manual.contains(" -Verb RunAs "));
         assert!(manual.contains("-ArgumentList '"));
         assert!(manual.contains("''$(ignored);&"));
         assert!(manual.contains(r#"\"revision\""#));

@@ -441,13 +441,13 @@ export async function installScheduledTask(
           env: fallbackEnv,
           command: installedCommand,
           transaction,
-          assertCurrent: args.assertCurrent,
+          assertCurrent: transaction.assertCurrent,
         },
         candidate: {
           env: candidateEnv,
           command: renderedCommand,
           transaction,
-          assertCurrent: args.assertCurrent,
+          assertCurrent: transaction.assertCurrent,
         },
       });
     }
@@ -509,7 +509,7 @@ export async function installScheduledTask(
               env: fallbackEnv,
               command: installedCommand,
               transaction: hooks,
-              assertCurrent: args.assertCurrent,
+              assertCurrent: hooks.assertCurrent,
             });
           }
           return restored;

@@ -16,6 +16,7 @@ import type {
 import type { GatewayServiceCommandConfig, GatewayServiceInstallArgs } from "./service-types.js";
 import {
   assertGatewayServiceUpdateCurrent,
+  withGatewayServiceInstallationRecovery,
   withGatewayServiceUpdateAuthority,
 } from "./service-update-authority.js";
 
@@ -355,21 +356,69 @@ it.each([true, false])(
   },
 );
 
-it("restores the previously running Startup process after publication is refused", async () => {
-  const f = fixture();
-  native.publish.mockImplementation(async (_files, _hooks, beforePublish) => {
-    await beforePublish?.();
-    throw new Error("synthetic sharing violation before publication");
-  });
-  await withAuthority(async () => {
-    await expect(f.install()).rejects.toThrow("sharing violation");
-    await f.recover();
-  });
-  expect(f.restore).toHaveBeenCalledOnce();
-  expect(f.state.command).toBe(f.previous);
-  expect(f.state.process).toBe("previous");
-  expect(f.events).toContain("ready:previous");
-});
+it.each(
+  (["startup", "scheduled-task"] as const).flatMap((kind) =>
+    [false, true].flatMap((updateOwned) =>
+      [false, true].map((revoked) => ({ kind, updateOwned, revoked })),
+    ),
+  ),
+)(
+  "retains outer recovery custody after the $kind installer closes (update=$updateOwned, revoked=$revoked)",
+  async ({ kind, updateOwned, revoked }) => {
+    const f = fixture(kind);
+    const failure = new Error("synthetic sharing violation before publication");
+    let outerCurrent = true;
+    native.publish.mockImplementation(async (_files, _hooks, beforePublish) => {
+      await beforePublish?.();
+      outerCurrent = !revoked;
+      throw failure;
+    });
+    const recover = vi.fn(async () => {
+      // The service adapter's guard expires before central reconciliation catches failure.
+      expect(() => f.args.assertCurrent?.()).toThrow("Native service authority has closed");
+      return f.recover();
+    });
+    const result = withGatewayServiceUpdateAuthority(
+      () => {
+        if (!outerCurrent) {
+          throw new Error("outer recovery custody revoked");
+        }
+      },
+      (assertOuter) =>
+        withGatewayServiceInstallationRecovery(
+          () =>
+            withGatewayServiceUpdateAuthority(
+              assertOuter,
+              async (assertInstaller) => {
+                f.args.assertCurrent = assertInstaller;
+                await f.install();
+              },
+              { updateOwned: false, assertRecoveryCurrent: assertOuter },
+            ),
+          recover,
+        ),
+      { updateOwned },
+    );
+    if (revoked) {
+      await expect(result).rejects.toMatchObject({
+        code: "service-authority-revoked",
+        outcome: "recovery-pending",
+      });
+      expect(recover).not.toHaveBeenCalled();
+      expect(f.restore).not.toHaveBeenCalled();
+      expect(f.state.process).toBeNull();
+      expect(f.events).not.toContain("ready:previous");
+    } else {
+      await expect(result).rejects.toBe(failure);
+      expect(recover).toHaveBeenCalledOnce();
+      expect(f.restore).toHaveBeenCalledOnce();
+      expect(f.state.command).toBe(f.previous);
+      expect(f.state.process).toBe("previous");
+      expect(f.events).toContain("ready:previous");
+    }
+    expect(() => f.args.assertCurrent?.()).toThrow("Native service authority has closed");
+  },
+);
 
 it("rechecks the shared termination guard before changing an owned Startup process", async () => {
   const f = fixture();
