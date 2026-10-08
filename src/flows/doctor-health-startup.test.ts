@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createNonExitingRuntime } from "../runtime.js";
 import { prepareDoctorHealthFlow } from "./doctor-health-startup.js";
@@ -25,16 +25,38 @@ vi.mock("../infra/openclaw-root.js", () => ({
 }));
 
 beforeEach(() => {
+  vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", "");
   mocks.config.mockReset().mockResolvedValue({ gateway: { tailscale: { mode: "serve" } } });
   mocks.command.mockReset();
   mocks.note.mockReset();
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 async function startDoctor() {
   return await prepareDoctorHealthFlow(createNonExitingRuntime(), {}, vi.fn());
 }
 
 describe("Doctor startup dependencies", () => {
+  it("continues published-updater Doctor without invoking unsupported config reads", async () => {
+    vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", "1");
+    mocks.config.mockRejectedValue(
+      new Error(
+        "Run config operation readSourceConfigBestEffort in the updated CLI after this update finishes.",
+      ),
+    );
+    await expect(
+      prepareDoctorHealthFlow(
+        createNonExitingRuntime(),
+        { repair: true, nonInteractive: true },
+        vi.fn(),
+      ),
+    ).resolves.toMatchObject({ root: "/synthetic/openclaw" });
+    expect(mocks.config).not.toHaveBeenCalled();
+    expect(mocks.command).not.toHaveBeenCalled();
+    expect(mocks.note).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["Stopped", "Tailscale is stopped", "tailscale up"],
     ["NeedsLogin", "Tailscale is logged out", "tailscale login"],
