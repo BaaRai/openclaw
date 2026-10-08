@@ -11,6 +11,8 @@ import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-even
 import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { buildDeliveryFormatPrompt } from "../../infra/outbound/delivery-format-prompt.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { prepareSessionHookRunner } from "../../plugins/hook-runner-session.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { applyVerboseOverride } from "../../sessions/level-overrides.js";
@@ -110,6 +112,7 @@ export async function prepareCommandSessionDiffBaseline(
 ): Promise<InternalSessionEntry> {
   try {
     const entry = await ensureSessionDiffBaseline({ ...params, deferCapture: true });
+    await prepareSessionHookRunner(getGlobalHookRunner());
     if (params.sessionStore) {
       params.sessionStore[params.sessionKey] = entry;
     }

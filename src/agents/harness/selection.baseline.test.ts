@@ -20,8 +20,8 @@ vi.mock("../embedded-agent-runner/run/attempt.js", () => ({ runEmbeddedAttempt: 
 const captureState = vi.hoisted(() => ({
   ready: undefined as Promise<InternalSessionEntry> | undefined,
 }));
-vi.mock("../../sessions/session-diff-baseline.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../sessions/session-diff-baseline.js")>()),
+vi.mock("../../sessions/session-diff-capture.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-diff-capture.js")>()),
   // A mock spy observes promise settlement itself, which would falsely signal a capture join.
   getSessionDiffBaselineCapture: () => captureState.ready,
 }));

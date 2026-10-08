@@ -14,7 +14,7 @@ import {
 } from "../infra/diagnostic-trace-context.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
-import { getSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../sessions/session-diff-capture.js";
 import { recordRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
 import {

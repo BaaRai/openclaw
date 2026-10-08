@@ -21,6 +21,7 @@ import {
   buildAgentHookContextIdentityFields,
 } from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { prepareSessionHookRunner } from "../../plugins/hook-runner-session.js";
 import { loadPluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import {
   runOutsidePluginRuntimeGenerationScope,
@@ -463,7 +464,7 @@ async function runEmbeddedAgentForSession(
                 );
               }
               const resolvedSessionKey = normalizedSessionKey ?? runSessionTarget.sessionKey;
-              const hookRunner = getGlobalHookRunner();
+              const hookRunner = await prepareSessionHookRunner(getGlobalHookRunner());
               const hookCtx = {
                 runId: params.runId,
                 jobId: params.jobId,

@@ -46,11 +46,11 @@ vi.mock("./session-diff.js", async (importOriginal) => ({
   captureSessionDiffBaseline: captureMocks.capture,
 }));
 
+import { ensureSessionDiffBaseline } from "./session-diff-baseline.js";
 import {
-  ensureSessionDiffBaseline,
   getSessionDiffBaselineCapture,
   withSessionDiffBaselineCapture,
-} from "./session-diff-baseline.js";
+} from "./session-diff-capture.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-session-diff-owner-");
 

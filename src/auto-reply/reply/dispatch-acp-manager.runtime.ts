@@ -28,8 +28,7 @@ export async function hasBoundConversationForSession(params: {
     return false;
   }
   const accountId = normalizeOptionalLowercaseString(params.accountIdRaw) ?? "";
-  const channels = params.cfg.channels as Record<string, { defaultAccount?: unknown } | undefined>;
-  const configuredDefaultAccountId = channels?.[channel]?.defaultAccount;
+  const configuredDefaultAccountId: unknown = params.cfg.channels?.[channel]?.defaultAccount;
   const normalizedAccountId =
     accountId || normalizeOptionalLowercaseString(configuredDefaultAccountId) || "default";
   const bindings = await listSessionBindingsBySessionAsync(params.sessionKey);

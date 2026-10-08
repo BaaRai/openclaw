@@ -11,7 +11,7 @@ import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillCommandSpec } from "../../skills/types.js";

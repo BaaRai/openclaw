@@ -12,7 +12,7 @@ import {
   isModelSelectionLocked,
   MODEL_SELECTION_LOCKED_MESSAGE,
 } from "../../sessions/model-overrides.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { MsgContext } from "../templating.js";

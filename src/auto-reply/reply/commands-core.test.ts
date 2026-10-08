@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { HookRunner } from "../../plugins/hooks.js";
-import * as baselineCapture from "../../sessions/session-diff-baseline.js";
+import * as baselineCapture from "../../sessions/session-diff-capture.js";
 import type {
   CommandDispatchParams,
   CommandHandler,

@@ -17,7 +17,7 @@ import {
 import {
   bindSessionDiffBaselineCaptureAssertion,
   getSessionDiffBaselineCapture,
-} from "../../sessions/session-diff-baseline.js";
+} from "../../sessions/session-diff-capture.js";
 import { bindUserTurnTranscriptAnnotation } from "../../sessions/user-turn-transcript-annotation.js";
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { resolveSkillResourceCandidates } from "../../skills/runtime/resource-candidates.js";

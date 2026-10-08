@@ -4,7 +4,7 @@ import {
   matchPluginCommandInvocation,
   PLUGIN_COMMAND_DISPATCH,
 } from "../../plugins/plugin-command-runtime.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { isControlCommandMessage } from "../command-detection.js";
 import { shouldHandleTextCommands } from "../commands-registry.js";

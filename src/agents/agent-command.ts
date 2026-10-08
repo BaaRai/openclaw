@@ -16,7 +16,7 @@ import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
-import { withSessionDiffBaselineCapture } from "../sessions/session-diff-baseline.js";
+import { withSessionDiffBaselineCapture } from "../sessions/session-diff-capture.js";
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { classifySessionStateActor } from "../sessions/session-state-events.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";

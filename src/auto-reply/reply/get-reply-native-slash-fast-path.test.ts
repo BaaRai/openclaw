@@ -13,7 +13,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { createSessionDiffBaselineCaptureClaim } from "../../config/sessions/session-diff-baseline-capture.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
-import * as baselineCapture from "../../sessions/session-diff-baseline.js";
+import * as baselineCapture from "../../sessions/session-diff-capture.js";
 import * as sessionDiff from "../../sessions/session-diff.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markCompleteReplyConfig } from "./get-reply-fast-path.test-support.js";

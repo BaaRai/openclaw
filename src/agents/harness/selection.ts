@@ -12,7 +12,7 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-store.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import {
   assertOperatorModelAllowed,
   bindOperatorModelExecution,

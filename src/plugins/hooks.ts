@@ -15,6 +15,7 @@ import { recordRuntimeActionDecision } from "../audit/runtime-action-decision.js
 import { finalizeGroupThreadToolReply } from "../auto-reply/group-thread-context.js";
 import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { getSessionDiffBaselineCapture } from "../sessions/session-diff-capture.js";
 import { projectModelContextMessages } from "../shared/model-context-message.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
 import {
@@ -22,6 +23,7 @@ import {
   withAgentRunId,
   withoutIncognitoLlmContent,
 } from "./hook-agent-observations.js";
+import { mergeBeforeAgentFinalize } from "./hook-before-agent-finalize.js";
 import { readClaimingHookAdmission, type ClaimingHookAdmission } from "./hook-claim-admission.js";
 import {
   type GateHookResult,
@@ -32,8 +34,6 @@ import { cloneHookIsolationValue, HookIsolationError } from "./hook-isolation.js
 import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-registry.types.js";
 import { acceptPluginReplyPayload, toPluginReplyPayload } from "./hook-reply-payload.js";
 import type {
-  BeforeAgentFinalizeResultWithRetryCandidates,
-  BeforeAgentFinalizeRetry,
   HookFailurePolicy,
   HookRunnerOptions,
   VoidHookContextProjection,
@@ -45,7 +45,6 @@ import type {
   PluginAgentTurnPrepareResult,
   PluginHookAgentContext,
   PluginHookAgentTrigger,
-  PluginHookBeforeAgentFinalizeResult,
   PluginHookBeforeDispatchContext,
   PluginHookBeforeDispatchEvent,
   PluginHookBeforeDispatchResult,
@@ -438,75 +437,6 @@ export function createHookRunner(
     }),
   });
 
-  const mergeBeforeAgentFinalize = (
-    acc: PluginHookBeforeAgentFinalizeResult | undefined,
-    next: PluginHookBeforeAgentFinalizeResult,
-  ): PluginHookBeforeAgentFinalizeResult => {
-    const normalizeRetry = (
-      retry: PluginHookBeforeAgentFinalizeResult["retry"] | undefined,
-    ): BeforeAgentFinalizeRetry | undefined => {
-      const instruction = typeof retry?.instruction === "string" ? retry.instruction.trim() : "";
-      if (!instruction) {
-        return undefined;
-      }
-      return {
-        ...retry,
-        instruction,
-      };
-    };
-    const readRetryCandidates = (
-      result: PluginHookBeforeAgentFinalizeResult | undefined,
-    ): BeforeAgentFinalizeRetry[] => {
-      if (!result || result.action !== "revise") {
-        return [];
-      }
-      const candidateList = (result as BeforeAgentFinalizeResultWithRetryCandidates)
-        .retryCandidates;
-      if (Array.isArray(candidateList) && candidateList.length > 0) {
-        return candidateList
-          .map(normalizeRetry)
-          .filter((retry): retry is BeforeAgentFinalizeRetry => retry !== undefined);
-      }
-      const retry = normalizeRetry(result.retry);
-      return retry ? [retry] : [];
-    };
-    if (acc?.action === "finalize") {
-      return acc;
-    }
-    if (next.action === "finalize") {
-      return { action: "finalize", reason: next.reason };
-    }
-    if (acc?.action === "revise" && next.action === "revise") {
-      const retryCandidates = [...readRetryCandidates(acc), ...readRetryCandidates(next)];
-      const retry = retryCandidates[0];
-      const result: PluginHookBeforeAgentFinalizeResult = {
-        action: "revise",
-        reason: concatOptionalTextSegments({ left: acc.reason, right: next.reason }),
-        ...(retry ? { retry } : {}),
-      };
-      if (retryCandidates.length > 1) {
-        Object.defineProperty(result, "retryCandidates", {
-          configurable: true,
-          enumerable: false,
-          value: retryCandidates,
-        });
-      }
-      return result;
-    }
-    if (acc?.action === "revise") {
-      return acc;
-    }
-    if (next.action === "revise") {
-      const retry = normalizeRetry(next.retry);
-      return {
-        action: "revise",
-        reason: next.reason,
-        ...(retry ? { retry } : {}),
-      };
-    }
-    return next.action === "continue" ? { action: "continue", reason: next.reason } : (acc ?? next);
-  };
-
   const handleHookError = (params: {
     hookName: PluginHookName;
     pluginId: string;
@@ -619,6 +549,11 @@ export function createHookRunner(
       return;
     }
 
+    const capture = getSessionDiffBaselineCapture();
+    if (capture) {
+      await capture;
+    }
+
     logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers)`);
 
     const promises = hooks.map(async (hook) => {
@@ -690,6 +625,11 @@ export function createHookRunner(
       : hooks;
     if (selectedHooks.length === 0) {
       return undefined;
+    }
+
+    const capture = getSessionDiffBaselineCapture();
+    if (capture) {
+      await capture;
     }
 
     // Snapshot only after registration/authority filtering. Handlers in this dispatch
@@ -814,6 +754,11 @@ export function createHookRunner(
     | { status: "declined" }
     | { status: "error"; error: string }
   > {
+    const capture = hooks.length > 0 ? getSessionDiffBaselineCapture() : undefined;
+    if (capture) {
+      await capture;
+    }
+
     const admission = readClaimingHookAdmission(ctx);
     let firstError: string | undefined;
     for (const hook of hooks) {
@@ -1115,6 +1060,11 @@ export function createHookRunner(
     const hooks = getHooksForName(registry, hookName);
     if (hooks.length === 0) {
       return [];
+    }
+
+    const capture = getSessionDiffBaselineCapture();
+    if (capture) {
+      await capture;
     }
 
     logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers, attributed)`);

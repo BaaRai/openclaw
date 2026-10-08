@@ -12,7 +12,7 @@ import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import {
   expandBundleCommandPromptTemplate,

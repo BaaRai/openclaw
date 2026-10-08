@@ -8,7 +8,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { registerPluginCommandInRegistry } from "../../plugins/command-registration.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import * as captureOwner from "../../sessions/session-diff-baseline.js";
+import * as captureOwner from "../../sessions/session-diff-capture.js";
 import {
   collectCheckoutDiff,
   collectCheckoutDiffBaseline,

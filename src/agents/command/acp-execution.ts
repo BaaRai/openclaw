@@ -15,7 +15,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import {
   getAdmittedRunDelegatedAuthority,
   type PreparedAgentRunAdmission,

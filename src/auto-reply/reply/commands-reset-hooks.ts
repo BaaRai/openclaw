@@ -8,7 +8,7 @@ import { logVerbose } from "../../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
-import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
+import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-capture.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
 export type ResetCommandAction = "new" | "reset";
