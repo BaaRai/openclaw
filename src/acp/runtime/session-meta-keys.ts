@@ -57,7 +57,11 @@ export function selectAcpSessionRow(
   );
 }
 
-export function* selectAcpSessionRowsByKeys(db: DatabaseSync, keys: readonly string[]) {
+export function* selectAcpSessionRowsByKeys(
+  db: DatabaseSync,
+  keys: readonly string[],
+  firstCohort?: readonly AcpSessionRow[],
+) {
   const revision =
     keys.length <= MAX_RETAINED_ACP_SESSION_ROWS ? getSqliteReadOperationRevision(db) : undefined;
   let cached = metadataRows.get(db);
@@ -75,7 +79,7 @@ export function* selectAcpSessionRowsByKeys(db: DatabaseSync, keys: readonly str
       cached.rows.clear();
     }
     const retainedRows = cached.rows;
-    if (keys.every((key) => retainedRows.has(key))) {
+    if (!firstCohort && keys.every((key) => retainedRows.has(key))) {
       const rows: AcpSessionRow[] = [];
       for (const key of new Set(keys)) {
         const row = retainedRows.get(key);
@@ -91,13 +95,16 @@ export function* selectAcpSessionRowsByKeys(db: DatabaseSync, keys: readonly str
   // callers a different view if a foreign commit occurs during this request.
   for (let index = 0; index < keys.length; index += 500) {
     const cohort = keys.slice(index, index + 500);
-    const rows = executeSqliteQuerySync(
-      db,
-      getAcpSessionKysely(db)
-        .selectFrom("acp_sessions")
-        .selectAll()
-        .where("session_key", "in", sqliteStringSet(cohort)),
-    ).rows;
+    const rows =
+      index === 0 && firstCohort
+        ? firstCohort
+        : executeSqliteQuerySync(
+            db,
+            getAcpSessionKysely(db)
+              .selectFrom("acp_sessions")
+              .selectAll()
+              .where("session_key", "in", sqliteStringSet(cohort)),
+          ).rows;
     if (revision && cached) {
       if (cached.rows.size + cohort.length > MAX_RETAINED_ACP_SESSION_ROWS) {
         cached.rows.clear();

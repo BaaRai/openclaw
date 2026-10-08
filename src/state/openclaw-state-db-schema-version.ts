@@ -24,6 +24,9 @@ import type { DB } from "./openclaw-state-db.generated.js";
 // Read-only clients need schema admission without loading updater publication policy.
 export const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 type StateSchemaVersionDatabase = Pick<DB, "config_machine_state">;
+export type StateSchemaContentVersionRowReader = (
+  db: DatabaseSync,
+) => { value_json: string | null } | undefined;
 const admittedContentVersions = new WeakMap<
   DatabaseSync,
   SqliteReadOperationRevision & { contentVersion: number }
@@ -38,7 +41,10 @@ const contentVersionQuery = createSqliteQueryCache((db) =>
 );
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
-export function readStateSchemaContentVersion(db: DatabaseSync): number {
+export function readStateSchemaContentVersion(
+  db: DatabaseSync,
+  readRow?: StateSchemaContentVersionRowReader,
+): number {
   const schema = getAdmittedSqliteSchemaFacts(db);
   const revision = getSqliteReadOperationRevision(db);
   const admitted = admittedContentVersions.get(db);
@@ -50,7 +56,11 @@ export function readStateSchemaContentVersion(db: DatabaseSync): number {
   ) {
     return admitted.contentVersion;
   }
-  const contentVersion = readContentVersion(db, schema?.userVersion ?? readSqliteUserVersion(db));
+  const contentVersion = readContentVersion(
+    db,
+    schema?.userVersion ?? readSqliteUserVersion(db),
+    readRow,
+  );
   if (revision && getSqliteReadOperationRevision(db) === revision) {
     if (!admitted) {
       const unregister = registerNodeSqliteDisposeCallback(db, () => {
@@ -63,17 +73,25 @@ export function readStateSchemaContentVersion(db: DatabaseSync): number {
   return contentVersion;
 }
 
-function readContentVersion(db: DatabaseSync, published: number): number {
+export function readStateSchemaContentVersionRow(db: DatabaseSync) {
+  return contentVersionQuery(db)().rows[0];
+}
+
+function readContentVersion(
+  db: DatabaseSync,
+  published: number,
+  readRow: StateSchemaContentVersionRowReader = readStateSchemaContentVersionRow,
+): number {
   if (!tableExists(db, "config_machine_state")) {
     return published;
   }
-  const row = contentVersionQuery(db)().rows[0];
+  const row = readRow(db);
   if (!row) {
     return published;
   }
   let contentVersion: unknown;
   try {
-    contentVersion = JSON.parse(row.value_json);
+    contentVersion = row.value_json === null ? null : JSON.parse(row.value_json);
   } catch (cause) {
     throw new SqliteSchemaMismatchError(
       `Invalid shared state schema content version in ${CONTENT_VERSION_KEY}.`,
@@ -153,11 +171,17 @@ export function readStateSchemaMigrationVersion(db: DatabaseSync): number {
   );
 }
 
-export function assertSupportedStateSchemaVersion(db: DatabaseSync, pathname: string): number {
+export function assertSupportedStateSchemaVersion(
+  db: DatabaseSync,
+  pathname: string,
+  readRow?: StateSchemaContentVersionRowReader,
+): number {
   try {
     const userVersion = getAdmittedSqliteSchemaFacts(db)?.userVersion ?? readSqliteUserVersion(db);
     const contentVersion =
-      userVersion > OPENCLAW_STATE_SCHEMA_VERSION ? userVersion : readStateSchemaContentVersion(db);
+      userVersion > OPENCLAW_STATE_SCHEMA_VERSION
+        ? userVersion
+        : readStateSchemaContentVersion(db, readRow);
     if (contentVersion > OPENCLAW_STATE_SCHEMA_VERSION) {
       throw createNewerSqliteSchemaVersionError(
         "OpenClaw state database",

@@ -17,7 +17,11 @@ paths are migration debt, not a pattern to extend. The
 candidate main-thread paths from SQL already executing in workers.
 
 Gateway deleted-agent checks batch ACP metadata candidates through the shared-state
-reader only for free ACP keys whose agent is absent. Reset rebinding uses the ACP
+reader only for free ACP keys whose agent is absent. When a foreign commit requires
+the content-version marker to be refreshed, the reader fetches that marker and the
+first metadata cohort in one statement. Admission validates the marker before
+consuming metadata; the existing read revision owns subsequent row reuse.
+Reset rebinding uses the ACP
 writer after the session entry commits, retaining that entry writer's physical
 custody and accepted cleanup authority until the metadata settles. If the session
 owner already has an admitted native handle, transaction and commit grants retain

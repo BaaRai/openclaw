@@ -14,10 +14,14 @@ import {
   closeRetainedOpenClawStateReadConnections,
   withOpenClawStateReadOnlyLocation,
 } from "../../state/openclaw-state-db-read-connection.js";
+import { assertSupportedStateSchemaVersion } from "../../state/openclaw-state-db-schema-version.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
 import { buildAcpDatabaseSessionKey, upsertAcpSessionMetaRow } from "./session-meta-keys.js";
 import type { AcpSessionReadCommand } from "./session-meta-read.types.js";
-import { readAcpSessionCommand } from "./session-meta-read.worker.js";
+import {
+  prepareAcpSessionMetadataRead,
+  readAcpSessionCommand,
+} from "./session-meta-read.worker.js";
 import { applyAcpSessionMutation, bindAcpSessionMeta } from "./session-meta-write.kernel.js";
 
 const databases: DatabaseSync[] = [];
@@ -63,17 +67,22 @@ function fixture() {
   const pathname = path.join(tempDirs.make("openclaw-acp-read-cache-"), "state.sqlite");
   const writer = openNodeSqliteDatabase(pathname);
   databases.push(writer);
-  writer.exec(`PRAGMA journal_mode=WAL; ${schema}`);
-  const read = (input: AcpSessionReadCommand = command) =>
-    withOpenClawStateReadOnlyLocation(
-      ({ db }) => readAcpSessionCommand(db, input),
+  writer.exec(`PRAGMA journal_mode=WAL; ${schema}
+    CREATE TABLE config_machine_state (state_key TEXT PRIMARY KEY, value_json TEXT, updated_at_ms INTEGER);`);
+  const read = (input: AcpSessionReadCommand = command) => {
+    const metadata =
+      input.type === "acpSessions.metadata" ? prepareAcpSessionMetadataRead(input) : undefined;
+    return withOpenClawStateReadOnlyLocation(
+      ({ db }) => (metadata ? metadata.read(db) : readAcpSessionCommand(db, input)),
       pathname,
       pathname,
       undefined,
       undefined,
       undefined,
       true,
+      metadata?.readContentVersionRow,
     );
+  };
   return { writer, pathname, read };
 }
 
@@ -83,7 +92,7 @@ it("reuses admitted ACP rows while observing foreign inserts, updates and deleti
   expect(read().rows).toEqual([null]);
   const observation = observeSqliteReadSql(StatementSync.prototype);
   const metadataReads = () =>
-    observation.queries.filter((sql) => /from "acp_sessions"/iu.test(sql));
+    observation.queries.filter((sql) => /(?:from|join) "acp_sessions"/iu.test(sql));
   try {
     expect(read().rows).toEqual([null]);
     expect(read().rows).toEqual([null]);
@@ -118,12 +127,19 @@ it("keeps a pinned ACP snapshot and refreshes after it closes", () => {
   withOpenClawStateReadOnlyLocation(
     ({ db }) => {
       db.exec("BEGIN");
+      const readPinned = () => {
+        const metadata = prepareAcpSessionMetadataRead(command);
+        return runSqliteReadOperationSync(db, () => {
+          assertSupportedStateSchemaVersion(db, pathname, metadata.readContentVersionRow);
+          return metadata.read(db);
+        });
+      };
       try {
-        expect(readAcpSessionCommand(db, command).rows[0]).toMatchObject({
+        expect(readPinned().rows[0]).toMatchObject({
           runtime_session_name: "before",
         });
         writer.prepare("UPDATE acp_sessions SET runtime_session_name = 'after'").run();
-        expect(readAcpSessionCommand(db, command).rows[0]).toMatchObject({
+        expect(readPinned().rows[0]).toMatchObject({
           runtime_session_name: "before",
         });
       } finally {
