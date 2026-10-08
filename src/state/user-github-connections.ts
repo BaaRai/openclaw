@@ -19,8 +19,8 @@ import { runOpenClawStateWorkerOperation } from "./openclaw-state-worker-store.j
 import {
   parseConnection,
   publishUserGitHubProfileRetirement,
-  type UserGitHubConnection,
 } from "./user-github-connections.kernel.js";
+import type { UserGitHubConnection } from "./user-github-connections.schema.js";
 import type {
   UserGitHubCommit,
   UserGitHubMutation,
@@ -31,14 +31,15 @@ import type {
 
 export {
   disconnectedUserGitHubConnection,
-  mergeUserGitHubConnection,
   observeUserGitHubProfileRetirement,
   readUserGitHubConnection,
   resolvePersonalGitHubOwner,
-  type UserGitHubConnection,
-  type UserGitHubConnected,
-  type UserGitHubDevice,
 } from "./user-github-connections.kernel.js";
+export type {
+  UserGitHubConnection,
+  UserGitHubConnected,
+  UserGitHubDevice,
+} from "./user-github-connections.schema.js";
 export type { UserGitHubRole } from "./user-github-connections.worker-contract.js";
 
 type Options = Pick<OpenClawStateDatabaseOptions, "path" | "env"> & {

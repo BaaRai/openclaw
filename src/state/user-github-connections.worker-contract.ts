@@ -1,8 +1,6 @@
 import type { GitHubOAuthTokenPair } from "../agents/github-oauth-client.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
-import type { UserGitHubConnection } from "./user-github-connections.kernel.js";
-import type { userGitHubOperations } from "./user-github-connections.worker.js";
-import type { WorkerOperations } from "./worker-operation-registry.js";
+import type { UserGitHubConnection } from "./user-github-connections.schema.js";
 
 export type UserGitHubRole = {
   profileId: string;
@@ -53,4 +51,17 @@ export type UserGitHubCommit = {
   connection: UserGitHubConnection | undefined;
   retired: string[];
 };
-export type UserGitHubWorkerOperations = WorkerOperations<typeof userGitHubOperations>;
+export type UserGitHubWorkerOperations = {
+  "userGitHub.read": {
+    input: { owner: string };
+    output: UserGitHubConnection | undefined;
+  };
+  "userGitHub.list": {
+    input: undefined;
+    output: Array<{ owner: string; connection: UserGitHubConnection }>;
+  };
+  "userGitHub.mutate": {
+    input: UserGitHubMutation;
+    output: UserGitHubCommit;
+  };
+};
