@@ -109,18 +109,16 @@ it.each(["selected", "missing"] as const)(
     const callerEnv = { ...env, OPENCLAW_SUPERVISOR_MODE: undefined };
     await listChannelPairingRequests(channel, callerEnv);
     const claim = () => {
-      database.db
-        .prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)")
-        .run(
-          "gateway.supervision",
-          JSON.stringify({
-            version: 1,
-            mode: "external",
-            managerId: "pairing-fixture",
-            claimedAt: 1,
-          }),
-          1,
-        );
+      database.db.prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)").run(
+        "gateway.supervision",
+        JSON.stringify({
+          version: 1,
+          mode: "external",
+          managerId: "pairing-fixture",
+          claimedAt: 1,
+        }),
+        1,
+      );
     };
     if (selection === "missing") {
       claim();
