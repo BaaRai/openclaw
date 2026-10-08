@@ -1704,6 +1704,7 @@ const reviewedOperations = new Map([
         tier: "T2",
         operations: [
           "updateChannelPairingStateSnapshot",
+          "readChannelPairingRequests",
           "readChannelPairingSnapshotFromDatabase",
           "writeChannelPairingStateToDatabase",
         ],

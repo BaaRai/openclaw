@@ -3,6 +3,7 @@ import { MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import type { WorkerWriteOperationContext } from "../state/worker-operation-registry.js";
@@ -21,6 +22,7 @@ import {
 } from "./pairing-store-model.js";
 import {
   normalizePersistedPairingRequest,
+  readChannelPairingRequests,
   readChannelPairingSnapshotFromDatabase,
 } from "./pairing-store-sqlite.js";
 import type { PairingRequestRecord } from "./pairing-store.types.js";
@@ -211,14 +213,23 @@ export const channelPairingOperations = {
       let prepared: PairingRequestRecord | undefined;
       let normalizedApproval = "";
       if (mutation.action === "resolve" && mutation.approval === "host") {
-        prepared = selectedRequest(
-          pruneExpiredRequests(
-            readChannelPairingSnapshotFromDatabase(context.open(), channel).state.requests,
-            Date.now(),
-          ).requests,
-          mutation.accountId,
-          mutation.selector,
+        const pruned = pruneExpiredRequests(
+          withExistingOpenClawStateDatabaseReadOnly(
+            ({ db }) => readChannelPairingRequests(db, channel),
+            context.stateOptions(),
+          ) ?? [],
+          Date.now(),
         );
+        prepared = selectedRequest(pruned.requests, mutation.accountId, mutation.selector);
+        if (!prepared && !pruned.removed) {
+          // A fresh absence has no write to settle, but still requires current write authority.
+          context.open();
+          requestSqliteWorkerOperationAdmission({
+            stage: "commit",
+            facts: { kind: "channel-pairing", channel },
+          });
+          return { action: "resolve", result: null };
+        }
         if (prepared) {
           normalizedApproval = prepareApproval(channel, prepared);
         }

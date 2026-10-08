@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { parseDateStringTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { Selectable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -24,6 +25,8 @@ type PairingDatabase = Pick<
   OpenClawStateKyselyDatabase,
   "channel_pairing_allow_entries" | "channel_pairing_requests"
 >;
+type PairingRequestRow = Selectable<PairingDatabase["channel_pairing_requests"]>;
+type PairingAllowRow = Selectable<PairingDatabase["channel_pairing_allow_entries"]>;
 
 type ChannelPairingState = {
   version: 1;
@@ -99,28 +102,8 @@ export const pairingReadOperations = {
   }),
 } satisfies WorkerOperationHandlers<DatabaseSync>;
 
-export function readChannelPairingSnapshotFromDatabase(
-  database: OpenClawStateDatabase,
-  channel: PairingChannel,
-) {
-  const db = getNodeSqliteKysely<PairingDatabase>(database.db);
-  const channelKey = safeChannelKey(channel);
-  const requestRows = executeSqliteQuerySync(
-    database.db,
-    db
-      .selectFrom("channel_pairing_requests")
-      .selectAll()
-      .where("channel_key", "=", channelKey)
-      .orderBy("created_at", "asc")
-      .orderBy("account_id", "asc")
-      .orderBy("request_id", "asc"),
-  ).rows;
-  const allowRows = readChannelAllowRows(database.db, channel);
-  const allowFrom: Record<string, string[]> = {};
-  for (const row of allowRows) {
-    (allowFrom[resolveAllowFromAccountId(row.account_id)] ??= []).push(row.entry);
-  }
-  const requests = requestRows.flatMap((row) => {
+function normalizePairingRequestRows(rows: readonly PairingRequestRow[]): PairingRequest[] {
+  return rows.flatMap((row) => {
     let meta: Record<string, string> | undefined;
     if (row.meta_json) {
       try {
@@ -141,6 +124,101 @@ export function readChannelPairingSnapshotFromDatabase(
     });
     return request ? [request] : [];
   });
+}
+
+export function readChannelPairingRequests(
+  database: DatabaseSync,
+  channel: PairingChannel,
+): PairingRequestRecord[] {
+  const db = getNodeSqliteKysely<PairingDatabase>(database);
+  const rows = executeSqliteQuerySync(
+    database,
+    db
+      .selectFrom("channel_pairing_requests")
+      .selectAll()
+      .where("channel_key", "=", safeChannelKey(channel))
+      .orderBy("created_at", "asc")
+      .orderBy("account_id", "asc")
+      .orderBy("request_id", "asc"),
+  ).rows;
+  return normalizePairingRequestRows(rows);
+}
+
+export function readChannelPairingSnapshotFromDatabase(
+  database: OpenClawStateDatabase,
+  channel: PairingChannel,
+) {
+  const db = getNodeSqliteKysely<PairingDatabase>(database.db);
+  const channelKey = safeChannelKey(channel);
+  // Both row families share one statement snapshot; unused fields only align the union.
+  const rows = executeSqliteQuerySync(
+    database.db,
+    db
+      .selectFrom("channel_pairing_requests")
+      .select((eb) => [
+        "channel_key",
+        "account_id",
+        "request_id as record_id",
+        "code",
+        "created_at",
+        "last_seen_at",
+        "meta_json",
+        eb.val(0).as("sort_order"),
+        eb.val(0).as("updated_at"),
+        eb.val<"request" | "allow">("request").as("kind"),
+      ])
+      .where("channel_key", "=", channelKey)
+      .unionAll(
+        db
+          .selectFrom("channel_pairing_allow_entries")
+          .select((eb) => [
+            "channel_key",
+            "account_id",
+            "entry as record_id",
+            eb.val("").as("code"),
+            eb.val("").as("created_at"),
+            eb.val("").as("last_seen_at"),
+            eb.val(null).as("meta_json"),
+            "sort_order",
+            "updated_at",
+            eb.val<"request" | "allow">("allow").as("kind"),
+          ])
+          .where("channel_key", "=", channelKey),
+      )
+      .orderBy("kind", "asc")
+      .orderBy("created_at", "asc")
+      .orderBy("account_id", "asc")
+      .orderBy("sort_order", "asc")
+      .orderBy("record_id", "asc"),
+  ).rows;
+  const requestRows: PairingRequestRow[] = [];
+  const allowRows: PairingAllowRow[] = [];
+  for (const row of rows) {
+    if (row.kind === "request") {
+      requestRows.push({
+        channel_key: row.channel_key,
+        account_id: row.account_id,
+        request_id: row.record_id,
+        code: row.code,
+        created_at: row.created_at,
+        last_seen_at: row.last_seen_at,
+        meta_json: row.meta_json,
+      });
+    } else {
+      allowRows.push({
+        channel_key: row.channel_key,
+        account_id: row.account_id,
+        entry: row.record_id,
+        sort_order: row.sort_order,
+        updated_at: row.updated_at,
+      });
+    }
+  }
+  const requests = normalizePairingRequestRows(requestRows);
+  const allowFrom: Record<string, string[]> = {};
+  for (const row of allowRows) {
+    (allowFrom[resolveAllowFromAccountId(row.account_id)] ??= []).push(row.entry);
+  }
   const state: ChannelPairingState = { version: 1, requests, allowFrom };
   return { state, requestRows, allowRows };
 }

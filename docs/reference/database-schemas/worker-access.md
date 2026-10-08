@@ -1757,7 +1757,10 @@ Channel request, pruning, approval, dismissal, and allowlist mutations use the
 existing shared-state writer and capture the physical store before yielding.
 Approval adapters prepare the selected row outside the write transaction; the
 worker rereads the exact current selection before consuming the request and
-adding an approval. Host authority is checked after preparation and at transaction
+adding an approval. Preparation uses the existing read-only admission, and the
+transaction reads both row families in one statement. Missing requests that need
+no pruning still check native write ownership and host authority before returning.
+Host authority is checked after preparation and at transaction
 and commit admission. Writes preserve account normalization and update only
 changed rows instead of replacing the whole channel snapshot. No schema,
 retention, durability, permission, or update migration changes.

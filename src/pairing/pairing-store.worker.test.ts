@@ -61,12 +61,13 @@ it.each([
   { operation: "list", refusedStage: "commit" },
   { operation: "approve", refusedStage: "transaction" },
   { operation: "approve", refusedStage: "commit" },
+  { operation: "missing-approve", refusedStage: "commit" },
 ] as const)(
   "rolls back $operation when owner authority is revoked at $refusedStage",
   async ({ operation, refusedStage }) => {
     const channel = `revoked-${operation}-${refusedStage}`;
     const createdAt = operation === "list" ? "2020-01-01T00:00:00.000Z" : new Date().toISOString();
-    seed(channel, [request("alice", "alpha", createdAt)]);
+    seed(channel, operation === "missing-approve" ? [] : [request("alice", "alpha", createdAt)]);
     const before = readChannelPairingStateSnapshot(channel, env);
     let currentStage: workerAdmission.SqliteWorkerAdmissionRequest["stage"] | undefined;
     const original = workerAdmission.createSqliteWorkerOperationAdmission;
@@ -86,9 +87,64 @@ it.each([
     await expect(
       operation === "list"
         ? listChannelPairingRequests(channel, env, undefined, assertCurrent)
-        : approveChannelPairingCode({ channel, code: "ABCDEFGH", env, assertCurrent }),
+        : approveChannelPairingCode({
+            channel,
+            code: "ABCDEFGH",
+            env,
+            assertCurrent,
+            pairingAdapter: { idLabel: "peer", normalizeAllowEntry: (entry) => entry },
+          }),
     ).rejects.toBe(refusal);
     expect(currentStage).toBe(refusedStage);
+    expect(readChannelPairingStateSnapshot(channel, env)).toEqual(before);
+  },
+);
+
+it.each(["selected", "missing"] as const)(
+  "retains native write authority for a %s host approval after preparation",
+  async (selection) => {
+    const channel = `supervision-${selection}`;
+    seed(channel, selection === "selected" ? [request("alice")] : []);
+    const before = readChannelPairingStateSnapshot(channel, env);
+    const callerEnv = { ...env, OPENCLAW_SUPERVISOR_MODE: undefined };
+    await listChannelPairingRequests(channel, callerEnv);
+    const claim = () => {
+      database.db
+        .prepare("INSERT INTO config_machine_state VALUES (?, ?, ?)")
+        .run(
+          "gateway.supervision",
+          JSON.stringify({
+            version: 1,
+            mode: "external",
+            managerId: "pairing-fixture",
+            claimedAt: 1,
+          }),
+          1,
+        );
+    };
+    if (selection === "missing") {
+      claim();
+    }
+    try {
+      await expect(
+        approveChannelPairingCode({
+          channel,
+          code: "ABCDEFGH",
+          env: callerEnv,
+          pairingAdapter: {
+            idLabel: "peer",
+            resolveApprovalStoreEntry: ({ id }) => {
+              claim();
+              return id;
+            },
+          },
+        }),
+      ).rejects.toThrow(/externally supervised by pairing-fixture/);
+    } finally {
+      database.db
+        .prepare("DELETE FROM config_machine_state WHERE state_key = ?")
+        .run("gateway.supervision");
+    }
     expect(readChannelPairingStateSnapshot(channel, env)).toEqual(before);
   },
 );
