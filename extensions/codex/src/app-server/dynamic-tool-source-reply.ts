@@ -56,7 +56,22 @@ export function resolveCodexToolResultSourceReply(params: {
     (params.rawResult.terminate === true || params.result.terminate === true);
   const confirmed = messageToolOnly && (toolConfirmed || params.deliveredSourceReply);
   const final = confirmed ? params.executedArgs.final !== false : undefined;
-  const toolAuthoredFinal = captureCodexToolAuthoredSourceReply(params);
+  // Middleware and extensions may withdraw or rewrite the reply, so read the
+  // effective result, never the raw tool output.
+  const payload =
+    params.canDeliverSourceReply === true &&
+    !params.resultIsError &&
+    params.call.namespace === CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE
+      ? captureToolAuthoredSourceReply({
+          result: params.result,
+          toolCallId: params.call.callId,
+          idempotencyScope: params.runId ?? params.call.turnId,
+        })
+      : undefined;
+  if (payload) {
+    params.payloads.push(payload);
+  }
+  const toolAuthoredFinal = Boolean(payload);
   const continuesSourceReplyProgress = confirmed && final === false;
   const terminate =
     toolAuthoredFinal === true ||
@@ -77,28 +92,4 @@ export function resolveCodexToolResultSourceReply(params: {
     params.response.toolAuthoredFinalReply = true;
   }
   return { toolConfirmed, final, terminate };
-}
-
-function captureCodexToolAuthoredSourceReply(
-  params: Parameters<typeof resolveCodexToolResultSourceReply>[0],
-): boolean | undefined {
-  if (
-    params.canDeliverSourceReply !== true ||
-    params.resultIsError ||
-    params.call.namespace !== CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE
-  ) {
-    return undefined;
-  }
-  // Middleware and extensions may withdraw or rewrite the reply, so read the
-  // effective result, never the raw tool output.
-  const payload = captureToolAuthoredSourceReply({
-    result: params.result,
-    toolCallId: params.call.callId,
-    idempotencyScope: params.runId ?? params.call.turnId,
-  });
-  if (!payload) {
-    return undefined;
-  }
-  params.payloads.push(payload);
-  return true;
 }
