@@ -795,6 +795,17 @@ describe("gateway plugin instance bindings", () => {
       });
       coordinator.reportReloadSettlement = true;
       controlRpcOwnedConfigWatcher(configPath);
+      const startupPlugins = await import("./server-startup-plugins.js");
+      const runMaintenance = startupPlugins.runGatewayPostReadyStartupMaintenance;
+      const maintenanceSettled = createDeferred();
+      const maintenanceObserver = vi
+        .spyOn(startupPlugins, "runGatewayPostReadyStartupMaintenance")
+        .mockImplementation((params) => {
+          const maintenance = runMaintenance(params);
+          maintenanceSettled.resolve(maintenance);
+          return maintenance;
+        });
+      onTestFinished(() => maintenanceObserver.mockRestore());
       finishServiceStops.push(coordinator.serviceStopCompletion.resolve);
       const hotReloadRecovery = vi.fn(() => {
         // No run loop consumes this synthetic emission, so release its signal-admission lease.
@@ -810,6 +821,8 @@ describe("gateway plugin instance bindings", () => {
       });
       started.push(server);
       await server.startupSettled;
+      // Sidecar readiness does not join the deferred registry maintenance lease.
+      await maintenanceSettled.promise;
 
       const initialRegistry = getActivePluginRegistry();
       const initialMetadata = getGatewayPluginMetadataSnapshot();
