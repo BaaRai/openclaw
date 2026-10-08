@@ -29,12 +29,12 @@ const READINESS_ROLES = [
   "relay-independent",
   "relay-shared",
 ] as const;
-const DESCENDANT_ROLES = READINESS_ROLES.slice(1) as readonly [
+const DESCENDANT_ROLES = [
   "holder-independent",
   "holder-shared",
   "relay-independent",
   "relay-shared",
-];
+] as const;
 
 type FixtureRow = { role: string; pid: number };
 type ProcStat = { state: string; ppid: number; startTicks: string };
@@ -393,7 +393,8 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
         (stat) => stat !== undefined && stat.ppid === process.pid,
         10_000,
       );
-      expect(adopted.state.startsWith("Z"), `orphan must be live, state ${adopted.state}`).toBe(
+      expect(adopted, "orphan was never adopted by the harness").toBeDefined();
+      expect(adopted?.state.startsWith("Z"), `orphan must be live, state ${adopted?.state}`).toBe(
         false,
       );
 
@@ -409,11 +410,12 @@ describe.skipIf(process.platform !== "linux")("Codex app-server close reaping", 
         10_000,
       );
       expect(stuck, "observer must detect the intentionally leaked zombie").toContain(orphanPid);
+      expect(zombie, "orphan never became a harness-parented zombie").toBeDefined();
 
       const processRuntime = await import("openclaw/plugin-sdk/process-runtime");
       expect(typeof processRuntime.scheduleAdoptedDescendantReapAfterRootExit).toBe("function");
       processRuntime.scheduleAdoptedDescendantReapAfterRootExit(leaverChild, [
-        { pid: orphanPid, startedAt: `${readBootId()}:${zombie.startTicks}` },
+        { pid: orphanPid, startedAt: `${readBootId()}:${zombie?.startTicks}` },
       ]);
       const stat = await waitFor(
         () => readStat(orphanPid),
