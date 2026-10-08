@@ -120,7 +120,7 @@ function mutatePairing(params: PairingOptions, mutation: PairingMutation) {
             const normalized = approval == null ? "" : normalizeAllowFromInput(approval, adapter);
             context.admission.assertCurrent();
             assertCurrent?.();
-            facts.replyPort.postMessage(normalized);
+            facts.replyPort.postMessage(normalized, []);
           } else if (
             facts.kind !== "channel-pairing" ||
             (request.stage !== "transaction" && request.stage !== "commit")

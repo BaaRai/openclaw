@@ -158,7 +158,13 @@ function writeChanges(database: OpenClawStateDatabase, channel: string, snapshot
       db
         .insertInto("channel_pairing_allow_entries")
         .values(
-          changedEntries.slice(offset, offset + 100).map((row) => ({ ...row, updated_at: now })),
+          changedEntries.slice(offset, offset + 100).map((row) => ({
+            channel_key: row.channel_key,
+            account_id: row.account_id,
+            entry: row.entry,
+            sort_order: row.sort_order,
+            updated_at: now,
+          })),
         )
         .onConflict((oc) =>
           oc
@@ -225,7 +231,7 @@ export const channelPairingOperations = {
           });
           const snapshot = readChannelPairingSnapshotFromDatabase(database, channel);
           const state = snapshot.state;
-          let changed = false;
+          let changed: boolean;
           let result: Output;
           if (mutation.action === "allow") {
             const current = (state.allowFrom?.[mutation.accountId] ?? []).slice();
