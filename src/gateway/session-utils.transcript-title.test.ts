@@ -161,12 +161,18 @@ test("does not hydrate named transcript payloads for scalar title-only rows", as
         "Readable origin title",
       ]);
       expect(queries.textBytes.events).toBe(0);
+      expect(queries.blobBytes.events).toBe(0);
       expect(parse.mock.calls.some(([json]) => json.includes(NAMED_PAYLOAD_MARKER))).toBe(false);
 
       // A preview request still reads the same persisted payload and preserves every title.
       const previews = await render(true);
-      expect(queries.textBytes.events).toBeGreaterThan(NAMED_PAYLOAD.length * titles.length);
-      expect(previews.every((row) => row.lastMessagePreview?.startsWith("Preview"))).toBe(true);
+      expect(queries.counts.events).toBeGreaterThan(0);
+      expect(queries.blobBytes.events).toBeGreaterThan(0);
+      for (const [index, row] of previews.entries()) {
+        expect(
+          row.lastMessagePreview?.startsWith(`Preview ${index}. ${NAMED_PAYLOAD_MARKER}`),
+        ).toBe(true);
+      }
       expect(JSON.stringify(withoutPreviews(previews))).toBe(JSON.stringify(titles));
       parse.mockRestore();
     },
