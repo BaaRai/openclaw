@@ -158,7 +158,6 @@ export function resolveSessionKeyBySessionId(
   scope: Pick<SessionTranscriptReadScope, "agentId" | "env" | "sessionId" | "storePath">,
 ): string | undefined {
   const resolved = resolveSqliteTranscriptReadScope(scope);
-  // session_windows.session_id is the primary key; the indexed lookup cannot be ambiguous.
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) => readSessionKeyBySessionIdInDatabase(database, resolved.sessionId),
     toDatabaseOptions(resolved),
