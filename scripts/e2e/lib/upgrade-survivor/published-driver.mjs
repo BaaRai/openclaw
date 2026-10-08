@@ -26,7 +26,12 @@ import {
 } from "./published-driver-sqlite.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-const [candidateArg, artifactsArg, driverTag = "latest"] = process.argv.slice(2);
+const [candidateArg, artifactsArg, driverTag = "latest", scenario = "base"] = process.argv.slice(2);
+assert(["base", "repair-progress"].includes(scenario));
+const repairProgress = scenario === "repair-progress";
+if (repairProgress) {
+  assert.equal(driverTag, "2026.9.7");
+}
 const legacySqlite = process.env.OPENCLAW_PUBLISHED_DRIVER_LEGACY_SQLITE === "1";
 assert.equal(process.platform, "linux", "The managed-service fixture requires Linux");
 assert(fs.existsSync("/.dockerenv"), "Run through the bare Docker E2E runner");
@@ -88,11 +93,12 @@ function writeJson(name, value) {
   fs.writeFileSync(path.join(artifacts, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function run(name, command, args, allowFailure = false) {
+async function run(name, command, args, allowFailure = false, observe = null) {
   const started = Date.now();
-  const diagnostic = name === "recorded-run" || name === "stop-service";
+  const diagnostic =
+    name === "recorded-run" || name === "stop-service" || name === "capture-diagnostics";
   const deadline = diagnostic ? cellDeadline - 5_000 : workDeadline;
-  const cap = name === "recorded-run" ? 20_000 : name === "stop-service" ? 5_000 : Infinity;
+  const cap = name === "stop-service" ? 5_000 : diagnostic ? 20_000 : Infinity;
   // Each managed command can spend another 5s terminating and 5s draining.
   const timeoutMs = Math.min(cap, deadline - started - (diagnostic ? 10_000 : 0));
   fs.writeFileSync(path.join(artifacts, "phase.txt"), `${name}\n`);
@@ -109,7 +115,7 @@ async function run(name, command, args, allowFailure = false) {
       args,
       cwd: root,
       env,
-      stdio: ["ignore", out, err],
+      stdio: observe ? ["ignore", "pipe", "pipe"] : ["ignore", out, err],
       signal: diagnostic ? undefined : commandSignal,
       timeoutMs,
       timeoutKillGraceMs: 5_000,
@@ -117,11 +123,23 @@ async function run(name, command, args, allowFailure = false) {
       abortKillGraceMs: 5_000,
       cleanupDrainTimeoutMs: 5_000,
       requireProcessTreeExit: true,
-      onReady: (child) =>
+      onReady: (child) => {
         child.once("exit", (status, signal) => {
           result.status = status;
           result.signal = signal;
-        }),
+        });
+        if (observe) {
+          for (const [stream, descriptor] of [
+            ["stdout", out],
+            ["stderr", err],
+          ]) {
+            child[stream].on("data", (chunk) => {
+              fs.writeSync(descriptor, chunk);
+              observe(chunk, stream, child);
+            });
+          }
+        }
+      },
       onSignal: (signal) => {
         result.receivedSignal = signal;
       },
@@ -243,6 +261,12 @@ process.exitCode = await runCancelableCommand(async (signal) => {
     // Between a release and its forward-port, main lags npm latest. The cell proves
     // the update mechanics, not the version label: relabel the candidate to the
     // driver version so the future-version guard sees an upgrade, not a downgrade.
+    if (repairProgress) {
+      assert(
+        compareReleaseVersions(build.version, driverVersion) >= 0,
+        "Progress cell cannot relabel the initial candidate",
+      );
+    }
     if (compareReleaseVersions(build.version, driverVersion) < 0) {
       candidatePackage = await relabelCandidate(build.version, driverVersion);
       // Match the relabeled dist/build-info.json exactly; the installed bytes carry no source label.
@@ -261,6 +285,21 @@ process.exitCode = await runCancelableCommand(async (signal) => {
           }
         : {}),
     });
+
+    const proveRepairProgress = repairProgress
+      ? await (
+          await import("./repair-progress.mjs")
+        ).prepareRepairProgress({
+          run,
+          artifacts,
+          runtime,
+          state,
+          packageRoot,
+          candidate,
+          env,
+          bin,
+        })
+      : undefined;
 
     const port = await freePort();
     const token = "published-driver-synthetic-token";
@@ -312,7 +351,7 @@ process.exitCode = await runCancelableCommand(async (signal) => {
     }
     // PRs start from the serving Gateway's state; main/release proofs also seed
     // Doctor's broader repair state before exercising the same managed update.
-    if (legacySqlite || process.env.GITHUB_EVENT_NAME !== "pull_request") {
+    if (legacySqlite || repairProgress || process.env.GITHUB_EVENT_NAME !== "pull_request") {
       await run("seed-state", "openclaw", ["doctor", "--fix", "--non-interactive"]);
     }
     if (legacySqlite) {
@@ -527,9 +566,22 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "Second maintenance repeated conversion",
       );
     }
+    await proveRepairProgress?.();
     writeJson("summary", {
       driverVersion,
-      candidate: build,
+      candidate: repairProgress ? { ...build, kind: "tarball" } : build,
+      ...(repairProgress
+        ? {
+            status: "passed",
+            baseline: { spec: `openclaw@${driverVersion}`, version: driverVersion },
+            scenario,
+            installedVersion: readJson(path.join(packageRoot, "package.json")).version,
+            candidateInstallMode: "npm",
+            updateRestartMode: "manual",
+            updateOutcome: "success",
+            phases: [{ phase: scenario, status: "passed", at: new Date().toISOString() }],
+          }
+        : {}),
       runId: recorded.runId,
       phase: recorded.phase,
       readyz: 200,
@@ -549,6 +601,32 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "--user",
         "stop",
         "openclaw-gateway.service",
+      ]);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (repairProgress && !failures.some(hasUnjoinedWork)) {
+    try {
+      // Capture settled command files before retiring the fixture runtime. The
+      // host alone redacts/publishes them, using the existing capture contract.
+      const phase = failures[0]?.command ?? scenario;
+      const exitStatus = failures.length ? failures[0].exitCode || 1 : 0;
+      writeJson("progress-cell", {
+        phase,
+        exitStatus,
+        failures: failures.map((error) => ({
+          command: error.command,
+          message: String(error),
+          exitCode: error.exitCode,
+        })),
+      });
+      await run("capture-diagnostics", process.execPath, [
+        fileURLToPath(new URL("./diagnostics.mjs", import.meta.url)),
+        "capture",
+        artifacts,
+        phase,
+        String(exitStatus),
       ]);
     } catch (error) {
       failures.push(error);
