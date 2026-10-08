@@ -38,7 +38,7 @@ export function prepareAcpSessionMetadataRead(
   let firstCohort: AcpSessionRow[] | undefined;
   let failed: { error: unknown } | undefined;
   return {
-    readContentVersionRow(db: DatabaseSync) {
+    readContentVersionRow(this: void, db: DatabaseSync) {
       try {
         const database = getNodeSqliteKysely<Pick<DB, "acp_sessions" | "config_machine_state">>(db);
         const rows = executeSqliteQuerySync(
