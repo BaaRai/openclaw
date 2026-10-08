@@ -74,7 +74,7 @@ export function resolveCodexToolResultSourceReply(params: {
   const toolAuthoredFinal = Boolean(payload);
   const continuesSourceReplyProgress = confirmed && final === false;
   const terminate =
-    toolAuthoredFinal === true ||
+    toolAuthoredFinal ||
     ((params.rawResult.terminate === true || params.result.terminate === true) &&
       !continuesSourceReplyProgress) ||
     // Yield is an explicit owner-level turn handoff, not termination
@@ -88,7 +88,7 @@ export function resolveCodexToolResultSourceReply(params: {
     (confirmed && final === true) ||
     undefined;
   params.response.terminate = terminate;
-  if (toolAuthoredFinal === true) {
+  if (toolAuthoredFinal) {
     params.response.toolAuthoredFinalReply = true;
   }
   return { toolConfirmed, final, terminate };

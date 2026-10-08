@@ -423,24 +423,23 @@ export async function runCodexAppServerSideQuestion(
   async function createCodexSideToolBridge(
     nativeProviderWebSearchSupport: CodexNativeWebSearchSupport,
   ) {
-    const params = sideRunParams;
     const resolvedWorkspace = effectiveParams.workspaceDir ?? cwd;
     const sandboxSessionKey =
-      params.sandboxSessionKey?.trim() ||
-      params.sessionKey?.trim() ||
-      params.sessionId ||
+      sideRunParams.sandboxSessionKey?.trim() ||
+      sideRunParams.sessionKey?.trim() ||
+      sideRunParams.sessionId ||
       sessionAgentId;
     const sandbox =
-      params.sandbox !== undefined
-        ? params.sandbox
+      sideRunParams.sandbox !== undefined
+        ? sideRunParams.sandbox
         : await resolveSandboxContext({
-            config: params.config,
+            config: sideRunParams.config,
             sessionKey: sandboxSessionKey,
             workspaceDir: cwd,
           });
     let webSearchAllowed = false;
     const tools = await buildDynamicTools({
-      params,
+      params: sideRunParams,
       resolvedWorkspace,
       effectiveWorkspace: cwd,
       sandboxSessionKey,
@@ -458,7 +457,7 @@ export async function runCodexAppServerSideQuestion(
       },
     });
     const requestedWebSearchPlan = resolveCodexWebSearchPlan({
-      config: params.config,
+      config: sideRunParams.config,
       nativeToolSurfaceEnabled,
       nativeProviderWebSearchSupport,
       webSearchAllowed,
@@ -466,7 +465,7 @@ export async function runCodexAppServerSideQuestion(
     // Forks inherit dynamic declarations; BTW retains its native-only search policy.
     const webSearchPlan =
       requestedWebSearchPlan.kind === "managed"
-        ? resolveCodexWebSearchPlan({ config: params.config, webSearchAllowed: false })
+        ? resolveCodexWebSearchPlan({ config: sideRunParams.config, webSearchAllowed: false })
         : requestedWebSearchPlan;
     // Side threads do not own the compaction lifecycle that expires screenshot coordinates.
     const exposedTools = tools.filter(
@@ -479,13 +478,13 @@ export async function runCodexAppServerSideQuestion(
         loading: resolveCodexDynamicToolsLoading(pluginConfig),
         hookContext: {
           agentId: sessionAgentId,
-          config: params.config,
-          contextWindowTokens: params.model.contextWindow,
-          sessionId: params.sessionId,
-          sessionKey: params.sessionKey,
-          runId: params.runId,
-          currentChannelProvider: resolveCodexMessageToolProvider(params),
-          ...buildAgentHookContextChannelFields(params),
+          config: sideRunParams.config,
+          contextWindowTokens: sideRunParams.model.contextWindow,
+          sessionId: sideRunParams.sessionId,
+          sessionKey: sideRunParams.sessionKey,
+          runId: sideRunParams.runId,
+          currentChannelProvider: resolveCodexMessageToolProvider(sideRunParams),
+          ...buildAgentHookContextChannelFields(sideRunParams),
         },
       }),
       webSearchPlan,

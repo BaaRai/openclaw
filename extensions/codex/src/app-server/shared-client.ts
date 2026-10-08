@@ -1174,7 +1174,8 @@ function resolveManagedFallbackStartOptions(
   startOptions: CodexAppServerStartOptions,
 ): CodexAppServerStartOptions[] {
   const commands = [startOptions.command, ...(startOptions.managedFallbackCommandPaths ?? [])];
-  return commands.map((command, index) => {
+  const candidates: CodexAppServerStartOptions[] = [];
+  for (const [index, command] of commands.entries()) {
     const managedFallbackCommandPaths = commands.slice(index + 1);
     const candidate = {
       ...startOptions,
@@ -1185,8 +1186,9 @@ function resolveManagedFallbackStartOptions(
     } else {
       candidate.managedFallbackCommandPaths = managedFallbackCommandPaths;
     }
-    return candidate;
-  });
+    candidates.push(candidate);
+  }
+  return candidates;
 }
 
 function detachCurrentSharedClient(
