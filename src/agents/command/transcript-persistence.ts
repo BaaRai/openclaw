@@ -32,7 +32,6 @@ type TranscriptUsage = Pick<
 >;
 
 type TextTurnTranscriptContext = {
-  runId?: string;
   inputProvenance?: InputProvenance;
   body: string;
   transcriptBody?: string;
@@ -46,6 +45,7 @@ type TextTurnTranscriptContext = {
   threadId?: string | number;
   sessionCwd: string;
   config: OpenClawConfig;
+  runId?: string;
 };
 
 type PersistTextTurnTranscriptParams = TextTurnTranscriptContext & {
@@ -215,8 +215,8 @@ async function persistTextTurnTranscript(
     {
       config: params.config,
       cwd: params.sessionCwd,
-      runId: params.runId,
       messages,
+      runId: params.runId,
       publishWhen: "always",
       touchSessionEntry: true,
       updateMode: params.runId ? "inline" : "file-only",
