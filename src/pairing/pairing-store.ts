@@ -68,15 +68,11 @@ function mutatePairing(params: PairingOptions, mutation: PairingMutation) {
   const context = captureOpenClawStateWorkerContext({ env: params.env ?? process.env });
   return runOpenClawStateWorkerOperation(
     context,
-    async (scope) => {
-      const result = await scope.execute({
+    (scope) =>
+      scope.execute({
         type: "channelPairing.mutate",
         input: { channel, mutation },
-      });
-      context.admission.assertCurrent();
-      assertCurrent?.();
-      return result;
-    },
+      }),
     {
       assertCurrent,
       createAdmission: () => ({

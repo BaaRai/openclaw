@@ -95,7 +95,12 @@ Workers may inherit completed native SQLite capability checks and canonical sche
 comparison definitions through the existing worker launcher. Runtime facts remain
 bound to the originating process, executable, runtime, and selected library;
 comparison definitions also bind their canonical source and format. Missing or
-mismatched facts use the original admission path. Each worker still validates its
+mismatched facts use the original admission path. A SQLite writer returns its
+completed native capability fact with an existing successful reply, so later
+sibling workers can inherit it without another probe. The native runtime owner
+checks the same process and library identity and current WAL safety floor before
+forwarding it; invalid hints leave both write settlement and normal admission
+unchanged. Each worker still validates its
 actual database and current caller authority. Registry admission likewise reuses
 exact canonical audit definitions from admitted schema facts, retaining structural
 validation for other supported shapes. Schemas, stored bytes, retention, and update

@@ -100,6 +100,39 @@ it.each([
   },
 );
 
+it("settles an accepted approval when authority is revoked after the commit grant", async () => {
+  const channel = "accepted-approval";
+  seed(channel, [request("alice")]);
+  let revoked = false;
+  const original = workerAdmission.createSqliteWorkerOperationAdmission;
+  vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
+    (admit, attachment) =>
+      original((admission, grant) => {
+        admit(admission, grant);
+        if (admission.stage === "commit") {
+          revoked = true;
+        }
+      }, attachment),
+  );
+  const result = approveChannelPairingCode({
+    channel,
+    code: "ABCDEFGH",
+    env,
+    pairingAdapter: { idLabel: "peer" },
+    assertCurrent: () => {
+      if (revoked) {
+        throw new Error("owner revoked after accepting the approval");
+      }
+    },
+  });
+  await expect(result).resolves.toMatchObject({ id: "alice" });
+  expect(revoked).toBe(true);
+  expect(readChannelPairingStateSnapshot(channel, env)).toMatchObject({
+    requests: [],
+    allowFrom: { alpha: ["alice"] },
+  });
+});
+
 it.each(["selected", "missing"] as const)(
   "retains native write authority for a %s host approval after preparation",
   async (selection) => {
