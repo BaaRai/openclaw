@@ -4,12 +4,16 @@ import {
   createManagedHandoffLeaseStore,
   type ManagedHandoffLease,
 } from "./update-managed-service-handoff-lease.js";
+import { joinSystemServiceUpdateHandoffs } from "./update-managed-service-handoff-service.js";
 import type { ActiveManagedServiceUpdateHandoff } from "./update-managed-service-handoff-types.js";
 
 export const activeManagedServiceUpdateHandoffs = new Map<
   string,
   ActiveManagedServiceUpdateHandoff
 >();
+
+export const waitForSystemServiceUpdateHandoffs = (): Promise<void> | undefined =>
+  joinSystemServiceUpdateHandoffs(activeManagedServiceUpdateHandoffs);
 
 /** A transferred updater may manage its serving ancestor only under its current lease. */
 export async function isCurrentManagedServiceUpdateHandoffProcess(params: {
