@@ -319,10 +319,11 @@ committing the runtime pin. A failed publication or startup restores the previou
 command and running state. Startup launcher files remain unchanged; adoption does
 not convert the installation into a Scheduled Task or request UAC.
 
-An existing S4U task can require administrator rights even when it belongs to the
-same Windows account. If the ordinary desktop token cannot inspect or stop that
-Gateway, the confirmation explains the administrator request. The app requests
-UAC once for the existing CLI; the desktop app stays unelevated. That CLI checks
+An existing managed Gateway Scheduled Task requires administrator rights to
+replace its boot-trigger registration, even when the same account can access its
+process. The confirmation explains the administrator request. The app elevates
+only the existing CLI, with one UAC request when needed; an already-elevated app
+does not request UAC again. That CLI checks
 the captured pin again, performs the complete stop, replace, and start operation,
 verifies Gateway health, and exits. There is no resident elevated helper, stored
 credential, or automatic migration on startup or update.
@@ -333,6 +334,10 @@ PowerShell command to run manually with administrator approval for the same
 Windows account. If the pin or definition changes while approval is pending,
 the CLI refuses the stale action and preserves the newer selection. Choosing an
 already-selected bundled runtime does not reinstall it.
+
+If installation succeeds but health verification fails, the app reports the
+Gateway as installed but unverified. Run `openclaw gateway status --deep` before
+retrying.
 
 The app decodes verified `bun.exe` bytes into an immutable directory under its
 account state directory, normally
