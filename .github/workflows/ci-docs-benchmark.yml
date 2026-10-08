@@ -1,7 +1,7 @@
 name: CI docs overlap benchmark
 on:
   push:
-    branches: [perf/ci-docs-overlap-20261008]
+    branches: [bench/ci-docs-native-20261008]
 permissions:
   contents: read
 concurrency:
@@ -22,6 +22,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+      - name: Fetch fixed glossary baseline
+        run: git -c credential.helper= fetch --no-tags --depth=1 origin 8dc62fa984301d4f2ebc9523f8904fcaeaeca094
       - name: Setup Node environment
         uses: openclaw/openclaw/.github/actions/setup-node-env@8dc62fa984301d4f2ebc9523f8904fcaeaeca094
         with:
