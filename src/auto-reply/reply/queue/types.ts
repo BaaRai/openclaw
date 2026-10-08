@@ -49,6 +49,7 @@ import type {
   VerboseLevel,
 } from "../directives.js";
 import type { ReplyOperationRunState } from "../reply-operation-run-state.js";
+import type { SessionEventExecution } from "../session-event-contract.js";
 
 export type { QueueDropPolicy } from "../../../config/types.queue.js";
 
@@ -116,6 +117,7 @@ type FollowupRunObservers = Pick<
 > & {
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   resolveReplyDelivery?: ReplyDeliveryObserver;
+  onDeliberateSilentTerminalReply?: () => void;
 };
 
 export type FollowupRun = {
@@ -212,6 +214,7 @@ export type FollowupRun = {
   /** Chat type for context-aware threading (e.g., DM vs channel). */
   originatingChatType?: string;
   run: {
+    internalEventExecution?: SessionEventExecution;
     providerReviewAcknowledgment?: import("../../../sessions/provider-review.js").ProviderReviewAcknowledgment;
     agentId: string;
     agentDir: string;

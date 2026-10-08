@@ -4,6 +4,7 @@ import type { AcpTurnAttachment } from "../../../acp/control-plane/manager.types
 import { cleanupFailedAcpSpawn } from "../../../acp/control-plane/spawn.js";
 import { isAcpEnabledByPolicy, resolveAcpAgentPolicyError } from "../../../acp/policy.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
+import { captureSessionEventTargetForHost as captureSessionEventTarget } from "../../../auto-reply/reply/session-event-handoff.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
@@ -15,7 +16,10 @@ import { readSessionEntryReadOnlyInWorker } from "../../../config/sessions/sessi
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../../../gateway/session-utils-store-worker.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import { resolveEventSessionRoutingPolicy } from "../../../infra/event-session-routing.js";
+import {
+  resolveEventSessionKeyForPolicy,
+  resolveEventSessionRoutingPolicy,
+} from "../../../infra/event-session-routing.js";
 import {
   getSessionBindingService,
   listSessionBindingsBySessionAsync,
@@ -399,6 +403,14 @@ export async function spawnAcpDirect(
   const parentEventRouting = parentSessionKey
     ? resolveEventSessionRoutingPolicy({ cfg, sessionKey: parentSessionKey })
     : undefined;
+  const parentEventTarget =
+    effectiveStreamToParent && parentSessionKey && parentEventRouting
+      ? await captureSessionEventTarget(
+          requesterAgentId,
+          resolveEventSessionKeyForPolicy(parentSessionKey, parentEventRouting),
+        )
+      : undefined;
+  ctx.assertActive?.();
   const gatewayAttachments = toGatewayImageAttachments(params.attachments);
   const requesterOrigin = requesterState.origin;
   const progressOrigin = {
@@ -548,11 +560,12 @@ export async function spawnAcpDirect(
         agentId: targetAgentId,
       });
       const startParentRelay = (runId: string) =>
-        effectiveStreamToParent && parentSessionKey && parentEventRouting
+        effectiveStreamToParent && parentSessionKey && parentEventRouting && parentEventTarget
           ? startAcpSpawnParentStreamRelay({
               runId,
               parentSessionKey,
               requesterAgentId,
+              expectedTarget: parentEventTarget,
               childSessionKey: sessionKey,
               childSessionId: state.initializedSession.sessionId,
               agentId: targetAgentId,

@@ -95,6 +95,7 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
   const { resolvedElevatedLevel, execOverrides, abortedLastRun } = params;
   const { sessionEntry } = params;
   const isHeartbeat = opts?.isHeartbeat === true;
+  const isInternalEvent = opts?.internalEventExecution !== undefined;
   const explicitThinkingLevelOverride = normalizeThinkLevel(opts?.thinkingLevelOverride);
   const effectiveQueueMode = opts?.queueModeOverride ?? perMessageQueueMode;
   const traceAttributes = {
@@ -383,23 +384,24 @@ export async function prepareReplyRunContext(params: RunPreparedReplyParams) {
           : {}),
       }
     : { ...sessionCtx, ThreadStarterBody: undefined };
-  let inboundContextSessionEntry = isHeartbeat
-    ? undefined
-    : ((sessionKey !== undefined ? sessionStore?.[sessionKey] : undefined) ??
-      sessionEntryHandle?.getCurrent() ??
-      sessionEntry);
+  let inboundContextSessionEntry =
+    isHeartbeat || isInternalEvent
+      ? undefined
+      : ((sessionKey !== undefined ? sessionStore?.[sessionKey] : undefined) ??
+        sessionEntryHandle?.getCurrent() ??
+        sessionEntry);
   let activeGoalContext = formatActiveGoalContext(inboundContextSessionEntry);
-  // Heartbeats are synthetic system turns: delivery facts still drive routing and
-  // formatting, but must not be presented to the model as user-role inbound context.
-  let inboundUserContext = isHeartbeat
-    ? ""
-    : buildInboundUserContextPrefix(
-        inboundUserContextSessionCtx,
-        envelopeOptions,
-        inboundContextSessionEntry,
-      );
+  // Synthetic turns retain routing facts without inventing user-role inbound context.
+  let inboundUserContext =
+    isHeartbeat || isInternalEvent
+      ? ""
+      : buildInboundUserContextPrefix(
+          inboundUserContextSessionCtx,
+          envelopeOptions,
+          inboundContextSessionEntry,
+        );
   const refreshInboundContextAfterAdmissionWait = async () => {
-    if (isHeartbeat) {
+    if (isHeartbeat || isInternalEvent) {
       return;
     }
     inboundContextSessionEntry =

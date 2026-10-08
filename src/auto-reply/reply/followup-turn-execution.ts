@@ -297,8 +297,9 @@ export async function executeFollowupTurn(params: {
   const progressOpts: InternalGetReplyOptions = {
     ...sourceOpts,
     isHeartbeat,
-    // Queue callbacks are refreshed per session, but authority, cancellation, and
-    // run observers belong to the queued turn. Never borrow them from another runner.
+    sourceReplyDeliveryMode: turn.queued.run.sourceReplyDeliveryMode,
+    internalEventExecution: turn.queued.run.internalEventExecution,
+    // A refreshed runner owns presentation defaults, never another source's authority or callbacks.
     operatorAuthority: turn.queued.operatorAuthority,
     abortSignal: turn.operation.abortSignal,
     toolsAllow: turn.queued.toolsAllow,
@@ -308,6 +309,7 @@ export async function executeFollowupTurn(params: {
     onModelSelected: turn.queued.runObservers?.onModelSelected,
     prepareAssistantTranscriptMessage: turn.queued.runObservers?.prepareAssistantTranscriptMessage,
     resolveReplyDelivery: turn.queued.runObservers?.resolveReplyDelivery,
+    onDeliberateSilentTerminalReply: turn.queued.runObservers?.onDeliberateSilentTerminalReply,
     commentaryPayloadsEnabled,
     runId: turn.runId,
     onBlockReply: undefined,
