@@ -10,10 +10,13 @@ import {
 import { createDeferred } from "../../test/helpers/promise.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
 import * as announceOutput from "../agents/subagents/announce/subagent-announce-output.js";
+import { PROVISIONAL_KILL_RECONCILIATION_MS } from "../agents/subagents/registry/subagent-registry-helpers.js";
+import { mutateSubagentRuns } from "../agents/subagents/registry/subagent-registry-persistence.js";
 import { subscribeSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import {
   getSubagentRunByRunId,
   resetSubagentRegistryForTests,
+  testing as subagentRegistryTesting,
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
@@ -798,53 +801,79 @@ it.each([
   },
 );
 
-it("tells a parent once when the user stops the awaited child of its finished turn", async () => {
-  const script = startAwaitedChildModel();
-  const model = await startScriptedModel(script.handle);
-  const gateway = await startProofGateway(model.url, "subagent-awaited-child-stop");
-  const parentRunId = "subagent-awaited-child-stop-parent";
-  try {
-    await expect(
-      gateway.client.request("chat.send", {
-        sessionKey: `agent:main:${parentRunId}`,
-        message: parentPrompt,
-        idempotencyKey: parentRunId,
-        deliver: false,
-      }),
-    ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
-    const child = await script.child;
-    await script.childStarted;
-    await expect(
-      gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
-    ).resolves.toMatchObject({ status: "ok" });
-    expect(getSubagentRunByRunId(child.runId)?.requesterSettleWake?.requesterYieldBatch).not.toBe(
-      true,
-    );
-    const outputPolls = vi.mocked(announceOutput.readLatestSubagentOutputWithRetry);
-    outputPolls.mockClear();
-    await expect(
-      gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
-    ).resolves.toMatchObject({ ok: true, status: "aborted" });
-    await script.notified;
-    // A killed child has no further output: its notice is sent without polling for any.
-    expect(outputPolls).not.toHaveBeenCalled();
-    await waitForRunOrRemoval(
-      child.runId,
-      (row) =>
-        row.execution.status === "terminal" &&
-        typeof row.cleanupCompletedAt === "number" &&
-        row.requesterSettleWake === undefined,
-    );
-    const notices = script.notices();
-    expect(notices).toHaveLength(1);
-    // The notice reports the stopped outcome; the task text alone is already in the history.
-    expect(notices[0]).toContain(
-      `ended without a result: 1 stopped, killed, or deleted before finishing (${awaitedChildTask})`,
-    );
-    expect(notices[0]).toContain("(no output)");
-    expect(owedControllerInputs(child.runId), "the stopped child owes nothing").toEqual([]);
-  } finally {
-    await gateway.close();
-    await model.close();
-  }
-});
+it.each([
+  { stopped: "child", notices: 1 },
+  { stopped: "parent", notices: 0 },
+] as const)(
+  "tells a parent $notices time(s) when the user stops the $stopped of an awaited child",
+  async ({ stopped, notices: expectedNotices }) => {
+    const script = startAwaitedChildModel();
+    const model = await startScriptedModel(script.handle);
+    const gateway = await startProofGateway(model.url, `subagent-awaited-${stopped}-stop`);
+    const parentRunId = `subagent-awaited-${stopped}-stop-parent`;
+    const parentSessionKey = `agent:main:${parentRunId}`;
+    try {
+      await expect(
+        gateway.client.request("chat.send", {
+          sessionKey: parentSessionKey,
+          message: parentPrompt,
+          idempotencyKey: parentRunId,
+          deliver: false,
+        }),
+      ).resolves.toMatchObject({ runId: parentRunId, status: "started" });
+      const child = await script.child;
+      await script.childStarted;
+      await expect(
+        gateway.client.request("agent.wait", { runId: parentRunId, timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      expect(getSubagentRunByRunId(child.runId)?.requesterSettleWake?.requesterYieldBatch).not.toBe(
+        true,
+      );
+      const outputPolls = vi.mocked(announceOutput.readLatestSubagentOutputWithRetry);
+      outputPolls.mockClear();
+      if (stopped === "child") {
+        await expect(
+          gateway.client.request("sessions.abort", { key: child.sessionKey, runId: child.runId }),
+        ).resolves.toMatchObject({ ok: true, status: "aborted" });
+        await script.notified;
+        // A killed child has no further output: its notice is sent without polling for any.
+        expect(outputPolls).not.toHaveBeenCalled();
+      } else {
+        // A requester-wide Stop: the parent already knows, so its children report nothing.
+        await gateway.client.request("sessions.abort", { key: parentSessionKey });
+        // The Stop's own kill owner publishes the termination; the sweeper confirms it after
+        // the reconciliation window. Age the kill past that window and drive one sweep, so the
+        // confirmation decides delivery inside this test.
+        await waitForRun(child.runId, (row) => row.killReconciliation !== undefined);
+        await mutateSubagentRuns([child.runId], (rows) => {
+          const row = structuredClone(rows.get(child.runId)!);
+          row.killReconciliation!.killedAt -= PROVISIONAL_KILL_RECONCILIATION_MS;
+          return { value: undefined, postimages: new Map([[row.runId, row]]) };
+        });
+        await subagentRegistryTesting.sweepOnceForTests();
+      }
+      // Settled means the kill is confirmed and its cleanup finished, not just published.
+      await waitForRunOrRemoval(
+        child.runId,
+        (row) =>
+          row.execution.status === "terminal" &&
+          row.killReconciliation === undefined &&
+          row.cleanupHandled === true &&
+          typeof row.cleanupCompletedAt === "number" &&
+          row.requesterSettleWake === undefined,
+      );
+      expect(owedControllerInputs(child.runId), "the stopped child owes nothing").toEqual([]);
+      const notices = script.notices();
+      expect(notices).toHaveLength(expectedNotices);
+      for (const notice of notices) {
+        expect(notice).toContain(
+          `ended without a result: 1 stopped, killed, or deleted before finishing (${awaitedChildTask})`,
+        );
+        expect(notice).toContain("(no output)");
+      }
+    } finally {
+      await gateway.close();
+      await model.close();
+    }
+  },
+);
