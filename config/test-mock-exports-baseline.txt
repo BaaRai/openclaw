@@ -10028,8 +10028,6 @@
 ["src/system-agent/tui-backend.test.ts","../plugins/providers.js","25373331c7ce8a9e5e1d66b21d70ce8c425849f7dd03bca51a94f52915aa8047",1]
 ["src/talk/agent-run-control.test.ts","../agents/embedded-agent-runner/active-run-projections.js","d6deddaab90e0eacd10b9db6bfc24b43b530db9d617fc52ba86d2dc1ad343b37",1]
 ["src/talk/agent-run-control.test.ts","../agents/embedded-agent-runner/runs.js","84749cd68c32bf2807d147720b84a3f012f96ba66893f0a69ba5c26a2a354f61",1]
-["src/talk/client-voice-session.digest-retry.test.ts","../channels/message/runtime.js","9a4d4bdfe816e8cee068c72a0e8cc4cb3089c58af0f9203820930ae3039cb267",1]
-["src/talk/client-voice-session.test.ts","../channels/message/runtime.js","9a4d4bdfe816e8cee068c72a0e8cc4cb3089c58af0f9203820930ae3039cb267",1]
 ["src/talk/fast-context-runtime.test.ts","../plugins/memory-runtime.js","bf5e72067c79eb8b2db29d1f842538a2f75279069f91605a664b2872b734668b",1]
 ["src/test-utils/openclaw-test-state.auth.test.ts","../plugins/loader-runtime-load.js","6feea9c304832fa0c01827a298c2948ee8ab3e4595bd40d1fc69d410dd78d079",1]
 ["src/trajectory/metadata.test.ts","../infra/os-summary.js","450293cf638f45b0059c419a2ea7878a2520d10b43d28b449f279210cdcd1fa5",1]
