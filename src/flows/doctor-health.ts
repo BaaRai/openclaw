@@ -153,8 +153,26 @@ async function runDoctorHealthFlowWithResult(
     };
     return true;
   };
+  const repairMode = resolveDoctorRepairMode(options);
+  let interactiveRepair = false;
+  if (repairMode.canPrompt && !repairMode.shouldRepair) {
+    const { createDoctorPrompter } = await import("../commands/doctor-prompter.js");
+    interactiveRepair = await createDoctorPrompter({
+      runtime: effectiveRuntime,
+      options,
+    }).confirmRuntimeRepair({
+      message:
+        "Pause the managed Gateway while you review repairs? Doctor restores its prior service state when finished.",
+      initialValue: true,
+      requiresInteractiveConfirmation: true,
+    });
+    if (!interactiveRepair) {
+      outro("Doctor repairs cancelled. Run openclaw doctor --lint for read-only diagnosis.");
+      return;
+    }
+  }
   try {
-    if (options.repair === true || options.yes === true) {
+    if (options.repair === true || options.yes === true || interactiveRepair) {
       try {
         const { prepareDoctorDatabasePreflight } =
           await import("../commands/doctor-database-preflight.js");
@@ -180,6 +198,7 @@ async function runDoctorHealthFlowWithResult(
     maintenance = await measureGatewayBootstrapStep("doctor.maintenance.begin", () =>
       beginDoctorMaintenance({
         options,
+        interactiveRepair,
         root,
         runtime: repairRuntime,
         assertCurrent: writeAuthority?.assertCurrent,
@@ -273,6 +292,8 @@ async function runDoctorHealthFlowWithResult(
         if (repairedState) {
           schemas = await prepareDoctorDatabasePreflight();
         }
+      }
+      if (maintenance) {
         const { backupDoctorMigrationDatabases } =
           await import("../commands/doctor-migration-backup.js");
         const { createOpenClawAgentDatabasePathMatcher } =
@@ -420,7 +441,7 @@ async function runDoctorHealthFlowWithResult(
       if (recordConfigWriteRefusal(ctx)) {
         return undefined;
       }
-      if (options.repair === true || options.yes === true) {
+      if (maintenance) {
         const { validateDoctorExternalConfigForStartup } =
           await import("./doctor-external-config.js");
         if (!(await validateDoctorExternalConfigForStartup(effectiveRuntime))) {

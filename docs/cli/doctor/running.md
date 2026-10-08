@@ -38,6 +38,13 @@ Use `openclaw doctor --json` when an operator or script wants the advisory Docto
 
 For read-only diagnosis, use `--lint` or bare `--json`. Ordinary `doctor`, including `doctor --non-interactive`, can copy legacy config and migrate state even without `--fix`. `--non-interactive` suppresses prompts, not writes.
 
+Interactive `doctor` first asks to pause the matching managed Gateway while you
+review repairs. Accepting takes maintenance custody, keeps individual repair
+prompts, and restores the service's prior state after database handles close.
+Declining ends the repair flow without changing the service or state; use
+`openclaw doctor --lint` for read-only diagnosis. Externally supervised or
+unmatched Gateways remain subject to their existing maintenance ownership checks.
+
 When ordinary `doctor` asks **Apply recommended config repairs now?**, it checks
 that the selected root config file still matches the source of that proposal.
 If its contents or selected path changed before the write, Doctor preserves the newer file,
