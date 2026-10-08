@@ -6,8 +6,14 @@ const { provider, commandMetadata } = vi.hoisted(() => ({
   provider: vi.fn(),
   commandMetadata: vi.fn(),
 }));
-vi.mock("./process-cwd-provider.js", () => ({ readProviderProcessWorkingDirectory: provider }));
-vi.mock("../process/supervisor/service-child-group-ownership.js", () => ({
+vi.mock("./process-cwd-provider.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./process-cwd-provider.js")>()),
+  readProviderProcessWorkingDirectory: provider,
+}));
+vi.mock("../process/supervisor/service-child-group-ownership.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../process/supervisor/service-child-group-ownership.js")
+  >()),
   readLinuxProcessCommandMetadata: commandMetadata,
 }));
 import { readProcessWorkingDirectories } from "./gateway-process-argv.js";

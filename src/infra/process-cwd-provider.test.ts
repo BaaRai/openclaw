@@ -8,7 +8,10 @@ const { spawn, lstat, generation } = vi.hoisted(() => ({
 }));
 vi.mock("node:child_process", () => ({ spawnSync: spawn }));
 vi.mock("node:fs", () => ({ lstatSync: lstat }));
-vi.mock("../process/supervisor/service-child-group-ownership.js", () => ({
+vi.mock("../process/supervisor/service-child-group-ownership.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../process/supervisor/service-child-group-ownership.js")
+  >()),
   readLinuxProcessGeneration: generation,
   linuxProcessGenerationMatches: (left: unknown, right: unknown) =>
     left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right),
