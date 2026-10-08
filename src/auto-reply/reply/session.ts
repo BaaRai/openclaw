@@ -107,7 +107,7 @@ import { readBeforeResetMessages } from "./commands-reset-hooks.js";
 import { shouldBypassAcpDispatchForCommand } from "./dispatch-acp-command-bypass.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { replyRunRegistry } from "./reply-run-registry.js";
-import { acknowledgeReplySessionInitialization } from "./reply-run-registry.state.js";
+import { acknowledgeReplySessionTransition } from "./reply-run-registry.state.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import {
   resolveSessionDefaultAccountId,
@@ -971,7 +971,7 @@ async function initSessionStateAttemptLocked(
     (entry?.sessionId !== committed.sessionEntry.sessionId ||
       entry?.lifecycleRevision !== committed.sessionEntry.lifecycleRevision)
   ) {
-    await acknowledgeReplySessionInitialization(params.replyOperation, {
+    await acknowledgeReplySessionTransition(params.replyOperation, {
       previous: entry,
       current: committed.sessionEntry,
     });
