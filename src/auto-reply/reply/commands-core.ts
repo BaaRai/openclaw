@@ -3,7 +3,6 @@ import {
   createPluginCommandRuntime,
   matchPluginCommandInvocation,
   PLUGIN_COMMAND_DISPATCH,
-  type PluginCommandExecutionReplyOptions,
 } from "../../plugins/plugin-command-runtime.js";
 import { getSessionDiffBaselineCapture } from "../../sessions/session-diff-baseline.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -45,9 +44,7 @@ export async function handleCommands(params: CommandDispatchParams): Promise<Com
     commandSource: params.ctx.CommandSource,
   });
   const body = params.command.commandBodyNormalized;
-  const planned = (params.opts as PluginCommandExecutionReplyOptions | undefined)?.[
-    PLUGIN_COMMAND_DISPATCH
-  ];
+  const planned = params.opts?.[PLUGIN_COMMAND_DISPATCH];
   const pluginCommand =
     planned ??
     (allowTextCommands && body.trim().startsWith("/")
