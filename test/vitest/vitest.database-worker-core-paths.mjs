@@ -765,9 +765,7 @@ export const databaseWorkerCoreTestFiles = [
   "packages/memory-host-sdk/src/host/session-files.test.ts",
   "packages/memory-host-sdk/src/host/session-transcript-corpus.test.ts",
   "src/agents/harness/native-hook-relay-store.test.ts",
-  "src/agents/harness/native-hook-relay.approval-binding.test.ts",
   "src/agents/harness/native-hook-relay.approval-wait.test.ts",
-  "src/agents/harness/native-hook-relay.execution-admission.test.ts",
   "src/agents/harness/native-hook-relay.lifecycle.test.ts",
   "src/agents/harness/native-hook-relay.test.ts",
   "src/cli/native-hook-relay-cli.locator-worker.test.ts",
@@ -914,7 +912,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/context.opencode-go.test.ts",
   "src/agents/simple-completion-runtime.selected-model.test.ts",
   "src/agents/tools/pdf-tool.resources.test.ts",
-  "src/talk/agent-consult-runtime.lineage.test.ts",
   "src/talk/agent-consult-runtime.storage.test.ts",
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/tts/tts-summary.selection.test.ts",
@@ -1041,12 +1038,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/runtime-doctor-migrations.test.ts",
   "src/plugin-state/plugin-blob-store.test.ts",
   "src/plugin-state/plugin-blob-store.admission.test.ts",
-  "src/plugin-state/plugin-blob-store.readonly.test.ts",
   "src/plugin-state/plugin-state-store.test.ts",
-  "src/plugin-state/plugin-state-store.authority.test.ts",
-  "src/plugin-state/plugin-state-store.errors.test.ts",
-  "src/plugin-state/plugin-state-store.expiry.test.ts",
-  "src/plugin-state/plugin-state-store.namespace-independence.test.ts",
   "src/plugin-state/plugin-state-store.retained.test.ts",
   "src/plugin-state/plugin-state-store.retention.test.ts",
   "src/plugin-state/plugin-state-store.runtime.test.ts",
@@ -1100,6 +1092,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/session-store-runtime.conversation.test.ts",
   "src/plugin-sdk/session-store-runtime.maintenance.test.ts",
   "src/plugin-sdk/session-transcript-runtime-visible-delta.test.ts",
+  "src/gateway/control-ui-plugin-auth-cookie.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
