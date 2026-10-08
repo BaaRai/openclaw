@@ -2210,7 +2210,6 @@ src/infra/outbound/agent-delivery.ts	2
 src/infra/outbound/deliver-channel.ts	3
 src/infra/outbound/deliver-payload.ts	1
 src/infra/outbound/deliver-prepare.ts	1
-src/infra/outbound/delivery-queue-media-spool.ts	2
 src/infra/outbound/delivery-queue-storage.ts	3
 src/infra/outbound/format.ts	1
 src/infra/outbound/message-account-selection.ts	1
@@ -2796,8 +2795,8 @@ ui/src/lib/chat/outbox-store-codec.ts	1
 ui/src/lib/chat/outbox-store.ts	1
 ui/src/lib/chat/tool-call-patch.ts	1
 ui/src/lib/chat/tool-cards.ts	2
-ui/src/lib/config-form-utils.ts	3
-ui/src/lib/config/config-draft-model.ts	3
+ui/src/lib/config-form-utils.ts	1
+ui/src/lib/config/config-draft-model.ts	2
 ui/src/lib/keyboard-shortcuts.ts	1
 ui/src/lib/nodes/index.ts	2
 ui/src/lib/nodes/inventory.ts	1

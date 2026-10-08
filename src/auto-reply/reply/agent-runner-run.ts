@@ -64,7 +64,10 @@ import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
-import { getReplyOperationSessionReader } from "./reply-run-registry.state.js";
+import {
+  captureReplyOperationSessionReader,
+  getReplyOperationSessionReader,
+} from "./reply-run-registry.state.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
@@ -650,7 +653,7 @@ export async function runReplyAgent(
       prepareReplyToolAuthority(
         followupRun,
         undefined,
-        getReplyOperationSessionReader(replyOperation),
+        captureReplyOperationSessionReader(replyOperation),
       ),
     );
     return await executePreparedReplyAgentRun({

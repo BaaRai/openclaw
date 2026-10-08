@@ -58,6 +58,7 @@ export type ReplyOperationAdmission = {
   readonly databaseIdentity?: OpenClawAgentDatabaseIdentity;
   databaseClaim?: SessionAdmissionDatabaseClaim;
   reader?: SessionEntryCohortReader;
+  resolveReader?: () => SessionEntryCohortReader | undefined;
   afterTransition?: (transition: SessionAdmissionTransition) => Promise<void>;
 };
 
@@ -100,6 +101,10 @@ export const lifecycleAdmissionByOperation = (replyRunState.lifecycleAdmissionBy
 /** Resolve only the supplied operation's borrow; a key lookup could select its successor. */
 export function getReplyOperationSessionReader(operation: ReplyOperation | undefined) {
   return operation ? lifecycleAdmissionByOperation.get(operation)?.reader : undefined;
+}
+/** Follow acknowledged reader handoffs only within this exact operation admission. */
+export function captureReplyOperationSessionReader(operation: ReplyOperation | undefined) {
+  return operation ? lifecycleAdmissionByOperation.get(operation)?.resolveReader : undefined;
 }
 /** Called only with the acknowledged lifecycle commit, never a later row lookup. */
 export function acknowledgeReplySessionTransition(

@@ -49,6 +49,10 @@ export function bindReplyOperationDatabaseAdmission(
     databaseIdentity: databaseClaim?.identity,
     databaseClaim,
     reader: bindReader(databaseClaim && "kind" in databaseClaim ? databaseClaim.reader : undefined),
+    resolveReader() {
+      assertReaderOperation();
+      return operationAdmission.reader;
+    },
     async afterTransition(transition) {
       const assertTransitionActive = () => {
         assertReaderOperation();
