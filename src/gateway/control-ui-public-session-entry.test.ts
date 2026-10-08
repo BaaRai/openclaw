@@ -123,8 +123,11 @@ describe("public reader operator handoff", () => {
     async (kind) => {
       const probe = createDeferred<{ status: number }>();
       const f = openReader({ probe: probe.promise });
-      if (kind === "server") probe.resolve({ status: 503 });
-      else probe.reject(new Error(kind));
+      if (kind === "server") {
+        probe.resolve({ status: 503 });
+      } else {
+        probe.reject(new Error(kind));
+      }
       await probe.promise.catch(() => {});
       await Promise.resolve();
       expect(f.document.querySelector("main")!.hasAttribute("data-entry-pending")).toBe(true);
